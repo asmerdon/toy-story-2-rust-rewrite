@@ -10,7 +10,8 @@
 //!   P                    place creature in front of camera
 //!   F                    play as Buzz (drops him below the camera) / back to free camera
 //!     in play mode: WASD run, Space jump, right-drag orbit camera,
-//!     [ ] browse Buzz's animations, 1/2/3 assign to idle/run/jump, R turn model 90°
+//!     animations follow the original move table; [ ] preview any animation, 0 back to the
+//!     move table, R turn model 90°
 //!   Tab                  next creature in this level
 //!   [ / ]                previous / next animation        , / .  slower / faster
 //!   C                    cycle vertex colour mode (white, bytes 1-3, bytes 3-1)
@@ -23,7 +24,7 @@ use std::time::Instant;
 use std::{env, fs, process};
 use ts2::bmp;
 use ts2::formats::{anim, exe, ngn, packets};
-use ts2::game;
+use ts2::{buzz, game};
 use ts2::scene::{self, Batch, GpuVertex};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
@@ -155,10 +156,11 @@ struct Viewer {
     /// Original player start for this level, from the user's toy2.exe.
     start: Option<exe::PlayerStart>,
     /// Animation indices for idle, run and jump. Placeholders until the real ones are identified.
-    player_anims: [usize; 3],
+    /// Buzz's move table from toy2.exe; drives his animations in play mode.
+    buzz: Option<buzz::BuzzAnimator>,
     player_yaw_offset: f32,
     jump_pressed: bool,
-    /// Animation browsed with [ ] in play mode, shown on Buzz until assigned with 1/2/3.
+    /// Animation browsed with [ ] in play mode, shown on Buzz until 0 is pressed.
     anim_preview: Option<usize>,
     anim_idx: usize,
     anim_time: f32,
@@ -480,16 +482,23 @@ impl Viewer {
         if self.show_spawns {
             placed.extend(self.spawns.iter().map(|&(ci, p)| (ci, p, 0.0, self.creature_anim[ci])));
         }
-        if let (Some(p), Some(ci)) = (&self.player, self.player_creature) {
-            let anim = match (self.anim_preview, p.motion()) {
-                (Some(a), _) => a,
-                (None, game::Motion::Idle) => self.player_anims[0],
-                (None, game::Motion::Run) => self.player_anims[1],
-                (None, game::Motion::Air) => self.player_anims[2],
-            };
-            placed.push((ci, p.pos.to_array(), p.yaw + self.player_yaw_offset, anim));
-        }
         let mut batches = Vec::new();
+        if let (Some(p), Some(ci)) = (&self.player, self.player_creature) {
+            let yaw = p.yaw + self.player_yaw_offset;
+            match (self.anim_preview, self.buzz.as_mut()) {
+                // Real move table: base layer + overlay at the frame its frame list gives.
+                (None, Some(buzz)) => {
+                    let pose = buzz.update(p.motion(), p.horizontal_speed(), dt);
+                    let layer = |(ai, f): (usize, f32)| self.anims[ci].get(ai).map(|a| (a, f));
+                    let c = &self.ngn.creatures[ci];
+                    scene::merge(
+                        &mut batches,
+                        scene::creature_batches_layered(&self.ngn, c, p.pos.to_array(), yaw, layer(pose.base), layer(pose.overlay)),
+                    );
+                }
+                (preview, _) => placed.push((ci, p.pos.to_array(), yaw, preview.unwrap_or(0))),
+            }
+        }
         for (ci, pos, yaw, ai) in placed {
             let c = &self.ngn.creatures[ci];
             let anim = self.anims[ci].get(ai);
@@ -526,11 +535,11 @@ impl Viewer {
         player.yaw = yaw;
         self.player = Some(player);
         self.creature_idx = ci;
-        self.anim_idx = self.player_anims[0];
+        self.anim_preview = None;
         println!(
-            "play mode: WASD run, Space jump, right-drag camera, F to exit. Animations idle/run/jump = {:?}; \
-             browse with [ ] and press 1/2/3 to assign, R turns the model 90 degrees",
-            self.player_anims
+            "play mode: WASD run, Space jump, right-drag camera, F to exit. Animations come from the original \
+             move table{}; [ ] previews any animation, 0 returns to the move table",
+            if self.buzz.is_some() { "" } else { " (not available: toy2.exe not found)" }
         );
     }
 
@@ -541,15 +550,9 @@ impl Viewer {
             KeyCode::KeyP => self.place_creature(),
             KeyCode::KeyF => self.toggle_play(),
             KeyCode::Space if self.player.is_some() => self.jump_pressed = true,
-            KeyCode::Digit1 | KeyCode::Digit2 | KeyCode::Digit3 if self.player.is_some() => {
-                let slot = match code {
-                    KeyCode::Digit1 => 0,
-                    KeyCode::Digit2 => 1,
-                    _ => 2,
-                };
-                self.player_anims[slot] = self.anim_idx;
+            KeyCode::Digit0 if self.player.is_some() => {
                 self.anim_preview = None;
-                println!("player animations idle/run/jump = {:?}", self.player_anims);
+                println!("Buzz animations from the original move table");
             }
             KeyCode::KeyR if self.player.is_some() => {
                 self.player_yaw_offset = (self.player_yaw_offset + std::f32::consts::FRAC_PI_2) % std::f32::consts::TAU;
@@ -711,14 +714,14 @@ fn main() {
 
     // Player start: table in the user's toy2.exe (game dir = two levels above levelNN\).
     let level_path = std::path::Path::new(path);
-    let start = level_path
+    let game_exe = level_path
         .ancestors()
         .nth(3)
         .map(|game_dir| game_dir.join("toy2.exe"))
         .and_then(|exe_path| fs::read(exe_path).ok())
-        .and_then(|b| exe::Exe::parse(b).ok())
-        .zip(exe::level_number(level_path))
-        .and_then(|(e, level)| e.player_start(level).ok());
+        .and_then(|b| exe::Exe::parse(b).ok());
+    let start = game_exe.as_ref().zip(exe::level_number(level_path)).and_then(|(e, level)| e.player_start(level).ok());
+    let buzz = game_exe.as_ref().and_then(|e| e.buzz_moves().ok()).map(buzz::BuzzAnimator::new);
     match start {
         Some(s) => println!("player start {:?}, facing {:.0} degrees (F to play, Shift+F to drop at camera)", s.pos, s.yaw_radians().to_degrees()),
         None => println!("no player start found (toy2.exe not next to data\\, or not a main level file)"),
@@ -729,7 +732,7 @@ fn main() {
         player: None,
         player_creature,
         start,
-        player_anims: [0, 1, 2],
+        buzz,
         // Buzz's model faces -Z in game space; confirmed in play testing (two R presses).
         player_yaw_offset: std::f32::consts::PI,
         anim_preview: None,

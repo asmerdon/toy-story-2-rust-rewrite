@@ -1,7 +1,7 @@
 //! Checks the exe's player-start table against level geometry. Skipped unless TS2_GAME_DIR is set.
 
 use std::{env, fs, path::PathBuf};
-use ts2::formats::{exe, ngn};
+use ts2::formats::{anim, exe, ngn};
 use ts2::{game, scene};
 
 #[test]
@@ -29,4 +29,28 @@ fn every_player_start_is_above_a_floor() {
         }
     }
     assert!(checked >= 10, "only {checked} levels checked");
+}
+
+#[test]
+fn buzz_move_table_matches_his_animations() {
+    let Some(dir) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let exe = exe::Exe::parse(fs::read(dir.join("toy2.exe")).unwrap()).unwrap();
+    let moves = exe.buzz_moves().unwrap();
+    assert_eq!(moves.len(), exe::BUZZ_STATES);
+    let n = ngn::parse(&fs::read(dir.join("data/level01/level.ngn")).unwrap()).unwrap();
+    let buzz = n.creatures.iter().find(|c| c.id == 0).unwrap();
+    let anims: Vec<anim::Animation> = buzz.animations.iter().map(|a| anim::parse(a).unwrap()).collect();
+    let mut used = std::collections::BTreeSet::new();
+    for (s, m) in moves.iter().enumerate() {
+        for a in [m.anim, m.base_anim] {
+            assert!((0..anims.len() as i32).contains(&a), "state {s}: animation {a} of {}", anims.len());
+            used.insert(a);
+        }
+        let frames = anims[m.anim as usize].frame_count;
+        for &f in m.frames.iter().filter(|&&f| f < 0x80) {
+            assert!((f as u16) < frames, "state {s}: frame {f} >= {frames} in animation {}", m.anim);
+        }
+    }
+    // The table uses every one of Buzz's animations.
+    assert_eq!(used.len(), anims.len(), "unused animations: {used:?}");
 }

@@ -76,6 +76,53 @@ impl Exe {
     }
 }
 
+/// Game logic ticks per second: the frame timer converts elapsed ms × 60 / 1000 (0x490860).
+pub const TICKS_PER_SECOND: f32 = 60.0;
+
+/// Buzz's jump launch speed in object units per tick, upward (`StartJump` 0x434090 callers).
+pub const BUZZ_JUMP_SPEED_OBJ: i32 = 0xC00;
+
+/// One row of Buzz's move table (0x4DF3F0, 20 bytes per state, read by 0x4011D0).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuzzMove {
+    /// Frame list: frame numbers (< 0x80) and event markers (≥ 0x80), up to the 0xFF.
+    pub frames: Vec<u8>,
+    /// Byte after 0xFF: 1 = hold the last frame, n > 1 = loop back n entries, 0 = stop.
+    pub end: u8,
+    /// Overlay animation (object slot +0x12): applied on top, only to the nodes it animates.
+    pub anim: i32,
+    /// Base animation (object slot +0x16): applied to every node first.
+    pub base_anim: i32,
+    /// Frame-list entries per tick, 16.16. Negative means "scale by horizontal speed":
+    /// entries per tick = -raw × speed (object units per tick) / 65536.
+    pub rate_raw: i32,
+}
+
+pub const BUZZ_STATES: usize = 33;
+
+impl Exe {
+    pub fn buzz_moves(&self) -> Result<Vec<BuzzMove>, Error> {
+        (0..BUZZ_STATES as u32)
+            .map(|s| {
+                let row = self.at(0x4DF3F0 + 20 * s, 20)?;
+                let w = |k: usize| u32::from_le_bytes(row[4 * k..4 * k + 4].try_into().unwrap());
+                let mut frames = Vec::new();
+                let mut va = w(0);
+                loop {
+                    let b = self.at(va, 1)?[0];
+                    if b == 0xFF || frames.len() > 255 {
+                        break;
+                    }
+                    frames.push(b);
+                    va += 1;
+                }
+                let end = self.at(va + 1, 1)?[0];
+                Ok(BuzzMove { frames, end, anim: w(1) as i32, base_anim: w(2) as i32, rate_raw: w(3) as i32 })
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerStart {
     pub pos: [f32; 3],

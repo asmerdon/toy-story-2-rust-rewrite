@@ -93,10 +93,24 @@ pub fn level_batches(ngn: &Ngn) -> Vec<Batch> {
 /// A creature at `origin` (game units) turned by `yaw` radians about the vertical axis,
 /// optionally posed by `anim` at fractional frame `t`.
 pub fn creature_batches(ngn: &Ngn, c: &Creature, origin: [f32; 3], yaw: f32, anim: Option<(&Animation, f32)>) -> Vec<Batch> {
+    creature_batches_layered(ngn, c, origin, yaw, anim, None)
+}
+
+/// As the game draws objects (0x4CD7B0): the `base` animation poses every node it covers,
+/// then `overlay` replaces the nodes it animates.
+pub fn creature_batches_layered(
+    ngn: &Ngn,
+    c: &Creature,
+    origin: [f32; 3],
+    yaw: f32,
+    base: Option<(&Animation, f32)>,
+    overlay: Option<(&Animation, f32)>,
+) -> Vec<Batch> {
     let mut out = Vec::new();
     let place = Place::new(origin, yaw);
-    let matrices: Vec<Option<[[f32; 4]; 4]>> =
-        (0..c.nodes.len()).map(|n| anim.and_then(|(a, t)| a.matrix_at(n, t))).collect();
+    let matrices: Vec<Option<[[f32; 4]; 4]>> = (0..c.nodes.len())
+        .map(|n| overlay.and_then(|(a, t)| a.matrix_at(n, t)).or_else(|| base.and_then(|(a, t)| a.matrix_at(n, t))))
+        .collect();
     for (n, node) in c.nodes.iter().enumerate() {
         if let Some(mesh) = &node.mesh {
             add_mesh(ngn, &mut out, mesh, place, matrices[n].as_ref());

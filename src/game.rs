@@ -15,8 +15,12 @@ const CHEST: f32 = 240.0;
 const STEP_UP: f32 = 130.0;
 const SNAP_DOWN: f32 = 80.0;
 const RUN_SPEED: f32 = 1800.0;
-const GRAVITY: f32 = 7000.0;
-const JUMP_SPEED: f32 = 2600.0;
+/// Original: 0xC00 object units per tick upward (StartJump 0x434090), ÷32 → level units,
+/// × 60 ticks/s.
+const JUMP_SPEED: f32 = 0xC00 as f32 / 32.0 * 60.0;
+/// Estimate (the original constant is not found yet): gives a jump peak of ~1.6× Buzz's
+/// height with the original launch speed.
+const GRAVITY: f32 = 23000.0;
 const CELL: f32 = 1024.0;
 /// |normal.y| above this is floor/ceiling, below is wall.
 const FLOOR_NY: f32 = 0.6;
@@ -167,7 +171,8 @@ pub struct Input {
 pub enum Motion {
     Idle,
     Run,
-    Air,
+    /// `rising` while moving upward (game -Y).
+    Air { rising: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -186,9 +191,14 @@ impl Player {
         Player { pos, vel: Vec3::ZERO, yaw: 0.0, grounded: false, spawn: pos }
     }
 
+    /// Horizontal speed in level units per second.
+    pub fn horizontal_speed(&self) -> f32 {
+        self.vel.x.hypot(self.vel.z)
+    }
+
     pub fn motion(&self) -> Motion {
         if !self.grounded {
-            Motion::Air
+            Motion::Air { rising: self.vel.y < 0.0 }
         } else if self.vel.x.hypot(self.vel.z) > 10.0 {
             Motion::Run
         } else {
