@@ -276,6 +276,7 @@ struct Viewer {
     specials: ts2::specials::Specials,
     boxes: Option<ts2::boxes::Boxes>,
     level1: Option<ts2::level1::Level1>,
+    creatures: Option<ts2::creatures::Creatures>,
     jingles: Vec<Jingle>,
     hud: String,
 }
@@ -660,12 +661,25 @@ impl Viewer {
                 }
                 None => self.cam.pos = target - fwd * 4.5,
             }
-            // Pickups and jingles, one 60 Hz tick at a time (0x440F70 / 0x4A0F80 / 0x49E9D0).
+            // Creatures (0x4086F0) near the camera.
             let cam_game = world_to_game(self.cam.pos);
+            if let Some(cr) = self.creatures.as_mut() {
+                let cam_obj = cam_game.map(|v| (v * 32.0) as i32);
+                for _ in 0..ticks {
+                    cr.tick(&self.world, cam_obj, player.pos_obj());
+                }
+            }
+            // Pickups and jingles, one 60 Hz tick at a time (0x440F70 / 0x4A0F80 / 0x49E9D0).
             let to_game = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
             let f = self.cam.forward();
             let (right_g, fwd_g) = (to_game(f.cross(Vec3::Y)).normalize_or_zero(), to_game(Vec3::new(f.x, 0.0, f.z)).normalize_or_zero());
             let listener = Vec3::from(cam_game);
+            let creature_sounds: Vec<(u16, [i32; 3])> = self.creatures.as_mut().map(|c| c.sounds.drain(..).collect()).unwrap_or_default();
+            if let Some(a) = self.audio.as_mut() {
+                for (id, at) in creature_sounds {
+                    a.play(id, false, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);
+                }
+            }
             for _ in 0..ticks {
                 if let Some(pk) = self.pickups.as_mut() {
                     for ev in pk.tick(player.pos.to_array(), cam_game) {
@@ -730,10 +744,27 @@ impl Viewer {
         // (creature index, position, yaw, animation)
         let mut placed: Vec<(usize, [f32; 3], f32, usize)> =
             self.creature_pos.map(|p| (self.creature_idx, p, 0.0, self.creature_anim[self.creature_idx])).into_iter().collect();
-        if self.show_spawns {
-            placed.extend(self.spawns.iter().map(|&(ci, p)| (ci, p, 0.0, self.creature_anim[ci])));
-        }
         let mut batches = Vec::new();
+        if self.show_spawns {
+            match (&self.creatures, self.player.is_some()) {
+                // Play mode: the creatures as their scripts move and animate them.
+                (Some(cr), true) => {
+                    let cam = Vec3::from(world_to_game(self.cam.pos));
+                    for c in cr.slots.iter().filter(|c| c.id != 0 && c.health > 0) {
+                        let Some(ci) = self.ngn.creatures.iter().position(|n| n.id == c.id as usize) else { continue };
+                        let pos = c.pos.map(|v| v as f32 / 32.0);
+                        if (Vec3::from(pos) - cam).length() > 10176.0 {
+                            continue;
+                        }
+                        let anim = self.anims[ci].get(c.anim as usize);
+                        let t = anim.map_or(0.0, |a| (c.time as f32 / 65536.0).min((a.frame_count.max(1) - 1) as f32));
+                        let yaw = c.angles[1] as f32 / 4096.0 * std::f32::consts::TAU + self.player_yaw_offset;
+                        scene::merge(&mut batches, scene::creature_batches(&self.ngn, &self.ngn.creatures[ci], pos, yaw, anim.map(|a| (a, t))));
+                    }
+                }
+                _ => placed.extend(self.spawns.iter().map(|&(ci, p)| (ci, p, 0.0, self.creature_anim[ci]))),
+            }
+        }
         if let (Some(p), Some(ci)) = (&self.player, self.player_creature) {
             let yaw = p.yaw() + self.player_yaw_offset;
             match (self.anim_preview, p.anim.as_ref().and_then(|a| a.pose())) {
@@ -1005,9 +1036,11 @@ fn main() {
 
     // Spawns come from the packet file with the same stem (level.ngn -> level.raw).
     let raw_path = std::path::Path::new(path).with_extension("raw");
+    let mut all_spawns = Vec::new();
     let spawns: Vec<(usize, [f32; 3])> = match fs::read(&raw_path).map_err(|e| e.to_string()).and_then(|b| packets::parse(&b).map_err(|e| e.to_string())) {
         Ok(pk) => {
             let all: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
+            all_spawns = all.clone();
             let found: Vec<_> = all
                 .iter()
                 .filter_map(|s| ngn.creatures.iter().position(|c| c.id == s.creature as usize).map(|ci| (ci, s.pos.map(|v| v as f32))))
@@ -1085,6 +1118,8 @@ fn main() {
         ..Default::default()
     });
     let player_creature = ngn.creatures.iter().position(|c| c.id == 0);
+    // Creatures run their behaviour scripts in play mode (exe tables needed).
+    let creatures = game_exe.as_ref().map(|e| ts2::creatures::Creatures::new(&all_spawns, Some(e), random_table.clone().unwrap_or_default()));
 
     // Pushable boxes and the level's own script (level 1 only so far).
     let mut specials = specials;
@@ -1171,6 +1206,7 @@ fn main() {
         specials,
         boxes,
         level1,
+        creatures,
         jingles: Vec::new(),
         hud: String::new(),
     };
