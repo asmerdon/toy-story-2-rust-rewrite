@@ -156,6 +156,8 @@ struct Viewer {
     player_anims: [usize; 3],
     player_yaw_offset: f32,
     jump_pressed: bool,
+    /// Animation browsed with [ ] in play mode, shown on Buzz until assigned with 1/2/3.
+    anim_preview: Option<usize>,
     anim_idx: usize,
     anim_time: f32,
     speed: f32,
@@ -477,10 +479,11 @@ impl Viewer {
             placed.extend(self.spawns.iter().map(|&(ci, p)| (ci, p, 0.0, self.creature_anim[ci])));
         }
         if let (Some(p), Some(ci)) = (&self.player, self.player_creature) {
-            let anim = match p.motion() {
-                game::Motion::Idle => self.player_anims[0],
-                game::Motion::Run => self.player_anims[1],
-                game::Motion::Air => self.player_anims[2],
+            let anim = match (self.anim_preview, p.motion()) {
+                (Some(a), _) => a,
+                (None, game::Motion::Idle) => self.player_anims[0],
+                (None, game::Motion::Run) => self.player_anims[1],
+                (None, game::Motion::Air) => self.player_anims[2],
             };
             placed.push((ci, p.pos.to_array(), p.yaw + self.player_yaw_offset, anim));
         }
@@ -536,6 +539,7 @@ impl Viewer {
                     _ => 2,
                 };
                 self.player_anims[slot] = self.anim_idx;
+                self.anim_preview = None;
                 println!("player animations idle/run/jump = {:?}", self.player_anims);
             }
             KeyCode::KeyR if self.player.is_some() => {
@@ -551,14 +555,13 @@ impl Viewer {
                 self.anim_idx = self.creature_anim.get(self.creature_idx).copied().unwrap_or(0);
                 self.status();
             }
-            KeyCode::BracketRight => {
-                self.anim_idx = (self.anim_idx + 1) % n_anims;
+            KeyCode::BracketRight | KeyCode::BracketLeft => {
+                let step = if code == KeyCode::BracketRight { 1 } else { n_anims - 1 };
+                self.anim_idx = (self.anim_idx + step) % n_anims;
                 self.anim_time = 0.0;
-                self.status();
-            }
-            KeyCode::BracketLeft => {
-                self.anim_idx = (self.anim_idx + n_anims - 1) % n_anims;
-                self.anim_time = 0.0;
+                if self.player.is_some() {
+                    self.anim_preview = Some(self.anim_idx);
+                }
                 self.status();
             }
             KeyCode::Period => self.speed = (self.speed * 2.0).min(8.0),
@@ -699,7 +702,9 @@ fn main() {
         player: None,
         player_creature,
         player_anims: [0, 1, 2],
-        player_yaw_offset: 0.0,
+        // Buzz's model faces -Z in game space; confirmed in play testing (two R presses).
+        player_yaw_offset: std::f32::consts::PI,
+        anim_preview: None,
         jump_pressed: false,
         ngn,
         anims,
