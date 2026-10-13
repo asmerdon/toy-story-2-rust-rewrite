@@ -31,7 +31,7 @@ pub fn level_to_obj(ngn: &Ngn, mtl_name: &str, apply_instances: bool) -> (String
                 let [x, y, z] = inst.map_or(v.pos, |i| instance_transform(i, v.pos)).map(|c| c * LEVEL_SCALE);
                 // Bytes 1..=3 treated as RGB with 0x80 = 1.0 (PS1 convention); unconfirmed.
                 let [r, g, b] = [v.color[1], v.color[2], v.color[3]].map(|c| (c as f32 / 128.0).min(1.0));
-                writeln!(obj, "v {x} {} {z} {r:.3} {g:.3} {b:.3}", -y).unwrap();
+                writeln!(obj, "v {x} {} {} {r:.3} {g:.3} {b:.3}", -y, -z).unwrap();
             }
             for v in &mesh.vertices {
                 writeln!(obj, "vt {} {}", v.uv[0], 1.0 - v.uv[1]).unwrap();
@@ -40,8 +40,8 @@ pub fn level_to_obj(ngn: &Ngn, mtl_name: &str, apply_instances: bool) -> (String
                 let mat = mesh.group_texture(g).unwrap_or("untextured");
                 writeln!(obj, "usemtl {mat}").unwrap();
                 for [a, b, c] in g.triangles() {
-                    // Y is flipped, so reverse winding.
-                    let [a, b, c] = [c, b, a].map(|i| base + i as usize);
+                    // Y and Z are both negated (a rotation), so winding is preserved.
+                    let [a, b, c] = [a, b, c].map(|i| base + i as usize);
                     writeln!(obj, "f {a}/{a} {b}/{b} {c}/{c}").unwrap();
                 }
             }
@@ -68,19 +68,19 @@ pub fn creature_to_obj(c: &crate::formats::ngn::Creature, mtl_name: &str, pose: 
         writeln!(obj, "o {:02}_{}", ni, node.name).unwrap();
         for v in &mesh.vertices {
             let [x, y, z] = xf(v.pos, 1.0).map(|c| c * LEVEL_SCALE);
-            writeln!(obj, "v {x} {} {z}", -y).unwrap();
+            writeln!(obj, "v {x} {} {}", -y, -z).unwrap();
         }
         for v in &mesh.vertices {
             writeln!(obj, "vt {} {}", v.uv[0], 1.0 - v.uv[1]).unwrap();
         }
         for v in &mesh.vertices {
             let [x, y, z] = xf(v.normal, 0.0);
-            writeln!(obj, "vn {x} {} {z}", -y).unwrap();
+            writeln!(obj, "vn {x} {} {}", -y, -z).unwrap();
         }
         for g in &mesh.groups {
             writeln!(obj, "usemtl {}", mesh.group_texture(g).unwrap_or("untextured")).unwrap();
             for [a, b, c] in g.triangles() {
-                let [a, b, c] = [c, b, a].map(|i| base + i as usize);
+                let [a, b, c] = [a, b, c].map(|i| base + i as usize);
                 writeln!(obj, "f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}").unwrap();
             }
         }
@@ -105,10 +105,10 @@ pub fn creature_to_obj(c: &crate::formats::ngn::Creature, mtl_name: &str, pose: 
                 None => v.pos,
             };
             let [x, y, z] = p.map(|c| c * LEVEL_SCALE);
-            writeln!(obj, "v {x} {} {z}\nvt {} {}", -y, v.uv[0], 1.0 - v.uv[1]).unwrap();
+            writeln!(obj, "v {x} {} {}\nvt {} {}", -y, -z, v.uv[0], 1.0 - v.uv[1]).unwrap();
         }
         for [a, b, cc] in patch.triangles() {
-            let [a, b, cc] = [cc, b, a].map(|i| base + i);
+            let [a, b, cc] = [a, b, cc].map(|i| base + i);
             writeln!(obj, "f {a}/{a} {b}/{b} {cc}/{cc}").unwrap();
         }
         base += verts.len();
@@ -140,12 +140,12 @@ pub fn model_to_obj(model: &Model, scale: f32) -> String {
             for (v, c) in poly.verts.iter().zip(poly.colors.iter()) {
                 let [x, y, z] = v.pos.map(|c| c as f32 * scale);
                 let [r, g, b] = c.map(|c| c as f32 / 255.0);
-                writeln!(s, "v {x} {} {z} {r:.3} {g:.3} {b:.3}", -y).unwrap();
+                writeln!(s, "v {x} {} {} {r:.3} {g:.3} {b:.3}", -y, -z).unwrap();
             }
         }
         for poly in &part.polys {
             // Quads are stored in perimeter order (0-1-2-3), not PS1 strip order.
-            // Flipping Y mirrors the model, so reverse winding to keep faces outward.
+            // Y and Z are negated together (a 180° rotation about X), so winding is preserved.
             if poly.verts.len() == 4 {
                 writeln!(s, "f {} {} {} {}", base + 3, base + 2, base + 1, base).unwrap();
             } else {

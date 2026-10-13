@@ -52,8 +52,9 @@ struct VOut {
 @vertex
 fn vs_main(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VOut {
     var o: VOut;
-    // Game space is +Y down; flip to +Y up.
-    let p = vec3<f32>(pos.x, -pos.y, pos.z) * u.params.z;
+    // Game space is +Y down, +Z forward (right-handed). Negating Y and Z together is a rotation,
+    // so the level is not mirrored.
+    let p = vec3<f32>(pos.x, -pos.y, -pos.z) * u.params.z;
     o.pos = u.view_proj * vec4<f32>(p, 1.0);
     o.uv = uv;
     o.color = color;
@@ -441,8 +442,8 @@ impl Viewer {
 
     fn place_creature(&mut self) {
         let p = self.cam.pos + self.cam.forward() * 4.0;
-        // Back to game units and axes (+Y down).
-        self.creature_pos = Some([p.x / WORLD_SCALE, -p.y / WORLD_SCALE, p.z / WORLD_SCALE]);
+        // Back to game units and axes (+Y down, +Z forward).
+        self.creature_pos = Some([p.x / WORLD_SCALE, -p.y / WORLD_SCALE, -p.z / WORLD_SCALE]);
         self.status();
     }
 
@@ -497,10 +498,10 @@ impl ApplicationHandler for Viewer {
         let level = scene::level_batches(&self.ngn);
         if let Some(&(_, p)) = self.spawns.first() {
             // Start just behind and above the first spawn.
-            self.cam.pos = Vec3::new(p[0], -p[1], p[2]) * WORLD_SCALE + Vec3::new(0.0, 1.5, 5.0);
+            self.cam.pos = Vec3::new(p[0], -p[1], -p[2]) * WORLD_SCALE + Vec3::new(0.0, 1.5, 5.0);
         } else if let Some((lo, hi)) = scene::bounds(&level) {
             let c = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
-            self.cam.pos = Vec3::new(c[0], -c[1], c[2]) * WORLD_SCALE + Vec3::new(0.0, 2.0, 0.0);
+            self.cam.pos = Vec3::new(c[0], -c[1], -c[2]) * WORLD_SCALE + Vec3::new(0.0, 2.0, 0.0);
         }
         self.gfx = Some(Gfx::new(window, &self.ngn, &level));
         self.last = Instant::now();
