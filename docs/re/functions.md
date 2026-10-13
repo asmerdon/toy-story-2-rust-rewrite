@@ -1,0 +1,87 @@
+# Function map: `toy2.exe` (PC, 1999-10-29 build)
+
+Addresses are virtual addresses in the original exe (image base 0x400000). Names are ours.
+Confidence: **✔** confirmed by behaviour or data round-trip, **~** strong inference, **?** guess.
+Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit it.
+
+## Game loop
+| Address | Name | Notes |
+|---|---|---|
+| 0x49D910 | `MainLoop` ~ | 12-case game-state switch; calls the frame update |
+| 0x49DFE0 | `GameFrame` ✔ | Per-frame update; calls ~30 subsystems in order (below) |
+| 0x452FC0 | `InitLevelPlay` ✔ | Debug strings "InitLevelPlay : START/END"; loads rand.dat, level.dat, level.raw |
+| 0x47EC20 | `LoadLevelSounds` ✔ | Per-level WAV lists from tables 0x4FD140 / 0x4FD5E0 |
+
+`GameFrame` calls, in order, with what we know:
+| Address | Name | Notes |
+|---|---|---|
+| 0x49EBA0 | `ReadGamePad` ~ | Small; touches the in-game pad `0x52AD88` and the menu pad `0x88279C` |
+| 0x402A10 | ? | |
+| 0x436220 | `UpdateCreatures` ~ | Dispatches to the 0x434xxx/0x435xxx per-enemy helpers; sets animation slots |
+| 0x405860 | `UpdatePlayer` ~ | Calls 0x4038E0 and 0x4045E0 (pad-driven movement) |
+| 0x4CE050 | ? | engine-side |
+| 0x4A0F80 | ? | 13-case switch |
+| 0x4011D0 | ? | |
+| 0x4A2D80 | ? | uses the player pointer heavily |
+| 0x49FB40 | `ChallengeRewards` ~ | Uses the type-58 positions from level.dat |
+| 0x410F40 | `UpdateLevelObjects` ~ | 53-case switch on object byte +0x2F (pickups, grapple points: "GRAPHOOK") |
+| 0x49FD40 | `TokenMessages` ~ | "you have collected a token" |
+| 0x4A3EF0 | `FlushSoundVoices` ✔ | debug string |
+
+## Player
+| Address | Name | Notes |
+|---|---|---|
+| `0x52ADAC` (data) | `g_player` ~ | Pointer to Buzz's object; used throughout |
+| `0x52AD88` (data) | `g_pad` ✔ | In-game pad bits, PS1 layout (below) |
+| 0x4038E0 | `PlayerControl` ~ | 452 lines; tests d-pad/shoulder bits of `g_pad` |
+| 0x4045E0 | `PlayerMove` ~ | 601 lines; facing angle × sine table 0x4FE788, recursive |
+
+### Pad bits (PS1 layout, confirmed by "press jump to exit" testing 0x4000)
+| Bit | Button | | Bit | Button |
+|---|---|---|---|---|
+| 0x0001 | Select | | 0x0100 | L2 |
+| 0x0008 | Start | | 0x0200 | R2 |
+| 0x0010 | Up | | 0x0400 | L1 |
+| 0x0020 | Right | | 0x0800 | R1 |
+| 0x0040 | Down | | 0x1000 | Triangle |
+| 0x0080 | Left | | 0x2000 | Circle |
+| | | | 0x4000 | Cross (jump) |
+| | | | 0x8000 | Square |
+
+## Objects and animation
+| Address | Name | Notes |
+|---|---|---|
+| 0x405CF0 | `SetAnim(obj, anim, seq)` ✔ | anim → +0x12, sequence pointer → +0x74, time from first byte |
+| 0x405C80 | `StepAnimSeq(obj)` ✔ | One frame-list step per tick; 0xFF codes hold/stop/loop |
+| 0x4E0588 (data) | shared sequence table ✔ | 25 entries (1-based) |
+| 0x4CD880 | `DrawAnimatedObjects` ✔ | Builds root matrix (X, Y+0x800, Z), plays slots +0x12/+0x16 |
+| 0x4CD170 / 0x4CD1B0 | animation header / node sampler ✔ | see docs/formats/anim.md |
+
+Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when drawn), `+0x0C/+0x0E/+0x10` rotation, `+0x14` creature slot, `+0x12` animation, `+0x16` second animation, `+0x18` time (16.16), `+0x1C` second time, `+0x74` sequence pointer.
+
+## Loading
+| Address | Name | Notes |
+|---|---|---|
+| 0x4CA420 | `LoadCreature` ✔ | `.ngn` chunk 0x106 tags 0x200–0x208 (hobjload.c) |
+| 0x4CA040 | `StoreAnimation` ✔ | Raw 0x204 blobs, up to 100 per creature |
+| 0x4CA1D0 | `LoadPatches` ✔ | Tag 0x208 |
+| 0x4CB320 / 0x4CB4E0 / 0x4CB970 / 0x4CC970 | mesh tag readers ✔ | objload.c |
+| 0x452310 | `LoadPackets` ✔ | "Loading packet data %s"; type 35 creature list, 36 map |
+| 0x47B170 | `Unpack` ✔ | LZ decompressor (docs/formats/packets.md) |
+| 0x43E6E0 | `ParseLevelDat` ~ | level.dat sections 1–3 |
+| 0x49FAB0 | `SpawnChallengeReward` ~ | Matches type-58 positions to objects 0x71/0x73 |
+
+## Rendering primitives
+| Address | Name |
+|---|---|
+| 0x4A9400 | `MatIdentity` ~ |
+| 0x4A9AA0 / 0x4A9CB0 / 0x4A9EC0 | `MatRotX` / `MatRotY` / `MatRotZ` ✔ (row vectors, 65536 = 360°) |
+| 0x4A98D0 | `MatScale` ~ |
+| 0x4A9750 | `MatTranslate` ~ |
+| 0x4A9F60 | `MatMul` ~ |
+
+## Misc
+| Address | Name | Notes |
+|---|---|---|
+| 0x4A6390 | `CheckCD` ✔ | validate.tta |
+| 0x412D70 | `ConfigCDAudio` ✔ | "Base CD track is %d" |
