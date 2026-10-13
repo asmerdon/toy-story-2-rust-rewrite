@@ -7,6 +7,7 @@
 //!   right mouse + move   look          WASD          move
 //!   Space / Ctrl         up / down     Shift         move faster
 //!   N                    show / hide creatures at their spawn points (from level*.raw)
+//!   Z                    hide / show zone-0 meshes (hidden menu/HUD models in level01)
 //!   P                    place creature in front of camera
 //!   F                    play as Buzz (drops him below the camera) / back to free camera
 //!     in play mode: WASD run, Space jump, right-drag orbit camera,
@@ -75,7 +76,9 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
     // PS1 convention: 0x80 = 1.0, so double the 0..1 value.
     if (mode == 1u) { shade = i.color.yzw * 2.0; }
     if (mode == 2u) { shade = i.color.wzy * 2.0; }
-    return vec4<f32>(t.rgb * shade, 1.0);
+    // Byte 0 of the vertex colour is alpha (0x80 = PS1 50% semi-transparency); only the
+    // blended pipelines use it.
+    return vec4<f32>(t.rgb * shade, t.a * i.color.x);
 }
 "#;
 
@@ -97,6 +100,7 @@ fn world_to_game(p: Vec3) -> [f32; 3] {
 
 struct GpuBatch {
     texture: usize,
+    blend: scene::Blend,
     buffer: wgpu::Buffer,
     count: u32,
 }
@@ -122,7 +126,8 @@ struct Gfx {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
+    /// Pipelines for Opaque, Alpha, Additive and Darken, in that order.
+    pipelines: [wgpu::RenderPipeline; 4],
     uniform_buf: wgpu::Buffer,
     uniform_bg: wgpu::BindGroup,
     /// One bind group per level texture, plus a white one at the end for untextured geometry.
@@ -145,6 +150,7 @@ struct Viewer {
     /// (index into ngn.creatures, position) for each spawn whose creature is in this level.
     spawns: Vec<(usize, [f32; 3])>,
     show_spawns: bool,
+    hide_zone0: bool,
     /// Current animation per creature (index into `anims[creature]`).
     creature_anim: Vec<usize>,
     /// Level geometry, handed to the GPU on first resume.
@@ -190,6 +196,7 @@ fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatc
         .filter(|b| !b.vertices.is_empty())
         .map(|b| GpuBatch {
             texture: b.texture.unwrap_or(white),
+            blend: b.blend,
             buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::cast_slice(&b.vertices),
@@ -257,7 +264,17 @@ impl Gfx {
             bind_group_layouts: &[&uniform_layout, &texture_layout],
             push_constant_ranges: &[],
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        // Blend modes as the exe's render-state cache sets them (0x4B6320): opaque writes depth;
+        // the blended modes test depth without writing it.
+        use wgpu::{BlendComponent as C, BlendFactor as F, BlendOperation as Op, BlendState};
+        let comp = |src, dst| C { src_factor: src, dst_factor: dst, operation: Op::Add };
+        let modes: [(Option<BlendState>, bool); 4] = [
+            (Some(BlendState::REPLACE), true),
+            (Some(BlendState::ALPHA_BLENDING), false),
+            (Some(BlendState { color: comp(F::SrcAlpha, F::One), alpha: comp(F::Zero, F::One) }), false),
+            (Some(BlendState { color: comp(F::Zero, F::OneMinusSrc), alpha: comp(F::Zero, F::One) }), false),
+        ];
+        let pipelines = modes.map(|(blend, depth_write)| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ts2"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -276,7 +293,7 @@ impl Gfx {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -284,7 +301,7 @@ impl Gfx {
             primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
+                depth_write_enabled: depth_write,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: Default::default(),
                 bias: Default::default(),
@@ -292,7 +309,7 @@ impl Gfx {
             multisample: Default::default(),
             multiview: None,
             cache: None,
-        });
+        }));
 
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniforms"),
@@ -354,7 +371,7 @@ impl Gfx {
 
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
-        Gfx { window, surface, device, queue, config, pipeline, uniform_buf, uniform_bg, texture_bgs, depth, level, creature: Vec::new() }
+        Gfx { window, surface, device, queue, config, pipelines, uniform_buf, uniform_bg, texture_bgs, depth, level, creature: Vec::new() }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -398,12 +415,16 @@ impl Gfx {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.uniform_bg, &[]);
-            for b in self.level.iter().chain(&self.creature) {
-                pass.set_bind_group(1, &self.texture_bgs[b.texture], &[]);
-                pass.set_vertex_buffer(0, b.buffer.slice(..));
-                pass.draw(0..b.count, 0..1);
+            // Opaque first, then the blended modes (which test but don't write depth).
+            let order = [scene::Blend::Opaque, scene::Blend::Alpha, scene::Blend::Additive, scene::Blend::Darken];
+            for (i, mode) in order.iter().enumerate() {
+                pass.set_pipeline(&self.pipelines[i]);
+                for b in self.level.iter().chain(&self.creature).filter(|b| b.blend == *mode) {
+                    pass.set_bind_group(1, &self.texture_bgs[b.texture], &[]);
+                    pass.set_vertex_buffer(0, b.buffer.slice(..));
+                    pass.draw(0..b.count, 0..1);
+                }
             }
         }
         self.queue.submit([enc.finish()]);
@@ -557,6 +578,17 @@ impl Viewer {
             KeyCode::KeyR if self.player.is_some() => {
                 self.player_yaw_offset = (self.player_yaw_offset + std::f32::consts::FRAC_PI_2) % std::f32::consts::TAU;
                 println!("player model turned to {:.0} degrees", self.player_yaw_offset.to_degrees());
+            }
+            KeyCode::KeyZ => {
+                // Hide instances whose placement flags have zone 0 (low 16 bits); in level01 these
+                // are hidden menu/HUD models. Unconfirmed for other levels, hence a toggle.
+                self.hide_zone0 = !self.hide_zone0;
+                let hide = self.hide_zone0;
+                let level = scene::level_batches_filtered(&self.ngn, |i| !hide || i.flags & 0xFFFF != 0);
+                if let Some(g) = self.gfx.as_mut() {
+                    g.level = upload(&g.device, &level, g.texture_bgs.len() - 1);
+                }
+                println!("zone-0 meshes {}", if hide { "hidden" } else { "shown" });
             }
             KeyCode::KeyN => {
                 self.show_spawns = !self.show_spawns;
@@ -749,6 +781,7 @@ fn main() {
         creature_pos: None,
         spawns,
         show_spawns: true,
+        hide_zone0: false,
         anim_idx: 0,
         anim_time: 0.0,
         speed: 1.0,

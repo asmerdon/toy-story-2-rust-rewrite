@@ -277,7 +277,7 @@ mod tests {
     fn room() -> World {
         let floor = [v(-2000., 0., -2000.), v(2000., 0., -2000.), v(2000., 0., 2000.), v(-2000., 0., -2000.), v(2000., 0., 2000.), v(-2000., 0., 2000.)];
         let wall = [v(1000., 0., -2000.), v(1000., -1000., -2000.), v(1000., -1000., 2000.), v(1000., 0., -2000.), v(1000., -1000., 2000.), v(1000., 0., 2000.)];
-        World::from_batches(&[Batch { texture: None, vertices: floor.iter().chain(&wall).copied().collect() }])
+        World::from_batches(&[Batch { vertices: floor.iter().chain(&wall).copied().collect(), ..Default::default() }])
     }
 
     #[test]

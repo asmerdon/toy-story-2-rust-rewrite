@@ -242,7 +242,39 @@ pub struct Mesh {
     pub groups: Vec<Group>,
 }
 
+/// How a material is blended, from its mode flags as the exe maps them (0x4B6760 → 0x4B6320).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Blend {
+    #[default]
+    Opaque,
+    /// Mode 0x02 (or 0x200): source alpha / inverse source alpha, no depth write.
+    Alpha,
+    /// Mode 0x10 (or 0x400): source alpha / one (e.g. Buzz's visor), no depth write.
+    Additive,
+    /// Mode 0x20 (or 0x800): zero / inverse source colour, no depth write.
+    Darken,
+}
+
+impl Material {
+    pub fn blend(&self) -> Blend {
+        let m = self.mode.unwrap_or(0);
+        if m & 0x410 != 0 {
+            Blend::Additive
+        } else if m & 0x820 != 0 {
+            Blend::Darken
+        } else if m & 0x202 != 0 {
+            Blend::Alpha
+        } else {
+            Blend::Opaque
+        }
+    }
+}
+
 impl Mesh {
+    pub fn group_blend(&self, g: &Group) -> Blend {
+        self.materials.get(g.material as usize).map(Material::blend).unwrap_or_default()
+    }
+
     /// Texture name used by a group, if any.
     pub fn group_texture(&self, g: &Group) -> Option<&str> {
         let t = self.materials.get(g.material as usize)?.texture?;

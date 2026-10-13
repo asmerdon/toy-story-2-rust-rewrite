@@ -2,6 +2,7 @@
 //! Kept free of GPU types so it can be tested headless.
 
 use crate::formats::anim::Animation;
+pub use crate::formats::ngn::Blend;
 use crate::formats::ngn::{Creature, Mesh, Ngn, Vertex};
 
 /// One vertex as uploaded to the GPU. Positions stay in game units and game axes (+Y down);
@@ -15,10 +16,11 @@ pub struct GpuVertex {
     pub color: [u8; 4],
 }
 
-/// Triangles that share one texture (`None` = untextured).
+/// Triangles that share one texture (`None` = untextured) and blend mode.
 #[derive(Debug, Clone, Default)]
 pub struct Batch {
     pub texture: Option<usize>,
+    pub blend: Blend,
     pub vertices: Vec<GpuVertex>,
 }
 
@@ -26,10 +28,10 @@ fn texture_index(ngn: &Ngn, name: &str) -> Option<usize> {
     ngn.textures.iter().position(|t| t.name == name)
 }
 
-fn push(batches: &mut Vec<Batch>, texture: Option<usize>, tri: [GpuVertex; 3]) {
-    match batches.iter_mut().find(|b| b.texture == texture) {
+fn push(batches: &mut Vec<Batch>, texture: Option<usize>, blend: Blend, tri: [GpuVertex; 3]) {
+    match batches.iter_mut().find(|b| b.texture == texture && b.blend == blend) {
         Some(b) => b.vertices.extend_from_slice(&tri),
-        None => batches.push(Batch { texture, vertices: tri.to_vec() }),
+        None => batches.push(Batch { texture, blend, vertices: tri.to_vec() }),
     }
 }
 
@@ -67,21 +69,27 @@ impl Place {
 fn add_mesh(ngn: &Ngn, out: &mut Vec<Batch>, mesh: &Mesh, place: Place, m: Option<&[[f32; 4]; 4]>) {
     for g in &mesh.groups {
         let tex = mesh.group_texture(g).and_then(|n| texture_index(ngn, n));
+        let blend = mesh.group_blend(g);
         for t in g.triangles() {
             let tri = t.map(|i| {
                 let v = &mesh.vertices[i as usize];
                 gpu(v, place.apply(transform(m, v.pos)))
             });
-            push(out, tex, tri);
+            push(out, tex, blend, tri);
         }
     }
 }
 
 /// All level geometry, placed by its instances.
 pub fn level_batches(ngn: &Ngn) -> Vec<Batch> {
+    level_batches_filtered(ngn, |_| true)
+}
+
+/// Level geometry for the instances `keep` accepts.
+pub fn level_batches_filtered(ngn: &Ngn, keep: impl Fn(&crate::formats::ngn::Instance) -> bool) -> Vec<Batch> {
     let mut out = Vec::new();
     for layer in &ngn.layers {
-        for inst in &layer.instances {
+        for inst in layer.instances.iter().filter(|i| keep(i)) {
             if let Some(mesh) = layer.meshes.get(inst.mesh as usize) {
                 add_mesh(ngn, &mut out, mesh, Place::new(inst.pos, 0.0), None);
             }
@@ -117,12 +125,9 @@ pub fn creature_batches_layered(
         }
     }
     for patch in &c.patches {
-        let tex = c
-            .shared_materials
-            .get(patch.material as usize)
-            .and_then(|m| m.texture)
-            .and_then(|t| c.shared_textures.get(t as usize))
-            .and_then(|name| texture_index(ngn, name));
+        let material = c.shared_materials.get(patch.material as usize);
+        let blend = material.map(|m| m.blend()).unwrap_or_default();
+        let tex = material.and_then(|m| m.texture).and_then(|t| c.shared_textures.get(t as usize)).and_then(|name| texture_index(ngn, name));
         let verts: Vec<GpuVertex> = patch
             .vertices()
             .into_iter()
@@ -132,16 +137,16 @@ pub fn creature_batches_layered(
             })
             .collect();
         for t in patch.triangles() {
-            push(&mut out, tex, t.map(|i| verts[i]));
+            push(&mut out, tex, blend, t.map(|i| verts[i]));
         }
     }
     out
 }
 
-/// Appends `more` into `into`, merging batches that share a texture.
+/// Appends `more` into `into`, merging batches that share a texture and blend mode.
 pub fn merge(into: &mut Vec<Batch>, more: Vec<Batch>) {
     for b in more {
-        match into.iter_mut().find(|x| x.texture == b.texture) {
+        match into.iter_mut().find(|x| x.texture == b.texture && x.blend == b.blend) {
             Some(x) => x.vertices.extend(b.vertices),
             None => into.push(b),
         }
