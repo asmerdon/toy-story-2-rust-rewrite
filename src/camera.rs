@@ -29,6 +29,8 @@ const REST_PITCH: i32 = 0x40;
 /// Auto-follow rate divisor while running (0x2A; 0x60 while skidding).
 const FOLLOW: i32 = 0x2A;
 const FOLLOW_SKID: i32 = 0x60;
+/// Radius kept clear around the camera (level units).
+const CLEARANCE: f32 = 24.0;
 
 #[derive(Debug, Clone)]
 pub struct Camera {
@@ -112,7 +114,7 @@ impl Camera {
         let head = Vec3::new(b[0] as f32, (b[1] - 0x1000) as f32, b[2] as f32) / 32.0;
         let offset = self.offset(self.distance);
         let to = Vec3::new(offset[0] as f32, offset[1] as f32, offset[2] as f32) / 32.0;
-        if let Some(h) = world.sweep(head, to, 16.0) {
+        if let Some(h) = world.sweep(head, to, CLEARANCE) {
             self.distance = ((self.distance as f32 * h.t) as i32).max(10);
         }
         // Where the camera wants to be, and the lag towards it.
@@ -121,6 +123,13 @@ impl Camera {
         let div = (LAG * 2 / 4).max(1);
         for k in 0..3 {
             self.pos[k] -= (self.pos[k] - target[k]) / div;
+        }
+        // Keep the camera on Buzz's side of any wall: the lag and the smoothed height can carry it
+        // through geometry the distance check above didn't see (the original's 0x48D530 pull-in).
+        let cam = self.position();
+        if let Some(h) = world.sweep(head, cam - head, CLEARANCE) {
+            let safe = head + (cam - head) * (h.t - 0.05).max(0.0);
+            self.pos = [safe.x, safe.y, safe.z].map(|v| (v * 32.0) as i32);
         }
         // Aim at Buzz's chest, lagging the same way.
         let (dx, dy, dz) = ((b[0] - self.pos[0]) as f64, ((b[1] - 0x1800) - self.pos[1]) as f64, (b[2] - self.pos[2]) as f64);

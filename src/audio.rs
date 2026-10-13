@@ -178,9 +178,10 @@ impl SoundBank {
 /// level units), heard with the listener's `right` and `forward` unit vectors (0x4A3810).
 /// Ears sit 0x400 either side; each fades out linearly over 0xC00.
 pub fn positional(vol: i32, rel: Vec3, right: Vec3, forward: Vec3) -> (i32, i32) {
-    // Object units through a 2.14 matrix, >> 17: level units × 4; forward is halved again.
-    let x = (rel.dot(right) * 4.0) as i32;
-    let z = (rel.dot(forward) * 2.0) as i32;
+    // Object units (× 32) through the camera's 4.12 matrix (GTE style, 4096 = 1), >> 17:
+    // level units; the forward axis is halved again.
+    let x = rel.dot(right) as i32;
+    let z = (rel.dot(forward) / 2.0) as i32;
     let ear = |dx: i32| {
         let d = ((dx as f64).powi(2) + (z as f64).powi(2)).sqrt() as i32;
         (((0xC00 - d) / 24) * vol / 128).clamp(0, 0x80)
@@ -197,8 +198,11 @@ mod tests {
         let (r, f) = (Vec3::X, Vec3::Z);
         let (l0, r0) = positional(0x50, Vec3::new(0.0, 0.0, 10.0), r, f);
         assert_eq!(l0, r0);
-        let (l1, r1) = positional(0x50, Vec3::new(200.0, 0.0, 0.0), r, f);
+        let (l1, r1) = positional(0x50, Vec3::new(800.0, 0.0, 0.0), r, f);
         assert!(r1 > l1, "{l1} {r1}");
-        assert_eq!(positional(0x50, Vec3::new(0.0, 0.0, 5000.0), r, f), (0, 0));
+        assert_eq!(positional(0x50, Vec3::new(0.0, 0.0, 9000.0), r, f), (0, 0));
+        // At the camera's usual 1200 units, Buzz is clearly audible on both sides.
+        let (l2, r2) = positional(0x50, Vec3::new(0.0, 0.0, 1200.0), r, f);
+        assert!(l2 > 40 && l2 == r2, "{l2} {r2}");
     }
 }

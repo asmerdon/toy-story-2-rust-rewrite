@@ -117,7 +117,12 @@ pub struct Hit {
     pub t: f32,
     /// Contact normal, pointing from the surface towards the sphere.
     pub normal: Vec3,
+    /// How far the sphere already overlapped the surface at the start (0 for a clean hit).
+    pub depth: f32,
 }
+
+/// Overlap with a face that still counts as touching it from the front.
+const PENETRATION: f32 = 8.0;
 
 pub struct World {
     tris: Vec<Tri>,
@@ -255,12 +260,14 @@ impl World {
             for n in if t.two_sided { [t.n, -t.n].to_vec() } else { vec![t.n] } {
                 let d0 = n.dot(p0 - t.a) - r;
                 let d1 = n.dot(p1 - t.a) - r;
-                // Faces only stop motion into their front side.
-                if d0 >= 0.0 && d1 < 0.0 {
-                    let s = d0 / (d0 - d1);
-                    let q = p0 + d * s - n * r;
+                // Faces only stop motion into their front side. A start slightly inside the
+                // face (up to PENETRATION) still counts, at t = 0, so rounding or a wall push
+                // can't let Buzz sink through a floor.
+                if d0 >= -PENETRATION && d1 < 0.0 && d1 <= d0 {
+                    let s = if d0 > 0.0 { d0 / (d0 - d1) } else { 0.0 };
+                    let q = p0 + d * s - n * (r + d0.min(0.0));
                     if inside(q, t.a, t.b, t.c, n) {
-                        keep(Some(Hit { t: s, normal: n }));
+                        keep(Some(Hit { t: s, normal: n, depth: (-d0).max(0.0) }));
                     }
                 }
                 // Edges and corners only near the plane, as the original limits them.
@@ -309,7 +316,7 @@ fn sweep_point(p0: Vec3, d: Vec3, v: Vec3, r: f32) -> Option<Hit> {
         return None;
     }
     let normal = (p0 + d * t - v).normalize_or_zero();
-    Some(Hit { t, normal })
+    Some(Hit { t, normal, depth: 0.0 })
 }
 
 /// Sphere centre moving p0 → p0+d against segment e0–e1 (a cylinder of radius r).
@@ -343,7 +350,7 @@ fn sweep_edge(p0: Vec3, d: Vec3, e0: Vec3, e1: Vec3, r: f32) -> Option<Hit> {
         return None;
     }
     let normal = (pc - (e0 + ed * s)).normalize_or_zero();
-    Some(Hit { t, normal })
+    Some(Hit { t, normal, depth: 0.0 })
 }
 
 /// A sound the game asked for this update, at Buzz's position (PlaySound 0x49E660, or the
@@ -1019,6 +1026,10 @@ impl Player {
             let s = (h.t - SKIN / len).max(0.0);
             c += d * s;
             let n = h.normal;
+            // Started inside the surface: back out of it first.
+            if h.depth > 0.0 {
+                c += n * (h.depth + SKIN);
+            }
             let rest = d * (1.0 - s);
             d = rest - n * rest.dot(n).min(0.0);
             v -= n * v.dot(n).min(0.0);
@@ -1036,7 +1047,7 @@ impl Player {
             if let Some(h) = world.sweep(c, down, BODY_RADIUS)
                 && h.normal.y < FLOOR_NY
             {
-                c += down * (h.t - SKIN / STICK_DOWN).max(0.0);
+                c += down * (h.t - SKIN / STICK_DOWN).max(0.0) + h.normal * h.depth;
                 floor = true;
             }
         }

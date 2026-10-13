@@ -198,7 +198,8 @@ impl Group {
             Prim::Quads => i.chunks_exact(4).flat_map(|q| [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]).collect(),
             // Codes 5 and 6 are flat sprite quads: index 0 is a pivot point (black, uv 0,0, shared
             // by every quad of the mesh, not part of the shape) and the other four are the
-            // corners in strip order. Drawing the pivot gave the spikes seen on rails and webs.
+            // corners in strip order, as offsets from the pivot (see `Mesh::position`).
+            // Drawing the pivot gave the spikes seen on rails and webs.
             Prim::Strip | Prim::Fan if i.len() == 5 => vec![[i[1], i[2], i[3]], [i[2], i[4], i[3]]],
             Prim::Strip => (2..i.len())
                 .map(|k| if k % 2 == 0 { [i[k - 2], i[k - 1], i[k]] } else { [i[k - 1], i[k - 2], i[k]] })
@@ -277,7 +278,24 @@ impl Material {
     }
 }
 
+impl Group {
+    /// The pivot vertex of a sprite quad (codes 5/6), if this group is one.
+    pub fn sprite_pivot(&self) -> Option<u16> {
+        (matches!(self.prim, Prim::Strip | Prim::Fan) && self.indices.len() == 5).then(|| self.indices[0])
+    }
+}
+
 impl Mesh {
+    /// Mesh-space position of vertex `i` as drawn in group `g`: sprite corners are offsets
+    /// from the sprite's pivot.
+    pub fn position(&self, g: &Group, i: u16) -> [f32; 3] {
+        let p = self.vertices[i as usize].pos;
+        match g.sprite_pivot().map(|k| self.vertices[k as usize].pos) {
+            Some(o) => [p[0] + o[0], p[1] + o[1], p[2] + o[2]],
+            None => p,
+        }
+    }
+
     pub fn group_blend(&self, g: &Group) -> Blend {
         self.materials.get(g.material as usize).map(Material::blend).unwrap_or_default()
     }

@@ -73,7 +73,7 @@ fn add_mesh(ngn: &Ngn, out: &mut Vec<Batch>, mesh: &Mesh, place: Place, m: Optio
         for t in g.triangles() {
             let tri = t.map(|i| {
                 let v = &mesh.vertices[i as usize];
-                gpu(v, place.apply(transform(m, v.pos)))
+                gpu(v, place.apply(transform(m, mesh.position(g, i))))
             });
             push(out, tex, blend, tri);
         }
