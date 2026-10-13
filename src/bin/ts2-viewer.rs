@@ -12,7 +12,8 @@
 //!   F                    play as Buzz (drops him below the camera) / back to free camera
 //!     in play mode: WASD run, Space jump, right-drag orbit camera,
 //!     animations follow the original move table; [ ] preview any animation, 0 back to the
-//!     move table, R turn model 90°
+//!     move table, R turn model 90°; coins, batteries, tokens and lives are collected as in
+//!     the original and counted in the window title
 //!   Tab                  next creature in this level
 //!   [ / ]                previous / next animation        , / .  slower / faster
 //!   C                    cycle vertex colour mode (white, bytes 1-3, bytes 3-1)
@@ -115,19 +116,51 @@ impl AudioOut {
         let Some((sample, vol, _)) = self.bank.sound(id) else { return };
         let (l, r) = ts2::audio::positional(vol, rel, right, forward);
         let (gl, gr) = self.bank.gains(l, r);
-        if gl.max(gr) < 1e-3 {
-            return;
-        }
-        let stereo: Vec<i16> = sample.data.iter().flat_map(|&s| [(s as f32 * gl) as i16, (s as f32 * gr) as i16]).collect();
-        let source = rodio::buffer::SamplesBuffer::new(2, sample.rate, stereo);
-        let Ok(sink) = rodio::Sink::try_new(&self.handle) else { return };
-        sink.append(source);
-        if voice {
-            self.voice = Some(sink);
-        } else {
-            sink.detach();
+        if let Some(sink) = self.emit(sample, gl, gr) {
+            if voice {
+                self.voice = Some(sink);
+            } else {
+                sink.detach();
+            }
         }
     }
+
+    /// A sound with no position (PlaySound with obj 0: 0x4A37E0), at its two table volumes.
+    fn play_flat(&mut self, id: u16) {
+        let Some((sample, l, r)) = self.bank.sound(id) else { return };
+        let (gl, gr) = self.bank.gains(l, r);
+        if let Some(s) = self.emit(sample, gl, gr) {
+            s.detach();
+        }
+    }
+
+    /// A sample slot played at a position (0x4A3810), as jingle steps do.
+    fn play_slot(&mut self, slot: u16, vol: i32, rel: Vec3, right: Vec3, forward: Vec3) {
+        let Some(sample) = self.bank.slot(slot) else { return };
+        let (l, r) = ts2::audio::positional(vol, rel, right, forward);
+        let (gl, gr) = self.bank.gains(l, r);
+        if let Some(s) = self.emit(sample, gl, gr) {
+            s.detach();
+        }
+    }
+
+    fn emit(&self, sample: &ts2::audio::Sample, gl: f32, gr: f32) -> Option<rodio::Sink> {
+        if gl.max(gr) < 1e-3 {
+            return None;
+        }
+        let stereo: Vec<i16> = sample.data.iter().flat_map(|&s| [(s as f32 * gl) as i16, (s as f32 * gr) as i16]).collect();
+        let sink = rodio::Sink::try_new(&self.handle).ok()?;
+        sink.append(rodio::buffer::SamplesBuffer::new(2, sample.rate, stereo));
+        Some(sink)
+    }
+}
+
+/// A jingle in progress (0x49E9D0): the next step plays when the timer drops below zero.
+struct Jingle {
+    steps: Vec<ts2::audio::JingleStep>,
+    next: usize,
+    timer: i32,
+    pos: Vec3,
 }
 
 struct GpuBatch {
@@ -214,6 +247,12 @@ struct Viewer {
     speed: f32,
     color_mode: u32,
     alpha_test: bool,
+    /// Coins, tokens, batteries and power-ups (level.dat list 63 + special objects).
+    pickups: Option<ts2::pickups::Pickups>,
+    /// Special id → (layer, instance) for the pickups drawn each frame.
+    pickup_instances: std::collections::HashMap<u8, (usize, usize)>,
+    jingles: Vec<Jingle>,
+    hud: String,
 }
 
 fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -548,6 +587,50 @@ impl Viewer {
                 }
                 None => self.cam.pos = target - fwd * 4.5,
             }
+            // Pickups and jingles, one 60 Hz tick at a time (0x440F70 / 0x4A0F80 / 0x49E9D0).
+            let cam_game = world_to_game(self.cam.pos);
+            let to_game = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
+            let f = self.cam.forward();
+            let (right_g, fwd_g) = (to_game(f.cross(Vec3::Y)).normalize_or_zero(), to_game(Vec3::new(f.x, 0.0, f.z)).normalize_or_zero());
+            let listener = Vec3::from(cam_game);
+            for _ in 0..ticks {
+                if let Some(pk) = self.pickups.as_mut() {
+                    for ev in pk.tick(player.pos.to_array(), cam_game) {
+                        match ev {
+                            ts2::pickups::Event::Collected { kind, pos, .. } => {
+                                println!("picked up {kind:?}: {}", pk.summary());
+                                // Every pickup plays jingle −1 (PICKUP5 with echoes) from where it was.
+                                if let Some(a) = self.audio.as_ref() {
+                                    let pos = Vec3::from(pos.map(|v| v as f32));
+                                    self.jingles.retain(|j| j.pos != pos);
+                                    self.jingles.push(Jingle { steps: a.bank.jingle(-1).to_vec(), next: 0, timer: 0, pos });
+                                }
+                                if kind == ts2::pickups::Kind::Token {
+                                    println!("you have collected a token! (the original offers \"keep on playing / exit level\" here)");
+                                }
+                            }
+                            ts2::pickups::Event::FiftyCoins => {
+                                if let Some(a) = self.audio.as_mut() {
+                                    a.play_flat(0x4F);
+                                }
+                            }
+                        }
+                    }
+                }
+                for j in &mut self.jingles {
+                    j.timer -= 1;
+                    if j.timer < 0
+                        && let Some(s) = j.steps.get(j.next)
+                    {
+                        if let Some(a) = self.audio.as_mut() {
+                            a.play_slot(s.slot, s.volume, j.pos - listener, right_g, fwd_g);
+                        }
+                        j.timer = s.delay;
+                        j.next += 1;
+                    }
+                }
+                self.jingles.retain(|j| j.next < j.steps.len());
+            }
         } else {
             let mut v = Vec3::ZERO;
             for (k, d) in [
@@ -598,6 +681,22 @@ impl Viewer {
             let anim = self.anims[ci].get(ai);
             let t = anim.map_or(0.0, |a| self.anim_time % (a.frame_count.max(2) - 1) as f32);
             scene::merge(&mut batches, scene::creature_batches(&self.ngn, c, pos, yaw, anim.map(|a| (a, t))));
+        }
+        if let Some(pk) = &self.pickups {
+            let to_game = |v: Vec3| [v.x, -v.y, -v.z];
+            let f = self.cam.forward();
+            let r = f.cross(Vec3::Y).normalize_or_zero();
+            let u = r.cross(f).normalize_or_zero();
+            scene::merge(&mut batches, pk.sprite_batches(&self.ngn, world_to_game(self.cam.pos), to_game(r), to_game(u)));
+            for (id, spin, scale) in pk.objects() {
+                if let Some(&(l, i)) = self.pickup_instances.get(&id) {
+                    scene::merge(&mut batches, scene::instance_batches(&self.ngn, l, i, spin, scale));
+                }
+            }
+            if pk.summary() != self.hud {
+                self.hud = pk.summary();
+                gfx.window.set_title(&format!("Toy Story 2 (Rust) - viewer   {}", self.hud));
+            }
         }
         if self.show_collision
             && let Some(c) = &self.collision_batch
@@ -670,7 +769,8 @@ impl Viewer {
                 // are hidden menu/HUD models. Unconfirmed for other levels, hence a toggle.
                 self.hide_zone0 = !self.hide_zone0;
                 let hide = self.hide_zone0;
-                let level = scene::level_batches_filtered(&self.ngn, |i| !hide || i.flags & 0xFFFF != 0);
+                let dynamic: std::collections::HashSet<(usize, usize)> = self.pickup_instances.values().copied().collect();
+                let level = scene::level_batches_where(&self.ngn, |l, n, i| (!hide || i.flags & 0xFFFF != 0) && !dynamic.contains(&(l, n)));
                 if let Some(g) = self.gfx.as_mut() {
                     g.level = upload(&g.device, &level, g.texture_bgs.len() - 1);
                 }
@@ -834,9 +934,36 @@ fn main() {
     println!("right-drag look, WASD move, N spawns, P place creature, Tab next creature, [ ] animation, C colour mode, T transparency");
 
     let n_creatures = ngn.creatures.len();
+    let level_path = std::path::Path::new(path);
+    let game_exe = level_path
+        .ancestors()
+        .nth(3)
+        .map(|game_dir| game_dir.join("toy2.exe"))
+        .and_then(|exe_path| fs::read(exe_path).ok())
+        .and_then(|b| exe::Exe::parse(b).ok());
+    // Pickups from the level's .dat file; their special objects are drawn per frame (they
+    // tumble and disappear), so the static level leaves them out.
+    let mut pickups = exe::level_number(level_path).and_then(|lv| {
+        let dat = fs::read(level_path.with_extension("dat")).ok()?;
+        match ts2::pickups::Pickups::new(lv, &dat, game_exe.as_ref()) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                println!("no pickups: {e}");
+                None
+            }
+        }
+    });
+    let pickup_instances: std::collections::HashMap<u8, (usize, usize)> = pickups
+        .as_ref()
+        .map(|p| p.object_ids())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|id| ngn.specials.iter().find(|s| s.id == id as u16).map(|s| (id, (s.layer, s.instance))))
+        .collect();
+    let dynamic: std::collections::HashSet<(usize, usize)> = pickup_instances.values().copied().collect();
     // Zone-0 instances are camera-attached models (first-person helmet view), not level
     // geometry: hidden by default and never collided with.
-    let level = scene::level_batches_filtered(&ngn, |i| i.flags & 0xFFFF != 0);
+    let level = scene::level_batches_where(&ngn, |l, n, i| i.flags & 0xFFFF != 0 && !dynamic.contains(&(l, n)));
     // Collision: the original's TERRAIN.ALL / TERR1.ALL next to the level, else the render mesh.
     let terrain = ts2::formats::terrain::path_for(std::path::Path::new(path))
         .and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)))
@@ -877,14 +1004,12 @@ fn main() {
     });
     let player_creature = ngn.creatures.iter().position(|c| c.id == 0);
 
+    if let Some(p) = pickups.as_mut() {
+        p.probe_floors(&world);
+        let coins = p.items.iter().filter(|i| i.is_sprite()).count();
+        println!("{} pickups ({coins} coins); the window title shows {}", p.items.len(), p.summary());
+    }
     // Player start: table in the user's toy2.exe (game dir = two levels above levelNN\).
-    let level_path = std::path::Path::new(path);
-    let game_exe = level_path
-        .ancestors()
-        .nth(3)
-        .map(|game_dir| game_dir.join("toy2.exe"))
-        .and_then(|exe_path| fs::read(exe_path).ok())
-        .and_then(|b| exe::Exe::parse(b).ok());
     let start = game_exe.as_ref().zip(exe::level_number(level_path)).and_then(|(e, level)| e.player_start(level).ok());
     let buzz = game_exe.as_ref().and_then(|e| e.buzz_moves().ok()).map(buzz::BuzzAnimator::new);
     // Sound effects from data\sfx, as the level loads them (0x47EC20).
@@ -949,6 +1074,10 @@ fn main() {
         speed: 1.0,
         color_mode: 1,
         alpha_test: true,
+        pickups,
+        pickup_instances,
+        jingles: Vec::new(),
+        hud: String::new(),
     };
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut viewer).expect("run");

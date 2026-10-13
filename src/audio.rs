@@ -29,6 +29,47 @@ pub struct SoundBank {
     exe_defs: Vec<[i16; 8]>,
     remap: Vec<(i16, i16)>,
     db_table: Vec<i16>,
+    /// Jingles for sound ids −1, −2, … (index 0 = −1).
+    jingles: Vec<Vec<JingleStep>>,
+}
+
+/// One note of a jingle: PlaySound with a negative id (0x49E660) starts a short sequence that
+/// 0x49E9D0 steps each tick, playing sample slots at the jingle's position (0x4A3810).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JingleStep {
+    pub slot: u16,
+    /// 0..0x80, as for positional sounds.
+    pub volume: i32,
+    /// Ticks until the next step.
+    pub delay: i32,
+}
+
+/// Jingle table: pointer for id −k at 0x503828 + 4(k − 1). Each sequence starts with three
+/// i16 pad-rumble values, then steps of i16 {slot, PS1 pitch (unused on PC), volume, delay};
+/// slot −1 ends it and −2 n jumps back n words (a loop, cut short here).
+const JINGLES: u32 = 0x503828;
+
+fn jingles(exe: &Exe) -> Vec<Vec<JingleStep>> {
+    let mut out = Vec::new();
+    for k in 0..64u32 {
+        let Ok(p) = u32_at(exe, JINGLES + 4 * k) else { break };
+        if !(0x4D0000..0x510000).contains(&p) {
+            break;
+        }
+        let mut steps = Vec::new();
+        let mut va = p + 6;
+        while steps.len() < 64 {
+            let Ok(b) = exe.at(va, 8) else { break };
+            let w = |i: usize| i16::from_le_bytes([b[2 * i], b[2 * i + 1]]);
+            if w(0) < 0 {
+                break;
+            }
+            steps.push(JingleStep { slot: w(0) as u16, volume: w(2) as i32, delay: w(3) as i32 });
+            va += 8;
+        }
+        out.push(steps);
+    }
+    out
 }
 
 const DEFS: u32 = 0x502950;
@@ -139,11 +180,21 @@ impl SoundBank {
         let remap_bytes = exe.at(REMAP, (DEFS - REMAP) as usize)?;
         let remap = remap_bytes.chunks_exact(4).map(|c| (i16::from_le_bytes([c[0], c[1]]), i16::from_le_bytes([c[2], c[3]]))).collect();
         let db_table = exe.at(DB_TABLE, 129 * 2)?.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
-        Ok(SoundBank { level, slots, exe_defs, remap, db_table })
+        Ok(SoundBank { level, slots, exe_defs, remap, db_table, jingles: jingles(exe) })
     }
 
     pub fn sample_count(&self) -> usize {
         self.slots.len()
+    }
+
+    /// The sample loaded into `slot`.
+    pub fn slot(&self, slot: u16) -> Option<&Sample> {
+        self.slots.get(&slot)
+    }
+
+    /// The steps of jingle `id` (a negative sound id).
+    pub fn jingle(&self, id: i32) -> &[JingleStep] {
+        usize::try_from(-1 - id).ok().and_then(|k| self.jingles.get(k)).map_or(&[], |v| v.as_slice())
     }
 
     /// The sample and its (left, right) volumes for sound `id`, as 0x49E660 resolves them.

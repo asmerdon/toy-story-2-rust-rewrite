@@ -13,9 +13,10 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
   C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC\support\analyzeHeadless.bat re\proj TS2 -process toy2.exe -noanalysis -scriptPath tools\ghidra -postScript DumpAround.java re\out
   ```
 - Disassembly helper (scratch, not in the repo): a Python venv with `capstone` + `pefile` was used to read code the decompiler hides (`__ftol` float maths, call arguments) and exe data tables. Recreate it in a scratch folder if needed.
-- Tests: `set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`, then `cargo test --release` (12 test binaries, all passing).
+- Tests: `set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`, then `cargo test --release` (13 test binaries, all passing). `cargo clippy --all-targets` fails only on an old `6.283` in `examples/wander.rs`.
 - Viewer: `cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"`
-- Diagnostics (`cargo run --release --example <name> -- <args>`): `rotfit` (instance rotation vs collision), `spikes` (long thin triangles per primitive type), `wander` (random-walk fall-through stress test from every spawn).
+- Diagnostics (`cargo run --release --example <name> -- <args>`): `rotfit` (instance rotation vs collision), `spikes` (long thin triangles per primitive type), `wander` (random-walk fall-through stress test from every spawn), `pickups <levelNN dir>` (list 63, sprite table, special objects with their level.dat records; set TS2_GAME_DIR for the exe parts).
+- Disassembly: `re/out` hides call arguments and jump tables; a scratch Python venv with `capstone` + `pefile` (disassemble a range, hex-dump exe data, scan for references to an address) fills the gap.
 
 ## Rules
 - No game data, exe bytes or decompiled code in the repo. Everything is read from the user's install at runtime (exe tables via `src/formats/exe.rs`).
@@ -32,7 +33,8 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 | `src/buzz.rs` | Move-table animation player (0x401000 stepper), state numbers |
 | `src/camera.rs` | Original follow camera (0x4045E0 main path) |
 | `src/audio.rs` | Sound ids → samples per level, positional volume/pan (0x49E660 / 0x4A3810 / 0x47DE50) |
-| `src/scene.rs` | Level/creature batches; instance rotation + scale; overlay root offset |
+| `src/scene.rs` | Level/creature batches; instance rotation + scale; overlay root offset; sprites |
+| `src/pickups.rs` | Coins, batteries, tokens, lives, power-ups: setup 0x447DB0, draw/spin 0x440F70, collect 0x4A0F80, token setup 0x4A0C80/0x4A0DB0 (level 1 only) |
 | `src/formats/` | `ngn` (incl. 0x105 specials, sprite quads), `terrain` (TERRAIN.ALL), `leveldat` (level.dat lists, poles), `packets` (.raw), `anim`, `exe` (exe tables), `all` |
 | `src/bin/ts2-viewer.rs` | Viewer and play mode |
 
@@ -40,18 +42,25 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 - **Play mode (F)**, level 1 tested by the user: movement, jumps, double jump with wings, stomp (E), skid, long fall, teeter, fidgets and idle voice lines, climbing poles/ropes (W/S/A/D, Space), original camera (V toggles the old free one), sound effects, collision from the original data (K shows it). The user says the feel matches the original.
 - **Rendering**: instances rotated and scaled; sprite quads (codes 5/6: pivot + 4 corner offsets) for rails, spindles, cobwebs.
 
-## Fixed in the last run, not yet confirmed by the user
+## Not yet confirmed by the user
+From the run before last:
 - Sprite corners are offsets from their pivot (bed rails and banister spindles were floating/hanging).
 - Positional audio scale (the camera matrix is 4.12): sounds panned and faded wildly before.
 - Collision: faces catch starts up to 8 units inside (fall-through). The stress test never reproduced a fall-through, so if the user still falls through, **ask where** (a position or screenshot).
 - Camera: a final line-of-sight check keeps it in front of walls in tight spaces.
+
+From the last run (pickups, see `docs/re/functions.md` → Pickups):
+- 70 spinning coin sprites with shadows, 6 batteries, 3 extra lives, power-ups and tokens, collected with the original's radius and the PICKUP5 jingle; counts in the window title and console.
+- Level 1 starts with only token id 60 collectable (as the original: the others come from challenges, which aren't ported). The 50th coin plays 50COINS.
+- Things to ask about: coin size (200 units across, from the sprite routine's ±size corners), sprite orientation (texture upright?), shadow look, spin speed.
+- Not ported: the token menu ("keep on playing / exit level"), hover boots behaviour, cutscene triggers (6-poly objects stay and spin), damage (health only goes up), token sparkles/grow animation, starting lives (3 is a guess).
 
 ## Next steps (in priority order)
 1. **Level 1 polish** (the user wants level 1 right first, to learn the process for the rest):
    - Any remaining visual issues the user reports (ask for screenshots).
    - A sheep spawn (17670, 3125, −18803) floats 250 units above any floor: creatures probably fall or stand on objects in the original; check the sheep's code when doing creatures.
    - Glass pots render translucent (material mode 2); probably correct, confirm with the user.
-2. **Pickups and level objects**: tokens, coins, power-ups (hover boots 0x4A4BB0, timer 0x882920, Buzz state 0x1F). Level objects are updated by 0x410F40 (53-case switch on object byte +0x2F); challenge rewards use `level.dat` list 58 (0x49FAB0). This makes level 1 playable as a game.
+2. **Pickups follow-ups**: hover boots (0x4A4BB0, timer 0x882920, Buzz state 0x1F, sound 0x50), the token sequence (0x4A0F80 tail, states in `0x830CC4`; menu in 0x49FD40), token setup for other levels (their 0x4A1A50 targets call 0x4A0C80 with a list address and reward start), a HUD (sprites 0x493F40 draw the counters; digits are sprite 0x1A+).
 3. **Enemies**: behaviour per creature type (spawn records have 19 undecoded parameter bytes). Start with the level 1 cast (ZURG1/ZURG3 robots, sheep, Bo Peep, Hamm, Rex, Mr Potato Head, RC, Tin Man, COTBIT).
 4. **Doors and moving platforms (level scripts)**: type-8 movers and their instances sit in their start state. Per-level scripts drive them (level 1: 0x417680, via the per-level switch 0x4A0F80). Known pieces:
    - Current room `0x54DEA0` = low byte of the collision flags under Buzz (0x4402B0 via 0x4885C0); room adjacency from `level.dat` lists ≥ 0x41 (0x43E6E0).

@@ -556,10 +556,9 @@ fn parse_creatures(b: &[u8], r: Range<usize>) -> Result<Vec<Creature>> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Instance {
     pub pos: [f32; 3],
-    /// Raw words that look like angles (0x4000, 0x8000, 0xC010, ...). Already baked into the
-    /// mesh vertices, so not needed to place geometry; possibly used for collision or culling.
+    /// Angles about X, Y, Z, 16-bit (0x4000 = 90°); see `scene::instance_matrix`.
     pub rot: [u32; 3],
-    /// Also already baked into the vertices.
+    /// Applied before the rotation.
     pub scale: [f32; 3],
     /// Index into the mesh set this instance set belongs to.
     pub mesh: u32,

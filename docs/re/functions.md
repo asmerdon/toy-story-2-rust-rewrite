@@ -20,11 +20,11 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x436220 | `UpdateCreatures` ~ | Dispatches to the 0x434xxx/0x435xxx per-enemy helpers; sets animation slots |
 | 0x405860 | `UpdatePlayer` ~ | Calls 0x4038E0 and 0x4045E0 (pad-driven movement) |
 | 0x4CE050 | ? | engine-side |
-| 0x4A0F80 | ? | 13-case switch |
-| 0x4011D0 | ? | |
-| 0x4A2D80 | ? | uses the player pointer heavily |
-| 0x49FB40 | `ChallengeRewards` ~ | Uses the type-58 positions from level.dat |
-| 0x410F40 | `UpdateLevelObjects` ~ | 53-case switch on object byte +0x2F (pickups, grapple points: "GRAPHOOK") |
+| 0x4A0F80 | `UpdatePickups` ✔ | See Pickups below |
+| 0x4011D0 | `UpdateBuzzAnimState` ✔ | |
+| 0x4A2D80 | `BuzzFootEffects` ✔ | |
+| 0x49FB40 | `RewardSparkles` ✔ | Spawns sparkle particles 0x71/0x73 at `level.dat` list 58 points within 600 (>> 8) of the camera, four points per frame. List 58 is split by a (0,0,0) point: group 0 (count `0x830E28`) for pushable-box spots (0x433700), group 1 for challenge rewards; 0x49FAB0 kills a point's sparkle |
+| 0x410F40 | `UpdateParticles` ✔ | 64 particles × 0x3C bytes at 0x529E58 (earlier mislabelled as level objects; "GRAPHOOK" is the sine table aliasing a string). 53-case switch on the particle's update kind (+0x2F) |
 | 0x49FD40 | `TokenMessages` ~ | "you have collected a token" |
 | 0x4A3EF0 | `FlushSoundVoices` ✔ | debug string |
 
@@ -94,6 +94,20 @@ Ported in `src/game.rs` (`Player::tick`, 60 Hz, integer units) and `src/buzz.rs`
 
 Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+10 (InitLevelPlay subtracts 10 and switches to the `level1` files).
 
+## Pickups (ported in `src/pickups.rs`)
+| Address | Name | Notes |
+|---|---|---|
+| 0x447DB0 | `SetupPickups` ✔ | Copies `level.dat` list 63 (16 bytes: i32 x, y, z, then id byte, radius byte, i16 floor) to 0x5546B8 with radius 0x11 and the floor height (0x486310 from y − 10; none if > 0x1800 below), then appends every special object from the first id (0x30; 0x60 in levels 4/10/11/14, 0x50 in 5, 400 in 16) with radius = object size >> 3 |
+| 0x44E520 | `PickupKind(id)` ✔ | By the PS1 model's polygon count (0x43E430): 6 cutscene, 0x12 life, 0x13 timer `0x53C824`, 0x14 hover boots, 0x1E ammo B, 0x1F/0x32/0x50 challenge item, 0x20 battery, 0x24/0x48 token, 0x27 0x4A4D60, 0x3C shield (0x4A50D0: 900 ticks in `0x52F398`), 100 ammo A; else −1 |
+| 0x440F70 | `DrawLevel` ✔ (pickup part) | Ids < 0x30: billboard sprites (table 0x557500 ← 0x4EC0A4, coin = 16: texture 31, 31-px cells, 10 frames, two frames apart per entry), half-size 100, alpha fades near the draw distance `0x54BEF0` = 0x680 (horizontal, >> 4); shadow: flat, texture 31 cell (96..127), half-size 80, 10 above the floor, 0x88000000. Special objects tumble by (10, ((i>>2&3)·3+7)·2, ((i&7)+4)·2) per tick (12-bit). Sets +0xD bit 0x80 on everything in range |
+| 0x4A0F80 | `UpdatePickups` ✔ | Collects marked entries: ((Buzz − (0, 230, 0) − p) >> 3)² < (radius + 14)². Coins +1 (99 max; 50 → sound 0x4F), battery +4 health (14 max, `0x52F396`), life +1 (9 max, `0x52F39A`), token → bit in `0x52F0D7[level]` and the token sequence `0x830CC4`; ammo/hover boots come back after 400 ticks. Plays jingle −1 at the pickup (PICKUP5 six times, fading) |
+| 0x4A0C80 | `SetupTokens(ids, rewardStart)` ✔ | The level's five token ids (level 1: i16 list at 0x4F0EDC) go in table 0x830CCC (16 bytes: id, state, entry, timer); all five and the reward ids rewardStart.. are hidden (scale 0) and removed |
+| 0x4A0DB0 | `RevealToken(k, instant)` ✔ | State 1, entry back in the list; not instant: 0x84-tick grow and a camera cut. Level 1's setup (0x4171D0) reveals token 3 at once; challenges reveal the rest |
+| 0x4A2080 | `ProgressGates` ✔ | Per-level items tied to unlocked moves (`0x52F2D8` bits): tables 0x503A44/54/A4/B8/C8 of {level, hide id, pickup id, mover}; locked: pickup shown with radius 0 |
+| 0x4A1A50 / 0x4A1B00 | per-level setup / script switches ✔ | Jump tables: level 1 setup 0x4171D0, script 0x417680 |
+| 0x49E9D0 | `StepJingles` ✔ | PlaySound with a negative id starts a jingle (table 0x503828 + 4(−id − 1)): 3 i16 rumble, then {slot, PS1 pitch, volume, delay} steps, −1 ends, −2 n loops |
+| 0x49FD40 | `DrawHud` ~ | Counters; token sequence state 9 shows "you have collected a token! keep on playing / exit level" |
+
 ## Cutscene scripts
 | Address | Name | Notes |
 |---|---|---|
@@ -132,7 +146,8 @@ Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when dra
 | 0x4CB320 / 0x4CB4E0 / 0x4CB970 / 0x4CC970 | mesh tag readers ✔ | objload.c |
 | 0x452310 | `LoadPackets` ✔ | "Loading packet data %s"; type 35 creature list, 36 map |
 | 0x47B170 | `Unpack` ✔ | LZ decompressor (docs/formats/packets.md) |
-| 0x43E6E0 | `ParseLevelDat` ~ | level.dat sections 1–3 |
+| 0x43E6E0 | `ParseLevelDat` ✔ | level.dat: section 1 point lists; section 2 (u32 n, n × 128-byte cells); section 3 object records (20 bytes: i32 x, y, z, i16 size, u8 flags, u8, u32 model offset) until flags = 0; then the special-object table 0x54F628 (i32 count, count + 1 record offsets; −1 = none), then a second record list. Parsed by `leveldat::special_objects`; 88% of special objects sit exactly at their `.ngn` instance |
+| 0x43E430 / 0x43E2D0 | `ModelPolyCount` ✔ | Polygon count of a PS1 model (two encodings by flags & 0x6F) |
 | 0x489C30 | `InitCollision` ✔ | Loads `levelNN	errain|terr1|terr2|terr3.all` (mode bits), bounds per object, 5×5 grid. docs/formats/terrain.md |
 | 0x489980 | `LoadTerrain` ✔ | Directory of 76-byte object records → object table 0x7295A8 (300 × 0x34); instances share template data |
 | 0x485940 | `GatherCollision` ✔ | Polygons within ±0x500 of a point into one of 8 caches |

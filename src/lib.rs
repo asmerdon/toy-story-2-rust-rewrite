@@ -10,4 +10,5 @@ pub mod camera;
 pub mod export;
 pub mod formats;
 pub mod game;
+pub mod pickups;
 pub mod scene;

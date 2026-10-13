@@ -87,9 +87,14 @@ pub fn level_batches(ngn: &Ngn) -> Vec<Batch> {
 
 /// Level geometry for the instances `keep` accepts.
 pub fn level_batches_filtered(ngn: &Ngn, keep: impl Fn(&crate::formats::ngn::Instance) -> bool) -> Vec<Batch> {
+    level_batches_where(ngn, |_, _, i| keep(i))
+}
+
+/// Level geometry for the instances `keep(layer, index, instance)` accepts.
+pub fn level_batches_where(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::formats::ngn::Instance) -> bool) -> Vec<Batch> {
     let mut out = Vec::new();
-    for layer in &ngn.layers {
-        for inst in layer.instances.iter().filter(|i| keep(i)) {
+    for (li, layer) in ngn.layers.iter().enumerate() {
+        for (_, inst) in layer.instances.iter().enumerate().filter(|(ii, i)| keep(li, *ii, i)) {
             if let Some(mesh) = layer.meshes.get(inst.mesh as usize) {
                 let m = instance_matrix(inst);
                 add_mesh(ngn, &mut out, mesh, Place::new(inst.pos, 0.0), Some(&m));
@@ -97,6 +102,36 @@ pub fn level_batches_filtered(ngn: &Ngn, keep: impl Fn(&crate::formats::ngn::Ins
         }
     }
     out
+}
+
+/// One level instance, turned further by `spin` (12-bit angles added to its own, as the
+/// game's 0x4CCCE0 sets them) and scaled by `scale` on top of its own scale (0x4CCB20).
+pub fn instance_batches(ngn: &Ngn, layer: usize, index: usize, spin: [i32; 3], scale: f32) -> Vec<Batch> {
+    let mut out = Vec::new();
+    let Some(inst) = ngn.layers.get(layer).and_then(|l| l.instances.get(index)) else { return out };
+    let Some(mesh) = ngn.layers[layer].meshes.get(inst.mesh as usize) else { return out };
+    let mut turned = *inst;
+    turned.rot = std::array::from_fn(|k| inst.rot[k].wrapping_add((spin[k] as u32) << 4));
+    turned.scale = inst.scale.map(|s| s * scale);
+    let m = instance_matrix(&turned);
+    add_mesh(ngn, &mut out, mesh, Place::new(inst.pos, 0.0), Some(&m));
+    out
+}
+
+/// A sprite centred on `pos`, `half` units from centre to edge along `right` and `up`
+/// (the camera's axes for a billboard, X and Z for one lying flat). `uv` is (top-left,
+/// bottom-right). Drawn alpha-blended.
+#[allow(clippy::too_many_arguments)]
+pub fn sprite(out: &mut Vec<Batch>, texture: Option<usize>, pos: [f32; 3], half: f32, right: [f32; 3], up: [f32; 3], uv: [[f32; 2]; 2], color: [u8; 4]) {
+    let corner = |sx: f32, sy: f32, u: f32, v: f32| GpuVertex {
+        pos: [0, 1, 2].map(|k| pos[k] + (right[k] * sx + up[k] * sy) * half),
+        uv: [u, v],
+        color,
+    };
+    let [[u0, v0], [u1, v1]] = uv;
+    let (a, b, c, d) = (corner(-1.0, 1.0, u0, v0), corner(1.0, 1.0, u1, v0), corner(1.0, -1.0, u1, v1), corner(-1.0, -1.0, u0, v1));
+    push(out, texture, Blend::Alpha, [a, b, c]);
+    push(out, texture, Blend::Alpha, [a, c, d]);
 }
 
 /// An instance's rotation and scale as a row-vector matrix (no translation): scale, then
