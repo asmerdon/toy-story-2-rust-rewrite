@@ -201,6 +201,7 @@ struct Viewer {
     jump_pressed: bool,
     collision_batch: Option<scene::Batch>,
     random_table: Option<Vec<u8>>,
+    poles: Vec<ts2::formats::leveldat::Pole>,
     show_collision: bool,
     stomp_pressed: bool,
     /// Animation browsed with [ ] in play mode, shown on Buzz until 0 is pressed.
@@ -511,6 +512,10 @@ impl Viewer {
                 jump: std::mem::take(&mut self.jump_pressed),
                 jump_held: self.keys.contains(&KeyCode::Space),
                 stomp: std::mem::take(&mut self.stomp_pressed),
+                dpad: [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
+                    .iter()
+                    .filter(|(k, _)| self.keys.contains(k))
+                    .fold(0, |acc, (_, b)| acc | b),
             };
             player.update(&self.world, input, dt);
             // Sounds come from Buzz; the listener is the camera.
@@ -614,6 +619,7 @@ impl Viewer {
         if let Some(r) = &self.random_table {
             player.set_random_table(r.clone());
         }
+        player.set_poles(self.poles.clone());
         self.player = Some(player);
         self.creature_idx = ci;
         self.anim_preview = None;
@@ -831,6 +837,13 @@ fn main() {
     };
     // The game's random bytes (data/rand.dat, next to the levelNN folders): idle fidgets.
     let random_table = std::path::Path::new(path).parent().and_then(|d| d.parent()).and_then(|d| std::fs::read(d.join("rand.dat")).ok());
+    // Poles and ropes from the level's .dat file (list 61).
+    let poles = std::fs::read(std::path::Path::new(path).with_extension("dat"))
+        .ok()
+        .and_then(|b| ts2::formats::leveldat::parse(&b).ok())
+        .map(|l| ts2::formats::leveldat::poles(&l))
+        .unwrap_or_default();
+    println!("{} poles/ropes to climb", poles.len());
     // Collision overlay (K): the terrain triangles, nudged up so they don't z-fight the floor.
     let collision_batch = terrain.as_ref().map(|t| scene::Batch {
         vertices: t
@@ -891,6 +904,7 @@ fn main() {
         jump_pressed: false,
         collision_batch,
         random_table,
+        poles,
         show_collision: false,
         stomp_pressed: false,
         ngn,

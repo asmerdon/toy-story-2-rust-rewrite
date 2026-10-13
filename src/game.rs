@@ -10,6 +10,7 @@
 //! frame-list step (0x401000). See `docs/re/functions.md`.
 
 use crate::buzz::{state, BuzzAnimator};
+use crate::formats::leveldat::Pole;
 use crate::scene::Batch;
 use glam::Vec3;
 use std::collections::HashMap;
@@ -363,6 +364,17 @@ pub struct Input {
     pub jump_held: bool,
     /// Stomp pressed since the last update (Circle, pad bit 0x2000).
     pub stomp: bool,
+    /// The d-pad itself (pad bits 0x10 up, 0x20 right, 0x40 down, 0x80 left); climbing reads it
+    /// directly rather than as a camera-relative direction.
+    pub dpad: u8,
+}
+
+/// D-pad bits as `Input::dpad` holds them (the PS1 pad layout).
+pub mod pad {
+    pub const UP: u8 = 0x10;
+    pub const RIGHT: u8 = 0x20;
+    pub const DOWN: u8 = 0x40;
+    pub const LEFT: u8 = 0x80;
 }
 
 /// Jump phase, as the original keeps it at player +0x8C.
@@ -431,6 +443,14 @@ pub struct Player {
     /// Ticks until Buzz may say an idle line again (0x50A0BC) and the last line (0x50A0B0).
     voice_timer: i32,
     last_voice: u16,
+    /// Poles and ropes of the level (`level.dat` list 61).
+    poles: Vec<Pole>,
+    /// Climb state 0x53C668: 0 free, < 0 just let go, > 0 on pole `pole` (8 = just grabbed;
+    /// bit 2 climbing up, bit 4 sliding down).
+    pub climb: i32,
+    pole: usize,
+    /// Ticks before a jump can take Buzz off a pole he just grabbed (0x53C658).
+    grab_lock: i32,
 }
 
 /// Idle voice lines alternate between these two sound ids, at most every 0x708 ticks (30 s).
@@ -473,7 +493,16 @@ impl Player {
             sounds: Vec::new(),
             voice_timer: 0,
             last_voice: 0,
+            poles: Vec::new(),
+            climb: 0,
+            pole: 0,
+            grab_lock: 0,
         }
+    }
+
+    /// Gives the player the level's poles and ropes (`leveldat::poles`).
+    pub fn set_poles(&mut self, poles: Vec<Pole>) {
+        self.poles = poles;
     }
 
     /// Gives the player the game's random table (`data\rand.dat`); without it Buzz never fidgets.
@@ -564,15 +593,21 @@ impl Player {
         while self.accum >= 1.0 {
             self.accum -= 1.0;
             let held = input.jump_held || self.jump_latch;
+            let pressed = self.jump_latch;
             let stomp = self.stomp_latch;
             self.jump_latch = false;
             self.stomp_latch = false;
-            self.tick(world, input.move_xz, held, stomp);
+            self.tick_pad(world, input.move_xz, input.dpad, held, pressed, stomp);
         }
     }
 
-    /// One game tick.
+    /// One game tick (no d-pad, jump press = held).
     pub fn tick(&mut self, world: &World, stick: [f32; 2], jump_held: bool, stomp_pressed: bool) {
+        self.tick_pad(world, stick, 0, jump_held, jump_held, stomp_pressed);
+    }
+
+    /// One game tick with the raw d-pad and a jump press edge, as climbing needs them.
+    pub fn tick_pad(&mut self, world: &World, stick: [f32; 2], dpad: u8, jump_held: bool, jump_pressed: bool, stomp_pressed: bool) {
         let magnitude = stick[0].hypot(stick[1]).min(1.0);
         let pushing = magnitude > 0.0;
         // Movement profile.
@@ -589,7 +624,18 @@ impl Player {
             }
         }
 
-        match self.stomp_tick(stomp_pressed) {
+        self.grab_lock = (self.grab_lock - 1).max(0);
+        let stomp = self.stomp_tick(stomp_pressed);
+        let climb = self.climb_tick(dpad, stick, jump_pressed);
+        match if climb != 0 { 0 } else { stomp } {
+            // On a pole: no gravity or ground movement this tick.
+            _ if climb == 2 => {}
+            // Just let go: steer and accelerate, no airborne step this tick.
+            _ if climb == 1 => {
+                let max = MAX_SPEED;
+                self.turn(None);
+                self.accelerate(side_decel, friction, max, false);
+            }
             0 => {
                 if self.fall_timer < 0 {
                     self.fall_timer = (self.fall_timer + 1).min(0);
@@ -651,6 +697,134 @@ impl Player {
             self.set_facing(facing);
             self.anim = anim;
         }
+    }
+
+    /// 0x4354E0: grab, climb, slide down and leave poles. Returns 0 when not on a pole, 1 on
+    /// the tick Buzz lets go, 2 while climbing.
+    fn climb_tick(&mut self, dpad: u8, stick: [f32; 2], jump_pressed: bool) -> i32 {
+        if self.poles.is_empty() || self.stomp != 0 || self.fall_timer < 0 || self.fall_timer == FALL_PANIC {
+            return 0;
+        }
+        let was_sliding = self.climb > 0 && self.climb & 4 != 0;
+        let (x, y, z) = ((self.pos.x * 32.0) as i32, self.y_obj(), (self.pos.z * 32.0) as i32);
+        let mut at = 0; // 2 = at the top
+        if self.climb == 0 {
+            let near = self.poles.iter().position(|p| {
+                let (dx, dz) = ((x - p.pos[0]) >> 8, (z - p.pos[2]) >> 8);
+                let dy = p.pos[1] - y;
+                p.kind != 3 && dx * dx + dz * dz <= 0x1FF && dy >= -0x1E00 && dy <= p.length - 0x3600
+            });
+            let Some(i) = near else { return 0 };
+            self.pole = i;
+            self.climb = 8;
+            self.grab_lock = 10;
+            self.vel[1] = 0;
+        } else if self.climb < 0 {
+            // Let go: free again once he's moved away from the pole.
+            let p = self.poles[self.pole];
+            let (dx, dz) = ((x - p.pos[0]) >> 5, (z - p.pos[2]) >> 5);
+            if dx * dx + dz * dz > 0x8400 {
+                self.climb = 0;
+            }
+            return 0;
+        } else {
+            let p = self.poles[self.pole];
+            let dy = p.pos[1] - y;
+            if dy < -0x1E00 {
+                // Slid off the bottom: fall, no double jump.
+                self.climb = -1;
+                self.jump = JumpPhase::Double;
+                self.state = state::FALL;
+                self.jump_start = None;
+                return 1;
+            }
+            if dy >= p.length - 0x3600 {
+                self.vel[1] = 0;
+                at = 2;
+                self.pos.y = (p.pos[1] - p.length + 0x3600) as f32 / 32.0;
+            }
+        }
+        let p = self.poles[self.pole];
+        // Hug the pole.
+        self.pos.x -= (self.pos.x - p.pos[0] as f32 / 32.0) / 4.0;
+        self.pos.z -= (self.pos.z - p.pos[2] as f32 / 32.0) / 4.0;
+        self.vel[0] = 0;
+        self.vel[2] = 0;
+        if p.kind == 2 {
+            // Slide pole: down only.
+            self.climb = 1;
+            if self.coyote != 0 {
+                self.climb = -1;
+                return 1;
+            }
+            self.vel[1] = (self.vel[1] + 0x10).min(0x800);
+            self.climb |= 4;
+        } else if self.climb != 8 || dpad & pad::DOWN == 0 {
+            self.climb = 1;
+            if dpad & pad::UP == 0 {
+                if dpad & pad::DOWN == 0 {
+                    if self.vel[1] > 0 {
+                        self.vel[1] -= 0x40;
+                    }
+                    self.vel[1] = self.vel[1].max(0);
+                } else {
+                    if self.coyote != 0 {
+                        self.climb = -1;
+                        return 1;
+                    }
+                    // Slide down, spinning round the pole.
+                    self.vel[1] = (self.vel[1] + 0x20).min(0x400);
+                    self.facing += self.vel[1] / 16;
+                    self.climb |= 4;
+                }
+            } else {
+                self.on_floor = false;
+                self.coyote = 0;
+                if at != 2 {
+                    self.vel[1] = -0x100;
+                    self.climb |= 2;
+                }
+            }
+        }
+        if dpad & pad::LEFT != 0 {
+            self.facing -= 0x20;
+        }
+        if dpad & pad::RIGHT != 0 {
+            self.facing += 0x20;
+        }
+        if self.climb > 0 && self.climb & 4 != 0 && !was_sliding {
+            // 0x4011D0 requests this every sliding tick; once per slide is enough here.
+            self.sound(0x23);
+        }
+        self.facing &= 0xFFF;
+        self.target = self.facing;
+        let top_exit = at == 2 && p.kind == 1;
+        if !(jump_pressed || top_exit) {
+            return 2;
+        }
+        if !top_exit {
+            if self.grab_lock != 0 {
+                return 2;
+            }
+            // Jump off, pushed along the stick (or the facing).
+            self.vel[1] = -0x400;
+            if stick[0] != 0.0 || stick[1] != 0.0 {
+                self.facing = ((stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32) & 0xFFF;
+                self.target = self.facing;
+            }
+            self.vel[0] = (sin12(self.facing) * 4) / 2;
+            self.vel[2] = (cos12(self.facing) * 4) / 2;
+            self.jump = JumpPhase::Holding;
+        } else {
+            // Over the top: a full jump straight up.
+            self.vel = [0, JUMP_VY, 0];
+            self.jump = JumpPhase::Released;
+        }
+        self.jump_start = None;
+        self.state = state::JUMP;
+        self.sounds.push(Sound { id: 0x19, voice: true });
+        self.climb = -1;
+        2
     }
 
     /// 0x434D20. Returns 0 to carry on normally, 5 to stop horizontal motion, 7 to hang.
@@ -945,6 +1119,15 @@ impl Player {
                 self.state = state::SKID;
             }
         }
+        if self.climb > 0 {
+            self.state = if self.climb & 4 != 0 {
+                state::CLIMB_SLIDE
+            } else if self.climb & 2 != 0 {
+                state::CLIMB_UP
+            } else {
+                state::CLIMB_HANG
+            };
+        }
         if self.stomp > 0 {
             self.state = state::STOMP;
         }
@@ -1211,6 +1394,25 @@ mod tests {
         }
         assert!(p.on_floor, "{:?}", p.pos);
         assert_eq!(p.state, state::TEETER_FRONT);
+    }
+
+    #[test]
+    fn grabs_climbs_and_jumps_off_a_pole() {
+        let w = room();
+        let mut p = landed(&w);
+        // A rope hanging from 1200 up to 200 above the floor, 50 units away.
+        p.set_poles(vec![Pole { pos: [50 * 32, -200 * 32, 0], kind: 0, length: 1000 * 32 }]);
+        p.tick_pad(&w, [0.0; 2], 0, false, false, false);
+        assert!(p.climb > 0, "grabbed");
+        let y0 = p.pos.y;
+        for _ in 0..30 {
+            p.tick_pad(&w, [0.0; 2], pad::UP, false, false, false);
+        }
+        assert!(p.pos.y < y0 - 100.0, "climbed from {y0} to {}", p.pos.y);
+        assert_eq!(p.state, state::CLIMB_UP);
+        assert!((p.pos.x - 50.0).abs() < 2.0, "hugs the pole: {}", p.pos.x);
+        p.tick_pad(&w, [1.0, 0.0], 0, true, true, false);
+        assert!(p.climb < 0 && p.vel[1] < 0 && p.vel[0] > 0, "jumped off: {:?} {:?}", p.climb, p.vel);
     }
 
     #[test]

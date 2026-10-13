@@ -66,7 +66,8 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x4343D0 | `BuzzGroundAccel` ✔ | Velocity → forward/side (sin table 0x4FE788 = round(16384·sin), used >> 2). Side decays 0x80/tick, forward by friction (0x30; 0x10 in the air once coyote = 0; 4 during a skid), +accel+friction while pushing and below max 0x380·mag; clamp side ±0x380, forward ±0x400. Stores forward/side at +0x74/+0x78 |
 | 0x434D20 | `BuzzStomp` ✔ | Circle edge in the air with phase 1/2 or state 8: timer `0x53C64C` = 1, sound 0x17; 14 ticks frozen, then vy = 0x800 with no horizontal motion; on floor → −40 (dust, sound 0xF), first 26 ticks frozen (state 0x18), no jumping until 0. State 0x17 while > 0 |
 | 0x434550 | `BuzzMoveAndCollide` ~ | Applies velocity and resolves collision |
-| 0x4354E0 | `BuzzClimb` ✔ | Pole/ladder: up/down moves (cap 0x400, slide 0x800), jump off −0x400 + facing push, or −0x600 |
+| 0x4354E0 | `BuzzClimb` ✔ (ported) | Poles = `level.dat` list 61, prepared by 0x414550: point pairs (bottom, top) → bottom × 32, kind (from a marker point with \|x\|=\|y\|=\|z\|, value / 50), length. Grab within (d >> 8)² ≤ 0x1FF horizontally, from 0x1E00 below the bottom to 0x3600 below the top (state 0x53C668 = 8, 10-tick jump lock 0x53C658). Up: vy −0x100; down: slide, +0x20/tick to 0x400, spinning facing by vy/16; nothing: stop; left/right turn 0x20/tick. Kind 2 slides only (+0x10/tick to 0x800). Jump: vy −0x400, push sin/cos × 8192 along the stick; at the top of a kind-1 pole: hop off with vy −0x600. Off the bottom: fall (phase 5, state 3). Released (−1) until 182 units away. States 0xF hang / 0xE up / 0x10 slide (sound 0x23) |
+| 0x414550 | `PreparePoints` ~ | Converts level.dat lists 58–62 for runtime (poles above) |
 | 0x4359D0 / 0x435100 / 0x435F30 | other movement modes ? | |
 
 Default ground profile (object units per tick; ÷32 × 60 → level units per second):
@@ -85,6 +86,8 @@ Default ground profile (object units per tick; ÷32 × 60 → level units per se
 Alternate profiles in 0x436220 use accel 0x10/0x08 and jumps of −0x640 / −0x3C0 / −0x300 (air control, special surfaces; not yet labelled). `StartJump(−0xC00)` is a special, bigger jump.
 
 Buzz states (`0x52F390`): 0 run (speed-scaled), 1 stand, 2 jump (rising), 3 fall, 4 land, 5 (from timer `+0x94` > 0x44, not the double jump), 8 double jump (wings), 0xC long-fall panic, 0xD fall recovery, 0x12 skid, 0x17/0x18 stomp, 10/11 teeter on a ledge (front/behind probe), 0x1C/0x1D idle fidgets, 0x1F swim; others are set by flags from other systems (hurt, specials) and not yet labelled. `0x52F39C` = on ground. Velocity `0x52F368/36C/370`.
+
+`level.dat` list table: 0x559C70 + 4 × type (e.g. 0x559D58 = 58 rewards, 0x559D64 = 61 poles, 0x559D6C = 63). Reader: `src/formats/leveldat.rs`.
 
 Ported in `src/game.rs` (`Player::tick`, 60 Hz, integer units) and `src/buzz.rs` (`BuzzAnimator`, the 0x401000 stepper): profile, stomp, airborne, turn, accelerate, coyote counter, fall timer, and the 0x4011D0 states 0–4, 8, 0xC, 0xD, 0x12, 0x17, 0x18 and the idle fidgets 0x1C/0x1D (rand.dat: 2,048 bytes loaded at 0x84C3E0, read pointer 0x52ADAC reset per level, wraps after 0x5DC; one byte per tick on idle entry 14, 1 in 4 fidgets). 0xFE also clears the standing sub-state 0x50A098. Collision data is the original (`TERRAIN.ALL`); the resolve is still ours.
 

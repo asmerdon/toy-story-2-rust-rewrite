@@ -21,6 +21,10 @@ pub mod state {
     pub const FALL_PANIC: u16 = 0xC;
     /// Landing from a long fall (70 ticks).
     pub const FALL_RECOVER: u16 = 0xD;
+    /// On a pole: climbing up / hanging / sliding down (0x4011D0 from the climb flags).
+    pub const CLIMB_UP: u16 = 0xE;
+    pub const CLIMB_HANG: u16 = 0xF;
+    pub const CLIMB_SLIDE: u16 = 0x10;
     /// Sharp reversal on the ground (26 ticks).
     pub const SKID: u16 = 0x12;
     /// Stomp: hang and slam.
