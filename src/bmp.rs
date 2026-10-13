@@ -1,6 +1,6 @@
 //! Minimal BMP decoder for the textures embedded in `.ngn` files (24-bit and 8-bit palettised,
-//! uncompressed). Output is RGBA8, top row first. Pure black becomes transparent, following the
-//! PS1 convention that colour 0 is see-through.
+//! uncompressed). Output is RGBA8, top row first. Pixels equal to the key colour become
+//! transparent. The PC textures use pure green (0, 255, 0) as the key; black is real colour.
 
 #[derive(Debug, Clone)]
 pub struct Image {
@@ -16,7 +16,10 @@ fn u32_at(b: &[u8], o: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
 }
 
-pub fn decode(b: &[u8], black_is_transparent: bool) -> Option<Image> {
+/// Transparency key used by the PC textures (thousands of pixels per texture, no near-misses).
+pub const PC_KEY: [u8; 3] = [0, 255, 0];
+
+pub fn decode(b: &[u8], key: Option<[u8; 3]>) -> Option<Image> {
     if b.get(0..2)? != b"BM" {
         return None;
     }
@@ -52,7 +55,7 @@ pub fn decode(b: &[u8], black_is_transparent: bool) -> Option<Image> {
                 8 => *palette.get(row[x] as usize)?,
                 _ => return None,
             };
-            let a = if black_is_transparent && r == 0 && g == 0 && bl == 0 { 0 } else { 255 };
+            let a = if key == Some([r, g, bl]) { 0 } else { 255 };
             rgba[(y * w + x) * 4..][..4].copy_from_slice(&[r, g, bl, a]);
         }
     }
@@ -65,7 +68,7 @@ mod tests {
 
     #[test]
     fn decodes_2x2_24bit_bottom_up() {
-        // 2x2, rows padded to 8 bytes. Bottom row: blue, black. Top row: red, white.
+        // 2x2, rows padded to 8 bytes. Bottom row: blue, green key. Top row: red, black.
         let mut b = vec![0u8; 54];
         b[0..2].copy_from_slice(b"BM");
         b[10..14].copy_from_slice(&54u32.to_le_bytes());
@@ -73,13 +76,13 @@ mod tests {
         b[18..22].copy_from_slice(&2i32.to_le_bytes());
         b[22..26].copy_from_slice(&2i32.to_le_bytes());
         b[28..30].copy_from_slice(&24u16.to_le_bytes());
-        b.extend_from_slice(&[255, 0, 0, 0, 0, 0, 0, 0]); // bottom: blue (BGR), black
-        b.extend_from_slice(&[0, 0, 255, 255, 255, 255, 0, 0]); // top: red, white
-        let img = decode(&b, true).unwrap();
+        b.extend_from_slice(&[255, 0, 0, 0, 255, 0, 0, 0]); // bottom: blue (BGR), green
+        b.extend_from_slice(&[0, 0, 255, 0, 0, 0, 0, 0]); // top: red, black
+        let img = decode(&b, Some(PC_KEY)).unwrap();
         assert_eq!((img.width, img.height), (2, 2));
         assert_eq!(&img.rgba[0..4], &[255, 0, 0, 255]); // top-left red
-        assert_eq!(&img.rgba[4..8], &[255, 255, 255, 255]);
+        assert_eq!(&img.rgba[4..8], &[0, 0, 0, 255]); // black stays opaque
         assert_eq!(&img.rgba[8..12], &[0, 0, 255, 255]); // bottom-left blue
-        assert_eq!(&img.rgba[12..16], &[0, 0, 0, 0]); // black -> transparent
+        assert_eq!(&img.rgba[12..16], &[0, 255, 0, 0]); // green key -> transparent
     }
 }

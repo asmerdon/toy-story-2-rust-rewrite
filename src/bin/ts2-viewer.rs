@@ -10,7 +10,7 @@
 //!   Tab                  next creature in this level
 //!   [ / ]                previous / next animation        , / .  slower / faster
 //!   C                    cycle vertex colour mode (white, bytes 1-3, bytes 3-1)
-//!   T                    toggle black-is-transparent
+//!   T                    toggle transparency (green key colour)
 //!   Esc                  quit
 
 use glam::{Mat4, Vec3};
@@ -282,7 +282,7 @@ impl Gfx {
         let images: Vec<bmp::Image> = ngn
             .textures
             .iter()
-            .map(|t| bmp::decode(&t.bmp, true).unwrap_or_else(|| white.clone()))
+            .map(|t| bmp::decode(&t.bmp, Some(bmp::PC_KEY)).unwrap_or_else(|| white.clone()))
             .chain(std::iter::once(white.clone()))
             .collect();
         let texture_bgs = images
