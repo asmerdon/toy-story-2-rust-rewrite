@@ -45,17 +45,24 @@ ts2/                    one crate for now; split into a workspace once it grows
 - Inventoried the install, found the PS1 executables, the build scripts and the CD dependency.
 
 ### Phase 1: Asset formats (in progress)
+**Key finding:** the PC game doesn't need most of the PS1-era files. Each level's `.ngn` bundles that level's textures (BMP), geometry, mesh placements, and every creature it uses (meshes per skeleton node, smooth-joint vertices, animations). The `.ngn` format is the runtime target. `.all`/`.raw`/`.dat` are pipeline sources, useful for cross-checking.
+
 | Format | Status |
 |---|---|
-| `.all` character models | **Geometry parsed for all 68 models (8,435 polygons).** 34/68 parse cleanly to the geometry-end marker. Exports to OBJ with vertex colours. Open: trailer section, smooth-skinned mesh block (Buzz, Bo Peep, Emperor Zurg), texture tags. See `docs/formats/all.md`. |
-| `.anm` animations | Not started. Probably per-part transforms keyed to `.all` parts. |
-| `.raw` textures | Not started. PS1 VRAM-style texture pages + CLUTs (4/8-bit). |
-| `.ngn` levels (PC) | Not started. Largest task. Compare with `.dat` + `.raw` (PS1 source) for the same level. |
+| `.ngn` textures (0x104) | ✅ Named BMP files; exported as-is. |
+| `.ngn` level geometry (0x100/0x101) | ✅ All 20 level files, ~400k triangles. Mesh tags, materials → textures, tri/quad/strip/fan groups, placements (translation only, verified by seam matching). Exports to OBJ+MTL+BMP. |
+| `.ngn` creatures (0x106) | ✅ structure for all 146 creature records: node names, per-node meshes with textures and normals, shared smooth-joint buffers. Exports to OBJ. ❌ Shared-joint attachment (0x208). |
+| Animations (`.ngn` 0x204 = `.anm`) | ❌ **Next blocker.** Compressed PS1 keyframe format; best decoded from the exe in Ghidra. |
+| `.ngn` 0x102/0x103/0x105 | ❌ Small tables (paths/triggers/visibility?). |
+| `.all` PS1 models | ✅ geometry for all 68 (9,556 polys), incl. smooth-shaded (per-vertex normal indices). Trailer not decoded. Now reference-only. |
+| `.raw` PS1 textures | Compressed; not needed on PC. |
 | `.bin` / `PAD\PATH*.BIN` | Not started. Level objects, AI paths. |
 | `fmv.bin`, `level.vis`, `TERRAIN.ALL` | Not started. |
 | `.sav` | Not started. 407 bytes, easy win. |
 
-Exit criterion: a viewer that renders any level with its characters standing in it.
+Details: `docs/formats/all.md`, `docs/formats/ngn.md`.
+
+Exit criterion: a viewer that renders any level with its characters standing in it. Everything except animation is now in place for this.
 
 ### Phase 2: Code reverse-engineering (Ghidra)
 1. Import `toy2.exe`, apply MSVC6 runtime signatures, label functions via the source-file assert strings (`Win95.cpp Line 227` etc.).
@@ -85,5 +92,8 @@ set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 cargo run --release -- scan-models "%TS2_GAME_DIR%"
 cargo run --release -- export-all "%TS2_GAME_DIR%" out\models
+cargo run --release -- scan-ngn "%TS2_GAME_DIR%"
+cargo run --release -- export-level "%TS2_GAME_DIR%\data\level01\level.ngn" out\level01
 ```
+`export-level` writes the level OBJ + MTL, every texture as BMP, and one `creature_<id>_<name>.obj` per creature in that level. All of it opens directly in Blender.
 OBJ output (`out/`, git-ignored) imports into Blender with vertex colours (Color Attributes).

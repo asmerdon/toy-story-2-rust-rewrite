@@ -51,6 +51,36 @@ pub fn level_to_obj(ngn: &Ngn, mtl_name: &str, apply_instances: bool) -> (String
     (obj, mtl)
 }
 
+/// One creature's node meshes as OBJ (one object per node), using the level's MTL.
+/// Smooth-joint geometry from the shared vertex buffer (tag 0x207) is not included yet.
+pub fn creature_to_obj(c: &crate::formats::ngn::Creature, mtl_name: &str) -> String {
+    let mut obj = format!("mtllib {mtl_name}\n");
+    let mut base = 1usize;
+    for (ni, node) in c.nodes.iter().enumerate() {
+        let Some(mesh) = &node.mesh else { continue };
+        writeln!(obj, "o {:02}_{}", ni, node.name).unwrap();
+        for v in &mesh.vertices {
+            let [x, y, z] = v.pos.map(|c| c * LEVEL_SCALE);
+            writeln!(obj, "v {x} {} {z}", -y).unwrap();
+        }
+        for v in &mesh.vertices {
+            writeln!(obj, "vt {} {}", v.uv[0], 1.0 - v.uv[1]).unwrap();
+        }
+        for v in &mesh.vertices {
+            writeln!(obj, "vn {} {} {}", v.normal[0], -v.normal[1], v.normal[2]).unwrap();
+        }
+        for g in &mesh.groups {
+            writeln!(obj, "usemtl {}", mesh.group_texture(g).unwrap_or("untextured")).unwrap();
+            for [a, b, c] in g.triangles() {
+                let [a, b, c] = [c, b, a].map(|i| base + i as usize);
+                writeln!(obj, "f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}").unwrap();
+            }
+        }
+        base += mesh.vertices.len();
+    }
+    obj
+}
+
 fn layer_items(layer: &Layer, apply_instances: bool) -> Box<dyn Iterator<Item = (Option<&Instance>, &crate::formats::ngn::Mesh)> + '_> {
     if apply_instances && !layer.instances.is_empty() {
         Box::new(layer.instances.iter().filter_map(|i| layer.meshes.get(i.mesh as usize).map(|m| (Some(i), m))))

@@ -69,5 +69,28 @@ fn level01_shape() {
     assert_eq!(n.layers.len(), 2);
     assert_eq!(n.layers[0].meshes.len(), 828);
     assert_eq!(n.layers[1].meshes.len(), 298);
-    assert_eq!(n.creature_names.first().map(String::as_str), Some("BUZZ"));
+    let names: Vec<&str> = n.creatures.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["BUZZ", "ZURG1", "ZURG3", "TINMAN", "SHEEP", "BOPEEP", "RC", "MRPOT", "HAMM", "COTBIT", "REX"]);
+    let buzz = &n.creatures[0];
+    assert_eq!(buzz.id, 0);
+    assert_eq!(buzz.nodes.len(), 23);
+    assert_eq!(buzz.animations.len(), 35);
+    assert!(!buzz.shared_vertices.is_empty());
+}
+
+#[test]
+fn every_creature_has_one_slot_per_node() {
+    let Some(files) = ngn_files() else { return };
+    let mut total = 0;
+    for f in files {
+        let n = ngn::parse(&fs::read(&f).unwrap()).unwrap();
+        for c in &n.creatures {
+            assert!(!c.nodes.is_empty(), "{} {}", f.display(), c.name);
+            for node in &c.nodes {
+                assert_eq!(node.mesh.is_some(), node.flags & 1 != 0, "{} {} {}", f.display(), c.name, node.name);
+            }
+            total += 1;
+        }
+    }
+    assert_eq!(total, 146);
 }

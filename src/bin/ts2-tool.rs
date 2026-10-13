@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::{env, fs, process};
-use ts2::export::{level_to_obj, model_to_obj};
+use ts2::export::{creature_to_obj, level_to_obj, model_to_obj};
 use ts2::formats::all::{self, Stop};
 use ts2::formats::ngn;
 
@@ -147,7 +147,18 @@ fn export_level(input: &Path, out_dir: &Path, apply_instances: bool) -> Res {
     for t in &n.textures {
         fs::write(out_dir.join(format!("{}.bmp", t.name)), &t.bmp)?;
     }
-    println!("{} -> {} ({} textures, {} layers)", input.display(), out_dir.display(), n.textures.len(), n.layers.len());
+    for c in &n.creatures {
+        let name = format!("creature_{:02}_{}.obj", c.id, c.name.to_ascii_lowercase());
+        fs::write(out_dir.join(name), creature_to_obj(c, &mtl_name))?;
+    }
+    println!(
+        "{} -> {} ({} textures, {} layers, {} creatures)",
+        input.display(),
+        out_dir.display(),
+        n.textures.len(),
+        n.layers.len(),
+        n.creatures.len()
+    );
     Ok(())
 }
 

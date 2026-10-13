@@ -142,23 +142,12 @@ fn parse_textures(b: &[u8], r: Range<usize>) -> Result<Vec<Texture>> {
     Ok(out)
 }
 
-/// Creature names from the head of chunk 0x106 (`u32 count`, then `count` length-prefixed names).
-/// The PC-converted creature models that follow are not decoded yet.
-fn parse_creature_names(b: &[u8], r: Range<usize>) -> Result<Vec<String>> {
-    let mut c = Cur::new(b, r.start);
-    let n = c.u32()?;
-    if n > 1024 {
-        return Err(Error::Malformed { at: r.start, what: format!("implausible creature count {n}") });
-    }
-    (0..n).map(|_| c.pstr()).collect()
-}
-
 /// 36-byte vertex (`0x43` header says format 0x17, stride 36).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vertex {
     pub pos: [f32; 3],
-    /// Always (1, 0, 0) in shipped data. Probably an unused normal slot.
-    pub unknown: [f32; 3],
+    /// Real normals on creature meshes; always (1, 0, 0) on level geometry (prelit).
+    pub normal: [f32; 3],
     /// Raw bytes. Byte 0 is 0x80 or 0xFF; bytes 1..=3 vary like a light colour. Order not confirmed.
     pub color: [u8; 4],
     pub uv: [f32; 2],
@@ -261,53 +250,69 @@ impl Mesh {
     }
 }
 
-fn parse_mesh_set(b: &[u8], r: Range<usize>) -> Result<Vec<Mesh>> {
-    let mut c = Cur::new(b, r.start);
-    let count = c.u32()? as usize;
-    let mut meshes = Vec::with_capacity(count);
-    let mut cur = Mesh::default();
-    while c.o < r.end {
+/// Body of a `0x41` texture list (also used by creature tag 0x205).
+fn read_texture_list(d: &mut Cur, end: usize) -> Result<(Vec<String>, Vec<u8>)> {
+    let n = d.u16()?;
+    let _n2 = d.u16()?;
+    let _unknown = d.take(2, "texture list header")?;
+    let names = (0..n).map(|_| d.pstr()).collect::<Result<_>>()?;
+    // 26 bytes per material follow the names; meaning unknown.
+    let extra = d.take(end - d.o, "texture list extra")?.to_vec();
+    Ok((names, extra))
+}
+
+/// Body of a `0x42` material list (also used by creature tag 0x206).
+fn read_materials(d: &mut Cur, at: usize) -> Result<Vec<Material>> {
+    let n = d.u32()?;
+    (0..n)
+        .map(|_| {
+            let flags = d.u32()?;
+            let len = d.u32()? as usize;
+            parse_material(at, flags, d.take(len, "material")?)
+        })
+        .collect()
+}
+
+/// Body of a `0x43` vertex buffer (also used by creature tag 0x207).
+fn read_vertices(d: &mut Cur, at: usize, len: usize) -> Result<Vec<Vertex>> {
+    let _format = d.u32()?;
+    let stride = d.u32()? as usize;
+    let n = d.u32()? as usize;
+    if stride != 36 || 12 + stride * n != len {
+        return Err(Error::Malformed { at, what: format!("vertex block stride {stride} count {n} len {len}") });
+    }
+    (0..n)
+        .map(|_| {
+            let pos = d.f32x3()?;
+            let normal = d.f32x3()?;
+            let color: [u8; 4] = d.take(4, "vertex colour")?.try_into().unwrap();
+            let uv = [d.f32()?, d.f32()?];
+            Ok(Vertex { pos, normal, color, uv })
+        })
+        .collect()
+}
+
+/// Reads mesh tags (0x40..0x44) until and including the 0 tag that ends the mesh.
+fn read_mesh(c: &mut Cur, limit: usize) -> Result<Mesh> {
+    let mut mesh = Mesh::default();
+    loop {
+        if c.o + 8 > limit {
+            return Err(Error::Truncated { at: c.o, what: "mesh (no end tag)" });
+        }
         let at = c.o;
         let tag = c.u32()?;
         let len = c.u32()? as usize;
-        let body = c.o..c.o + len;
-        let mut d = Cur::new(b, body.start);
+        let end = c.o + len;
+        if end > limit {
+            return Err(Error::Truncated { at, what: "mesh tag" });
+        }
+        let mut d = Cur::new(c.b, c.o);
         match tag {
-            0x00 => meshes.push(std::mem::take(&mut cur)),
-            0x40 => cur.name = d.pstr()?,
-            0x41 => {
-                let n = d.u16()?;
-                let _n2 = d.u16()?;
-                let _unknown = d.take(2, "0x41 header")?;
-                cur.textures = (0..n).map(|_| d.pstr()).collect::<Result<_>>()?;
-                // 26 bytes per material follow the names; meaning unknown.
-                cur.material_extra = d.take(body.end - d.o, "0x41 extra")?.to_vec();
-            }
-            0x42 => {
-                let n = d.u32()?;
-                for _ in 0..n {
-                    let flags = d.u32()?;
-                    let len = d.u32()? as usize;
-                    let data = d.take(len, "0x42 entry")?;
-                    cur.materials.push(parse_material(at, flags, data)?);
-                }
-            }
-            0x43 => {
-                let _format = d.u32()?;
-                let stride = d.u32()? as usize;
-                let n = d.u32()? as usize;
-                if stride != 36 || 12 + stride * n != len {
-                    return Err(Error::Malformed { at, what: format!("vertex block stride {stride} count {n} len {len}") });
-                }
-                cur.vertices.reserve(n);
-                for _ in 0..n {
-                    let pos = d.f32x3()?;
-                    let unknown = d.f32x3()?;
-                    let color: [u8; 4] = d.take(4, "vertex colour")?.try_into().unwrap();
-                    let uv = [d.f32()?, d.f32()?];
-                    cur.vertices.push(Vertex { pos, unknown, color, uv });
-                }
-            }
+            0x00 => return Ok(mesh),
+            0x40 => mesh.name = d.pstr()?,
+            0x41 => (mesh.textures, mesh.material_extra) = read_texture_list(&mut d, end)?,
+            0x42 => mesh.materials = read_materials(&mut d, at)?,
+            0x43 => mesh.vertices = read_vertices(&mut d, at, len)?,
             0x44 => {
                 let groups = d.u32()?;
                 for _ in 0..groups {
@@ -315,23 +320,127 @@ fn parse_mesh_set(b: &[u8], r: Range<usize>) -> Result<Vec<Mesh>> {
                     let material = d.u16()?;
                     let n = d.u16()? as usize;
                     let indices = (0..n).map(|_| d.u16()).collect::<Result<Vec<_>>>()?;
-                    if let Some(&bad) = indices.iter().find(|&&i| i as usize >= cur.vertices.len()) {
-                        return Err(Error::Malformed { at, what: format!("index {bad} out of range in mesh {:?}", cur.name) });
+                    if let Some(&bad) = indices.iter().find(|&&i| i as usize >= mesh.vertices.len()) {
+                        return Err(Error::Malformed { at, what: format!("index {bad} out of range in mesh {:?}", mesh.name) });
                     }
-                    cur.groups.push(Group { prim, material, indices });
+                    mesh.groups.push(Group { prim, material, indices });
                 }
             }
             _ => return Err(Error::Malformed { at, what: format!("unknown mesh tag {tag:#x}") }),
         }
-        if tag != 0x00 && d.o != body.end {
-            return Err(Error::Malformed { at, what: format!("tag {tag:#x} has {} unread bytes", body.end as isize - d.o as isize) });
+        if d.o != end {
+            return Err(Error::Malformed { at, what: format!("tag {tag:#x} has {} unread bytes", end as isize - d.o as isize) });
         }
-        c.o = body.end;
+        c.o = end;
     }
-    if c.o != r.end || meshes.len() != count {
-        return Err(Error::Malformed { at: c.o, what: format!("mesh set: expected {count} meshes, got {}", meshes.len()) });
+}
+
+fn parse_mesh_set(b: &[u8], r: Range<usize>) -> Result<Vec<Mesh>> {
+    let mut c = Cur::new(b, r.start);
+    let count = c.u32()? as usize;
+    let meshes = (0..count).map(|_| read_mesh(&mut c, r.end)).collect::<Result<Vec<_>>>()?;
+    if c.o != r.end {
+        return Err(Error::Malformed { at: c.o, what: format!("mesh set has {} unread bytes", r.end - c.o) });
     }
     Ok(meshes)
+}
+
+/// One skeleton node of a creature.
+#[derive(Debug, Clone)]
+pub struct CreatureNode {
+    pub name: String,
+    /// Low u16 of the node header in tag 0x203. Bit 0: has mesh. Bit 2: only on smooth-jointed
+    /// characters (Buzz, Bo Peep); probably skinned from the shared vertex buffer.
+    pub flags: u16,
+    /// Already in model space (rest pose), like the PS1 `.all` parts.
+    pub mesh: Option<Mesh>,
+}
+
+/// One creature from chunk 0x106: the PC-converted model, skeleton and animations.
+#[derive(Debug, Clone)]
+pub struct Creature {
+    /// Slot in the creature table = id in `data/creatures.cfg`.
+    pub id: usize,
+    pub name: String,
+    pub nodes: Vec<CreatureNode>,
+    /// Tags 0x205/0x206/0x207: textures, materials and vertices shared by smooth joints.
+    pub shared_textures: Vec<String>,
+    pub shared_materials: Vec<Material>,
+    pub shared_vertices: Vec<Vertex>,
+    /// Tag 0x208, not decoded. Probably maps shared vertices to joints.
+    pub shared_map: Vec<u8>,
+    /// Tag 0x204 records. Same header (F0 FF 03 00) as the PS1 `.anm` files; not decoded.
+    pub animations: Vec<Vec<u8>>,
+}
+
+fn parse_creatures(b: &[u8], r: Range<usize>) -> Result<Vec<Creature>> {
+    let mut c = Cur::new(b, r.start);
+    let slots = c.u32()?;
+    if slots > 1024 {
+        return Err(Error::Malformed { at: r.start, what: format!("implausible creature count {slots}") });
+    }
+    let names = (0..slots).map(|_| c.pstr()).collect::<Result<Vec<_>>>()?;
+    let mut present = names.iter().enumerate().filter(|(_, n)| !n.is_empty());
+    let mut out = Vec::new();
+    let mut cur: Option<Creature> = None;
+    let mut node_names = Vec::new();
+    while c.o + 8 <= r.end {
+        let at = c.o;
+        let tag = c.u32()?;
+        let len = c.u32()? as usize;
+        let end = c.o + len;
+        if end > r.end {
+            return Err(Error::Truncated { at, what: "creature tag" });
+        }
+        let mut d = Cur::new(b, c.o);
+        if tag == 0x200 {
+            let (id, name) = present.next().ok_or(Error::Malformed { at, what: "more creatures than names".into() })?;
+            cur = Some(Creature {
+                id,
+                name: name.clone(),
+                nodes: Vec::new(),
+                shared_textures: Vec::new(),
+                shared_materials: Vec::new(),
+                shared_vertices: Vec::new(),
+                shared_map: Vec::new(),
+                animations: Vec::new(),
+            });
+        }
+        let cr = cur.as_mut().ok_or(Error::Malformed { at, what: format!("tag {tag:#x} before creature header") })?;
+        match tag {
+            0x000 => out.push(cur.take().unwrap()),
+            0x200 => node_names = vec![String::new(); d.u32()? as usize],
+            0x202 => {
+                for n in node_names.iter_mut() {
+                    *n = d.pstr()?;
+                }
+            }
+            // Runtime matrix buffer (64 bytes per node, all zero on disk).
+            0x201 => d.o = end,
+            0x203 => {
+                for name in &node_names {
+                    let flags = d.u16()?;
+                    let _ffff = d.u16()?;
+                    let mesh = if flags & 1 != 0 { Some(read_mesh(&mut d, end)?) } else { None };
+                    cr.nodes.push(CreatureNode { name: name.clone(), flags, mesh });
+                }
+            }
+            0x204 => cr.animations.push(d.take(len, "animation")?.to_vec()),
+            0x205 => cr.shared_textures = read_texture_list(&mut d, end)?.0,
+            0x206 => cr.shared_materials = read_materials(&mut d, at)?,
+            0x207 => cr.shared_vertices = read_vertices(&mut d, at, len)?,
+            0x208 => cr.shared_map = d.take(len, "0x208")?.to_vec(),
+            _ => return Err(Error::Malformed { at, what: format!("unknown creature tag {tag:#x}") }),
+        }
+        if d.o != end {
+            return Err(Error::Malformed { at, what: format!("creature tag {tag:#x} has {} unread bytes", end as isize - d.o as isize) });
+        }
+        c.o = end;
+    }
+    if c.o != r.end || cur.is_some() {
+        return Err(Error::Malformed { at: c.o, what: "creature chunk did not end cleanly".into() });
+    }
+    Ok(out)
 }
 
 /// 44-byte placement record from chunk 0x101 (`u32 count, u32 stride=44, records`).
@@ -380,19 +489,19 @@ pub struct Layer {
 pub struct Ngn {
     pub chunks: Vec<Chunk>,
     pub textures: Vec<Texture>,
-    pub creature_names: Vec<String>,
+    pub creatures: Vec<Creature>,
     pub layers: Vec<Layer>,
 }
 
 pub fn parse(b: &[u8]) -> Result<Ngn> {
     let chunks = chunks(b)?;
     let mut textures = Vec::new();
-    let mut creature_names = Vec::new();
+    let mut creatures = Vec::new();
     let mut layers: Vec<Layer> = Vec::new();
     for ch in &chunks {
         match ch.id {
             chunk::TEXTURES => textures.extend(parse_textures(b, ch.data.clone())?),
-            chunk::CREATURES if ch.data.len() > 4 => creature_names = parse_creature_names(b, ch.data.clone())?,
+            chunk::CREATURES => creatures = parse_creatures(b, ch.data.clone())?,
             chunk::MESHES => layers.push(Layer { meshes: parse_mesh_set(b, ch.data.clone())?, instances: Vec::new() }),
             chunk::INSTANCES => {
                 let layer = layers
@@ -404,5 +513,5 @@ pub fn parse(b: &[u8]) -> Result<Ngn> {
             _ => {}
         }
     }
-    Ok(Ngn { chunks, textures, creature_names, layers })
+    Ok(Ngn { chunks, textures, creatures, layers })
 }
