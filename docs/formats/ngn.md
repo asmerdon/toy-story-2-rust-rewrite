@@ -16,7 +16,7 @@ repeat { u32 id, u32 len, u8[len] }     level files end with id 0, len 0
 | `0x100` | Mesh set (level geometry); two per level | ✅ |
 | `0x101` | Instance set (placements for the preceding `0x100`) | ✅ |
 | `0x102`, `0x103` | Count 0x16 + floats/ints. Only in some levels. Paths, triggers or cameras? | ❌ |
-| `0x105` | Count + u16 pairs. Visibility or object table? | ❌ |
+| `0x105` | Special objects (below) | ✅ |
 
 ## 0x104 textures
 
@@ -55,6 +55,14 @@ u32 count, u32 stride (44)
 count × { f32 pos[3], u32 rot[3], f32 scale[3], u32 mesh_index, u32 flags }
 ```
 `mesh_index == i` in all shipped files. Meshes are in the instance's local space: **rotation and scale must be applied** (scale, then rotate about Z, Y, X; angles are 16-bit, 0x4000 = 90°), then the translation. Evidence: the collision data (`TERRAIN.ALL`) is stored in world orientation, and applying rot + scale puts the vertices of about 110 rotated level-1 instances (136 in level 2) onto collision surfaces, against 2 (4) that fit better unrotated (`examples/rotfit.rs`). Level 1's instance 38 (rot 270° about X) matches its collision object's box exactly (tests/terrain.rs). An earlier note here said rotation was already baked in; that test read the angles as 12-bit, where 0x4000 is a whole number of turns. What `flags` mean is still open.
+
+## 0x105 special objects
+
+```
+u32 count, u32 max_id
+count × { i16 id, i16 instance }      instance < 0: (-instance & 0x3FFF) in the second instance set
+```
+Loaded by 0x4C3EB0 into a table of 0x74-byte entries (float position, angles, a pointer to the instance). Level scripts move, rotate and scale instances through these ids: 0x4CCE30 (position), 0x4CCC70 (rotation: the instance's own angles + argument × 16), 0x4CCB20 (scale), 0x4CCEF0 (read position). Level 1 has 55; e.g. special 4 is instance 38, which level 1's script tilts open by up to 0x200 (45°) about X while switching movers 14 on and 1 off.
 
 ## 0x106 creatures
 

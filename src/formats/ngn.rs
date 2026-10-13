@@ -12,7 +12,8 @@
 //! | 0x106 | creature table (names + PC-converted models), not decoded yet    |
 //! | 0x100 | mesh set (tagged records 0x40..0x44 per mesh)                    |
 //! | 0x101 | instance set: one placement per mesh in the preceding 0x100      |
-//! | 0x102, 0x103, 0x105 | not decoded yet                                    |
+//! | 0x105 | special objects: script id → instance (see `Special`)              |
+//! | 0x102, 0x103 | not decoded yet                                             |
 
 use std::fmt;
 use std::ops::Range;
@@ -22,6 +23,8 @@ pub mod chunk {
     pub const MESHES: u32 = 0x100;
     pub const INSTANCES: u32 = 0x101;
     pub const TEXTURES: u32 = 0x104;
+    /// Special objects: level-script handles for instances (0x4C3EB0).
+    pub const SPECIALS: u32 = 0x105;
     pub const CREATURES: u32 = 0x106;
 }
 
@@ -569,12 +572,46 @@ pub struct Layer {
     pub instances: Vec<Instance>,
 }
 
+/// A special object (chunk 0x105, loaded by 0x4C3EB0): a handle level scripts use to move,
+/// rotate and scale one instance (0x4CCE30 position, 0x4CCC70 rotation, 0x4CCB20 scale).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Special {
+    pub id: u16,
+    /// Index into `Ngn::layers` (a negative instance word in the file selects the second set).
+    pub layer: usize,
+    pub instance: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct Ngn {
     pub chunks: Vec<Chunk>,
+    pub specials: Vec<Special>,
     pub textures: Vec<Texture>,
     pub creatures: Vec<Creature>,
     pub layers: Vec<Layer>,
+}
+
+/// `u32 count, u32 max_id`, then count × `{i16 id, i16 instance}`; a negative instance is
+/// `-v & 0x3FFF` in the second instance set. Ids outside 0..=max_id are ignored, as the loader
+/// does.
+fn parse_specials(b: &[u8], r: Range<usize>) -> Result<Vec<Special>> {
+    let mut c = Cur::new(b, r.start);
+    let count = c.u32()? as usize;
+    let max_id = c.u32()? as i32;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let id = c.u16()? as i16;
+        let inst = c.u16()? as i16;
+        if id < 0 || id as i32 > max_id {
+            continue;
+        }
+        let (layer, instance) = if inst < 0 { (1, (-(inst as i32) & 0x3FFF) as usize) } else { (0, inst as usize) };
+        out.push(Special { id: id as u16, layer, instance });
+    }
+    if c.o > r.end {
+        return Err(Error::Malformed { at: r.start, what: "special-object chunk overruns".into() });
+    }
+    Ok(out)
 }
 
 pub fn parse(b: &[u8]) -> Result<Ngn> {
@@ -582,6 +619,7 @@ pub fn parse(b: &[u8]) -> Result<Ngn> {
     let mut textures = Vec::new();
     let mut creatures = Vec::new();
     let mut layers: Vec<Layer> = Vec::new();
+    let mut specials = Vec::new();
     for ch in &chunks {
         match ch.id {
             chunk::TEXTURES => textures.extend(parse_textures(b, ch.data.clone())?),
@@ -594,8 +632,9 @@ pub fn parse(b: &[u8]) -> Result<Ngn> {
                     .ok_or(Error::Malformed { at: ch.data.start, what: "instance chunk without mesh chunk".into() })?;
                 layer.instances = parse_instances(b, ch.data.clone())?;
             }
+            chunk::SPECIALS => specials = parse_specials(b, ch.data.clone())?,
             _ => {}
         }
     }
-    Ok(Ngn { chunks, textures, creatures, layers })
+    Ok(Ngn { chunks, specials, textures, creatures, layers })
 }

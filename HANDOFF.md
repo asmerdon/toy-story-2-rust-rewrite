@@ -8,7 +8,7 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 - Rust: stable via rustup (`%USERPROFILE%\.cargo\bin`), MSVC build tools installed
 - Ghidra 12.1.4: `C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC`; JDK 21 (Temurin) in `C:\Program Files\Eclipse Adoptium\`
 - Decompiled output: `re/out/c/<address>.c` (1,317 functions), plus `re/out/strings.tsv` and `functions.tsv`. **Git-ignored and must never be committed.** Re-generate with the command in PROJECT.md (Phase 2).
-- Tests: `set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`, then `cargo test --release` (32 tests)
+- Tests: `set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`, then `cargo test --release` (34 tests)
 - Viewer: `cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"`
 
 ## Rules
@@ -31,6 +31,6 @@ Done: level instances now rotated and scaled (fixes the plant leaves/lamp/wheels
 1. **Doors and moving platforms (level scripts):** type-8 movers sit at their start positions. They're driven by per-level hand-written scripts (level 1's starts at 0x417680 and uses 0x417380, 0x41BC20, 0x41BEE0, 0x41E150), not data. Ghidra now covers them (2,811 functions). Port level 1's first; also riding movers (0x488E10) and the resolver's slope push.
 2. **Remaining Buzz states:** climb (0x4354E0), swim (0x4A4BB0), footstep sounds (markers 0x81/0x82 set flags in 0x53C634 that another routine turns into surface sounds), idle voice lines (0xCE/0xCF every 30 s), stomp dust and camera shake, music (CD audio, not in the install). The original's camera (0x403450 and friends) isn't ported either.
 3. **Enemies:** behaviour per creature type (spawn records have 19 undecoded parameter bytes; per-creature frame-list tables set the speeds).
-4. **Deferred cosmetic items:** the `0x41` 26-byte material tail, and the `.ngn` chunks 0x102/0x103/0x105.
+4. **Deferred cosmetic items:** the `0x41` 26-byte material tail, and the `.ngn` chunks 0x102/0x103 (0x103 links pairs to 0x102 entries; texture or UV animation?).
 
 Tools: `ts2-tool anim-info <file.ngn> <creature>` prints every animation's node table. Buzz: nodes 0–6 legs (base anims, root 6), 7–19 upper body incl. wings 11/12 (right) and 17/18 (left), 20–22 never animated.

@@ -101,3 +101,15 @@ fn every_creature_has_one_slot_per_node() {
     }
     assert_eq!(total, 146);
 }
+
+/// Chunk 0x105: special objects point at real instances.
+#[test]
+fn special_objects_point_at_instances() {
+    let Some(dir) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else { return };
+    let n = ts2::formats::ngn::parse(&std::fs::read(dir.join("data/level01/level.ngn")).unwrap()).unwrap();
+    assert!(!n.specials.is_empty());
+    for s in &n.specials {
+        assert!(s.instance < n.layers[s.layer].instances.len(), "{s:?}");
+    }
+    eprintln!("{} specials, e.g. {:?}", n.specials.len(), &n.specials[..n.specials.len().min(8)]);
+}
