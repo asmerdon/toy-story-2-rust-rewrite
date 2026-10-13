@@ -51,6 +51,31 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x4A4BB0 | `BuzzSwim` ✔ | Drifts towards a target depth; Cross raises it; vy clamped ±0x180 |
 | 0x490860 | `FrameTimer` ✔ | Ticks = elapsed ms × 60 / 1000 → **60 ticks per second**; alternative fixed mode is 2 ticks/frame |
 
+### Buzz's controller (cluster 0x433xxx–0x436xxx; earlier mislabelled as creature AI)
+| Address | Name | Notes |
+|---|---|---|
+| 0x436220 | `BuzzControl` ✔ | Fills a movement profile, runs the helpers below, scales velocity by ticks, calls move-and-collide |
+| 0x4346C0 | `BuzzTurn` ✔ | Turns facing towards the stick at the profile's turn rate |
+| 0x4343D0 | `BuzzGroundAccel` ✔ | World velocity → forward/sideways; accelerate/brake/clamp by profile; back to world |
+| 0x434D20 | `BuzzFall` ~ | Airborne gravity 0x40/tick, terminal 0x800 |
+| 0x434550 | `BuzzMoveAndCollide` ~ | Applies velocity and resolves collision |
+| 0x4354E0 | `BuzzClimb` ✔ | Pole/ladder: up/down moves (cap 0x400, slide 0x800), jump off −0x400 + facing push, or −0x600 |
+| 0x4359D0 / 0x435100 / 0x435F30 | other movement modes ? | |
+
+Default ground profile (object units per tick; ÷32 × 60 → level units per second):
+
+| Field | Value | Level units |
+|---|---|---|
+| Max forward speed | 0x380 | 1,680 /s |
+| Acceleration while pushing (accel 0x28 + friction 0x30) | 0x58 /tick | 9,900 /s² |
+| Friction | 0x30 /tick | 5,400 /s² |
+| Normal jump | −0x600 | 2,880 /s up |
+| Turn-rate field | 0x400 | |
+| Gravity (airborne) | 0x40 /tick | 7,200 /s² |
+| Terminal fall | 0x800 | 3,840 /s |
+
+Alternate profiles in 0x436220 use accel 0x10/0x08 and jumps of −0x640 / −0x3C0 / −0x300 (air control, special surfaces; not yet labelled). `StartJump(−0xC00)` is a special, bigger jump.
+
 Buzz states (`0x52F390`): 0 run (speed-scaled), 1 stand, 2 jump (rising), 3 fall, 4 land, 10/11 teeter on a ledge (front/behind probe), 0x1C/0x1D idle fidgets, 0x1F swim; others are set by flags from other systems (hurt, specials) and not yet labelled. `0x52F39C` = on ground. Velocity `0x52F368/36C/370`.
 
 Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+10 (InitLevelPlay subtracts 10 and switches to the `level1` files).

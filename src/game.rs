@@ -14,13 +14,26 @@ const RADIUS: f32 = 110.0;
 const CHEST: f32 = 240.0;
 const STEP_UP: f32 = 130.0;
 const SNAP_DOWN: f32 = 80.0;
-const RUN_SPEED: f32 = 1800.0;
-/// Original: 0xC00 object units per tick upward (StartJump 0x434090), ÷32 → level units,
-/// × 60 ticks/s.
-const JUMP_SPEED: f32 = 0xC00 as f32 / 32.0 * 60.0;
-/// Estimate (the original constant is not found yet): gives a jump peak of ~1.6× Buzz's
-/// height with the original launch speed.
-const GRAVITY: f32 = 23000.0;
+// Movement constants from Buzz's controller (0x436220 default ground profile), in object
+// units per tick (level units × 32, 60 ticks per second), converted to level units/second.
+const TICKS: f32 = 60.0;
+const fn per_s(obj_per_tick: f32) -> f32 {
+    obj_per_tick / 32.0 * TICKS
+}
+const fn per_s2(obj_per_tick2: f32) -> f32 {
+    obj_per_tick2 / 32.0 * TICKS * TICKS
+}
+/// Max forward speed 0x380.
+const RUN_SPEED: f32 = per_s(0x380 as f32);
+/// Acceleration while pushing: accel 0x28 + friction 0x30 per tick (0x4343D0).
+const RUN_ACCEL: f32 = per_s2((0x28 + 0x30) as f32);
+/// Friction when not pushing: 0x30 per tick.
+const RUN_FRICTION: f32 = per_s2(0x30 as f32);
+/// Normal jump: vy = -0x600 (passed to 0x4340D0 by the controller).
+const JUMP_SPEED: f32 = per_s(0x600 as f32);
+/// Airborne gravity 0x40 per tick, capped at 0x800 (0x434D20). Very likely, not certain.
+const GRAVITY: f32 = per_s2(0x40 as f32);
+const TERMINAL_FALL: f32 = per_s(0x800 as f32);
 const CELL: f32 = 1024.0;
 /// |normal.y| above this is floor/ceiling, below is wall.
 const FLOOR_NY: f32 = 0.6;
@@ -208,16 +221,24 @@ impl Player {
 
     pub fn update(&mut self, world: &World, input: Input, dt: f32) {
         let [mx, mz] = input.move_xz;
-        self.vel.x = mx * RUN_SPEED;
-        self.vel.z = mz * RUN_SPEED;
-        if mx != 0.0 || mz != 0.0 {
+        // Accelerate towards the pushed direction at full run speed, or brake by friction.
+        let horiz = Vec3::new(self.vel.x, 0.0, self.vel.z);
+        let target = Vec3::new(mx, 0.0, mz) * RUN_SPEED;
+        let pushing = mx != 0.0 || mz != 0.0;
+        let rate = if pushing { RUN_ACCEL } else { RUN_FRICTION };
+        let delta = target - horiz;
+        let step = rate * dt;
+        let horiz = if delta.length() <= step { target } else { horiz + delta.normalize() * step };
+        self.vel.x = horiz.x;
+        self.vel.z = horiz.z;
+        if pushing {
             self.yaw = mx.atan2(mz);
         }
         if input.jump && self.grounded {
             self.vel.y = -JUMP_SPEED; // up is -Y
             self.grounded = false;
         }
-        self.vel.y += GRAVITY * dt;
+        self.vel.y = (self.vel.y + GRAVITY * dt).min(TERMINAL_FALL);
 
         let mut p = self.pos + self.vel * dt;
         let chest = world.push_out(p - Vec3::Y * CHEST, RADIUS);
