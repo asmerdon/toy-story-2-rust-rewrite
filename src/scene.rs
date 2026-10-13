@@ -67,7 +67,25 @@ impl Place {
 }
 
 fn add_mesh(ngn: &Ngn, out: &mut Vec<Batch>, mesh: &Mesh, place: Place, m: Option<&[[f32; 4]; 4]>) {
+    add_mesh_parts(ngn, out, None, mesh, place, m);
+}
+
+/// Like `add_mesh`; with `billboards`, billboard groups go there instead of into `out`.
+fn add_mesh_parts(ngn: &Ngn, out: &mut Vec<Batch>, mut billboards: Option<&mut Vec<Billboard>>, mesh: &Mesh, place: Place, m: Option<&[[f32; 4]; 4]>) {
     for g in &mesh.groups {
+        if let (Some(bb), Some(pivot)) = (billboards.as_deref_mut(), g.sprite_pivot()) {
+            let corner = |k: usize| &mesh.vertices[g.indices[k] as usize];
+            bb.push(Billboard {
+                pivot: place.apply(transform(m, mesh.vertices[pivot as usize].pos)),
+                corners: [1, 2, 3, 4].map(|k| corner(k).pos),
+                uv: [1, 2, 3, 4].map(|k| corner(k).uv),
+                color: [1, 2, 3, 4].map(|k| corner(k).color),
+                texture: mesh.group_texture(g).and_then(|n| texture_index(ngn, n)),
+                blend: mesh.group_blend(g),
+                upright: matches!(g.prim, crate::formats::ngn::Prim::Fan),
+            });
+            continue;
+        }
         let tex = mesh.group_texture(g).and_then(|n| texture_index(ngn, n));
         let blend = mesh.group_blend(g);
         for t in g.triangles() {
@@ -90,7 +108,8 @@ pub fn level_batches_filtered(ngn: &Ngn, keep: impl Fn(&crate::formats::ngn::Ins
     level_batches_where(ngn, |_, _, i| keep(i))
 }
 
-/// Level geometry for the instances `keep(layer, index, instance)` accepts.
+/// Level geometry for the instances `keep(layer, index, instance)` accepts, billboards drawn
+/// as placed (see `level_parts_where` for camera-facing ones).
 pub fn level_batches_where(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::formats::ngn::Instance) -> bool) -> Vec<Batch> {
     let mut out = Vec::new();
     for (li, layer) in ngn.layers.iter().enumerate() {
@@ -100,6 +119,57 @@ pub fn level_batches_where(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::format
                 add_mesh(ngn, &mut out, mesh, Place::new(inst.pos, 0.0), Some(&m));
             }
         }
+    }
+    out
+}
+
+/// Level geometry split into static batches and billboards, which must be rebuilt each frame
+/// with `billboard_batches`.
+pub fn level_parts_where(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::formats::ngn::Instance) -> bool) -> (Vec<Batch>, Vec<Billboard>) {
+    let (mut out, mut bb) = (Vec::new(), Vec::new());
+    for (li, layer) in ngn.layers.iter().enumerate() {
+        for (_, inst) in layer.instances.iter().enumerate().filter(|(ii, i)| keep(li, *ii, i)) {
+            if let Some(mesh) = layer.meshes.get(inst.mesh as usize) {
+                let m = instance_matrix(inst);
+                add_mesh_parts(ngn, &mut out, Some(&mut bb), mesh, Place::new(inst.pos, 0.0), Some(&m));
+            }
+        }
+    }
+    (out, bb)
+}
+
+/// A camera-facing quad from a code 5/6 group (0x4B70E0 types 5/4). Only the pivot goes
+/// through the instance's matrix; the corners are turned to the camera around it.
+#[derive(Debug, Clone)]
+pub struct Billboard {
+    /// World position (game units).
+    pub pivot: [f32; 3],
+    /// Corner offsets in the billboard's plane (x right, y down), in strip order.
+    pub corners: [[f32; 3]; 4],
+    pub uv: [[f32; 2]; 4],
+    pub color: [[u8; 4]; 4],
+    pub texture: Option<usize>,
+    pub blend: Blend,
+    /// Code 6: turned about the vertical axis only (stays upright).
+    pub upright: bool,
+}
+
+/// Triangles for `billboards` seen by a camera whose right and up axes (game space, +Y down)
+/// are `right` and `up`.
+pub fn billboard_batches(billboards: &[Billboard], right: [f32; 3], up: [f32; 3]) -> Vec<Batch> {
+    let mut out = Vec::new();
+    let flat = {
+        let l = (right[0] * right[0] + right[2] * right[2]).sqrt().max(1e-6);
+        [right[0] / l, 0.0, right[2] / l]
+    };
+    for b in billboards {
+        let (rx, dy) = if b.upright { (flat, [0.0, 1.0, 0.0]) } else { (right, up.map(|v| -v)) };
+        let v: [GpuVertex; 4] = std::array::from_fn(|k| {
+            let c = b.corners[k];
+            GpuVertex { pos: [0, 1, 2].map(|j| b.pivot[j] + rx[j] * c[0] + dy[j] * c[1]), uv: b.uv[k], color: b.color[k] }
+        });
+        push(&mut out, b.texture, b.blend, [v[0], v[1], v[2]]);
+        push(&mut out, b.texture, b.blend, [v[1], v[3], v[2]]);
     }
     out
 }

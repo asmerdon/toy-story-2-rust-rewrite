@@ -162,9 +162,11 @@ pub enum Prim {
     Triangles,
     /// Engine code 4. Each quad is in perimeter order.
     Quads,
-    /// Engine code 5. Sprite quad: pivot + 4 corners in strip order.
+    /// Engine code 5. Billboard: pivot + 4 corners in strip order; the corners face the camera
+    /// (0x4B70E0 type 5: the camera matrix).
     Strip,
-    /// Engine code 6. Sprite quad, same layout as 5.
+    /// Engine code 6. Billboard, same layout as 5, turned only about the vertical axis (type 4:
+    /// a Y rotation by the camera's heading), e.g. banister spindles.
     Fan,
     Other(u32),
 }

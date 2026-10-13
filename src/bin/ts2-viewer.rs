@@ -45,6 +45,8 @@ struct Uniforms {
     view_proj: mat4x4<f32>,
     // x: colour mode, y: alpha test on, z: world scale
     params: vec4<f32>,
+    // x, y: view-depth window this draw keeps (the original's two-pass level draw)
+    range: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(1) @binding(0) var tex: texture_2d<f32>;
@@ -54,6 +56,7 @@ struct VOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) depth: f32,
 };
 
 @vertex
@@ -65,11 +68,14 @@ fn vs_main(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2)
     o.pos = u.view_proj * vec4<f32>(p, 1.0);
     o.uv = uv;
     o.color = color;
+    // Clip w of a perspective projection is the view depth.
+    o.depth = o.pos.w;
     return o;
 }
 
 @fragment
 fn fs_main(i: VOut) -> @location(0) vec4<f32> {
+    if (i.depth < u.range.x || i.depth > u.range.y) { discard; }
     let t = textureSample(tex, samp, i.uv);
     if (u.params.y > 0.5 && t.a < 0.5) { discard; }
     var shade = vec3<f32>(1.0);
@@ -88,7 +94,16 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
 struct Uniforms {
     view_proj: [[f32; 4]; 4],
     params: [f32; 4],
+    range: [f32; 4],
 }
+
+/// The original draws a level in two passes (0x4CDDD0): first the low-detail second mesh set
+/// beyond `FAR_FROM`, then, after clearing depth, the detailed first set within `NEAR_TO`.
+/// The two sets overlap exactly (coplanar), so drawing both with one depth buffer flickers.
+/// Values: detail level 2 of the table at 0x508D24 (the exe's defaults), view depth in game
+/// units.
+const FAR_FROM: f32 = 10000.0;
+const NEAR_TO: f32 = 12000.0;
 
 /// Game space (units, +Y down, +Z forward) to viewer world space (scaled, +Y up).
 fn game_to_world(p: [f32; 3]) -> Vec3 {
@@ -193,12 +208,17 @@ struct Gfx {
     config: wgpu::SurfaceConfiguration,
     /// Pipelines for Opaque, Alpha, Additive and Darken, in that order.
     pipelines: [wgpu::RenderPipeline; 4],
-    uniform_buf: wgpu::Buffer,
-    uniform_bg: wgpu::BindGroup,
+    /// Uniforms for the far level pass, the near level pass, and everything else.
+    uniform_bufs: [wgpu::Buffer; 3],
+    uniform_bgs: [wgpu::BindGroup; 3],
     /// One bind group per level texture, plus a white one at the end for untextured geometry.
     texture_bgs: Vec<wgpu::BindGroup>,
     depth: wgpu::TextureView,
+    /// Detailed level geometry (first mesh set) and the low-detail set drawn far away.
     level: Vec<GpuBatch>,
+    level_far: Vec<GpuBatch>,
+    /// Billboards of the near and far sets, this frame.
+    billboards: [Vec<GpuBatch>; 2],
     creature: Vec<GpuBatch>,
 }
 
@@ -221,8 +241,11 @@ struct Viewer {
     hide_zone0: bool,
     /// Current animation per creature (index into `anims[creature]`).
     creature_anim: Vec<usize>,
-    /// Level geometry, handed to the GPU on first resume.
+    /// Level geometry (detailed and far sets), handed to the GPU on first resume.
     level: Vec<Batch>,
+    level_far: Vec<Batch>,
+    /// Camera-facing quads of the near and far sets, rebuilt each frame.
+    billboards: [Vec<scene::Billboard>; 2],
     world: game::World,
     player: Option<game::Player>,
     /// Index of BUZZ (id 0) in `ngn.creatures`, if present.
@@ -270,6 +293,24 @@ fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgp
         .create_view(&Default::default())
 }
 
+/// Level geometry: static batches and billboards of the detailed (first) and low-detail
+/// (second) mesh sets.
+struct LevelSets {
+    near: Vec<Batch>,
+    far: Vec<Batch>,
+    near_bb: Vec<scene::Billboard>,
+    far_bb: Vec<scene::Billboard>,
+}
+
+/// Leaves out zone-0 instances when `hide_zone0`, and the pickups' instances (drawn each frame).
+fn level_sets(ngn: &ngn::Ngn, hide_zone0: bool, pickups: &std::collections::HashMap<u8, (usize, usize)>) -> LevelSets {
+    let dynamic: std::collections::HashSet<(usize, usize)> = pickups.values().copied().collect();
+    let keep = |l: usize, n: usize, i: &ngn::Instance| (!hide_zone0 || i.flags & 0xFFFF != 0) && !dynamic.contains(&(l, n));
+    let (near, near_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && keep(l, n, i));
+    let (far, far_bb) = scene::level_parts_where(ngn, |l, n, i| l > 0 && keep(l, n, i));
+    LevelSets { near, far, near_bb, far_bb }
+}
+
 fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatch> {
     batches
         .iter()
@@ -288,7 +329,7 @@ fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatc
 }
 
 impl Gfx {
-    fn new(window: Arc<Window>, ngn: &ngn::Ngn, level: &[Batch]) -> Gfx {
+    fn new(window: Arc<Window>, ngn: &ngn::Ngn, level: &[Batch], level_far: &[Batch]) -> Gfx {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(window.clone()).expect("create surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -391,16 +432,20 @@ impl Gfx {
             cache: None,
         }));
 
-        let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+        let uniform_bufs: [wgpu::Buffer; 3] = std::array::from_fn(|_| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("uniforms"),
+                size: std::mem::size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
         });
-        let uniform_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &uniform_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() }],
+        let uniform_bgs: [wgpu::BindGroup; 3] = std::array::from_fn(|i| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &uniform_layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_bufs[i].as_entire_binding() }],
+            })
         });
 
         // Nearest filtering for the PS1 look.
@@ -451,7 +496,8 @@ impl Gfx {
 
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
-        Gfx { window, surface, device, queue, config, pipelines, uniform_buf, uniform_bg, texture_bgs, depth, level, creature: Vec::new() }
+        let level_far = upload(&device, level_far, texture_bgs.len() - 1);
+        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new() }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -473,17 +519,27 @@ impl Gfx {
                 return;
             }
         };
-        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
+        // Far set beyond FAR_FROM, detailed set within NEAR_TO, everything else unclipped.
+        let s = uniforms.params[2];
+        let ranges = [[FAR_FROM * s, f32::MAX], [0.0, NEAR_TO * s], [0.0, f32::MAX]];
+        for (buf, r) in self.uniform_bufs.iter().zip(ranges) {
+            let u = Uniforms { range: [r[0], r[1], 0.0, 0.0], ..*uniforms };
+            self.queue.write_buffer(buf, 0, bytemuck::bytes_of(&u));
+        }
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
-        {
+        let order = [scene::Blend::Opaque, scene::Blend::Alpha, scene::Blend::Additive, scene::Blend::Darken];
+        // Two passes, depth cleared in between, as 0x4CDDD0 does.
+        let passes: [(&[(usize, &[GpuBatch])], bool); 2] =
+            [(&[(0, &self.level_far), (0, &self.billboards[1])], true), (&[(1, &self.level), (1, &self.billboards[0]), (2, &self.creature)], false)];
+        for (draws, first) in passes {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 }),
+                        load: if first { wgpu::LoadOp::Clear(wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 }) } else { wgpu::LoadOp::Load },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -495,15 +551,16 @@ impl Gfx {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            pass.set_bind_group(0, &self.uniform_bg, &[]);
             // Opaque first, then the blended modes (which test but don't write depth).
-            let order = [scene::Blend::Opaque, scene::Blend::Alpha, scene::Blend::Additive, scene::Blend::Darken];
             for (i, mode) in order.iter().enumerate() {
                 pass.set_pipeline(&self.pipelines[i]);
-                for b in self.level.iter().chain(&self.creature).filter(|b| b.blend == *mode) {
-                    pass.set_bind_group(1, &self.texture_bgs[b.texture], &[]);
-                    pass.set_vertex_buffer(0, b.buffer.slice(..));
-                    pass.draw(0..b.count, 0..1);
+                for &(u, batches) in draws {
+                    pass.set_bind_group(0, &self.uniform_bgs[u], &[]);
+                    for b in batches.iter().filter(|b| b.blend == *mode) {
+                        pass.set_bind_group(1, &self.texture_bgs[b.texture], &[]);
+                        pass.set_vertex_buffer(0, b.buffer.slice(..));
+                        pass.draw(0..b.count, 0..1);
+                    }
                 }
             }
         }
@@ -704,6 +761,15 @@ impl Viewer {
             batches.push(c.clone());
         }
         gfx.creature = upload(&gfx.device, &batches, gfx.texture_bgs.len() - 1);
+        // Billboards (rails, spindles, plants) turn to the camera every frame.
+        {
+            let to_game = |v: Vec3| [v.x, -v.y, -v.z];
+            let f = self.cam.forward();
+            let r = f.cross(Vec3::Y).normalize_or_zero();
+            let u = r.cross(f).normalize_or_zero();
+            let white = gfx.texture_bgs.len() - 1;
+            gfx.billboards = std::array::from_fn(|k| upload(&gfx.device, &scene::billboard_batches(&self.billboards[k], to_game(r), to_game(u)), white));
+        }
     }
 
     fn place_creature(&mut self) {
@@ -769,11 +835,12 @@ impl Viewer {
                 // are hidden menu/HUD models. Unconfirmed for other levels, hence a toggle.
                 self.hide_zone0 = !self.hide_zone0;
                 let hide = self.hide_zone0;
-                let dynamic: std::collections::HashSet<(usize, usize)> = self.pickup_instances.values().copied().collect();
-                let level = scene::level_batches_where(&self.ngn, |l, n, i| (!hide || i.flags & 0xFFFF != 0) && !dynamic.contains(&(l, n)));
+                let sets = level_sets(&self.ngn, hide, &self.pickup_instances);
                 if let Some(g) = self.gfx.as_mut() {
-                    g.level = upload(&g.device, &level, g.texture_bgs.len() - 1);
+                    g.level = upload(&g.device, &sets.near, g.texture_bgs.len() - 1);
+                    g.level_far = upload(&g.device, &sets.far, g.texture_bgs.len() - 1);
                 }
+                self.billboards = [sets.near_bb, sets.far_bb];
                 println!("zone-0 meshes {}", if hide { "hidden" } else { "shown" });
             }
             KeyCode::KeyV => {
@@ -827,6 +894,7 @@ impl ApplicationHandler for Viewer {
                 .expect("create window"),
         );
         let level = std::mem::take(&mut self.level);
+        let level_far = std::mem::take(&mut self.level_far);
         if let Some(s) = self.start {
             // Start behind and above the original player start.
             self.cam.pos = game_to_world(s.pos) + Vec3::new(0.0, 1.5, 5.0);
@@ -837,7 +905,7 @@ impl ApplicationHandler for Viewer {
             let c = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
             self.cam.pos = Vec3::new(c[0], -c[1], -c[2]) * WORLD_SCALE + Vec3::new(0.0, 2.0, 0.0);
         }
-        self.gfx = Some(Gfx::new(window, &self.ngn, &level));
+        self.gfx = Some(Gfx::new(window, &self.ngn, &level, &level_far));
         self.last = Instant::now();
     }
 
@@ -873,6 +941,7 @@ impl ApplicationHandler for Viewer {
                     let u = Uniforms {
                         view_proj: (proj * self.cam.view()).to_cols_array_2d(),
                         params: [self.color_mode as f32, if self.alpha_test { 1.0 } else { 0.0 }, WORLD_SCALE, 0.0],
+                        range: [0.0, f32::MAX, 0.0, 0.0],
                     };
                     g.render(&u);
                     g.window.request_redraw();
@@ -960,10 +1029,9 @@ fn main() {
         .into_iter()
         .filter_map(|id| ngn.specials.iter().find(|s| s.id == id as u16).map(|s| (id, (s.layer, s.instance))))
         .collect();
-    let dynamic: std::collections::HashSet<(usize, usize)> = pickup_instances.values().copied().collect();
     // Zone-0 instances are camera-attached models (first-person helmet view), not level
     // geometry: hidden by default and never collided with.
-    let level = scene::level_batches_where(&ngn, |l, n, i| i.flags & 0xFFFF != 0 && !dynamic.contains(&(l, n)));
+    let LevelSets { near: level, far: level_far, near_bb, far_bb } = level_sets(&ngn, true, &pickup_instances);
     // Collision: the original's TERRAIN.ALL / TERR1.ALL next to the level, else the render mesh.
     let terrain = ts2::formats::terrain::path_for(std::path::Path::new(path))
         .and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)))
@@ -1039,6 +1107,8 @@ fn main() {
     }
     let mut viewer = Viewer {
         level,
+        level_far,
+        billboards: [near_bb, far_bb],
         world,
         player: None,
         player_creature,

@@ -166,7 +166,7 @@ pub struct Pickups {
     pub sprites: Vec<Option<SpriteDef>>,
     pub coins: i32,
     pub health: i32,
-    /// Starts at 3 here; the original sets it at a new game (not traced yet).
+    /// Five at a new game (confirmed by the user against the original).
     pub lives: i32,
     /// Collected token indices (bits), as `0x52F0D7[level]` stores them.
     pub tokens: u8,
@@ -240,7 +240,7 @@ impl Pickups {
             sprites,
             coins: 0,
             health: 14,
-            lives: 3,
+            lives: 5,
             tokens: 0,
             token_ids: Vec::new(),
             collectables: 0,

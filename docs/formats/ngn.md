@@ -13,7 +13,7 @@ repeat { u32 id, u32 len, u8[len] }     level files end with id 0, len 0
 |---|---|---|
 | `0x104` | Textures | ✅ |
 | `0x106` | Creatures: models, skeleton names, animations | ✅ structure; animations not decoded |
-| `0x100` | Mesh set (level geometry); two per level | ✅ |
+| `0x100` | Mesh set (level geometry); two per level: the first is detailed, the second a low-detail copy (positions rounded to 4, fewer triangles) for distant views | ✅ |
 | `0x101` | Instance set (placements for the preceding `0x100`) | ✅ |
 | `0x102`, `0x103` | Count 0x16 + floats/ints. Only in some levels. Paths, triggers or cameras? | ❌ |
 | `0x105` | Special objects (below) | ✅ |
@@ -41,7 +41,7 @@ A mesh is a run of `{u32 tag, u32 len, body}` records ending with tag `0x00`.
 The primitive codes are the engine's own:
 - `1`: triangle list
 - `4`: quad list (perimeter order). Every count is divisible by 4 across all levels.
-- `5` and `6`: flat sprite quads (rails, spindles, cobwebs, plants), always 5 indices. Index 0 is a pivot point (colour black, uv (0, 0), shared by every quad of the mesh, off the shape) and indices 1–4 are the quad's corners in strip order. All vertices lie in the mesh's z = 0 plane and the materials have mode bit 0x8, so these are probably sprites that the engine can turn about the pivot; we draw them as placed. Drawing the pivot as a vertex (as the first decode did) produced fans of spikes. The "normal" floats of these vertices hold other data (tiny denormal-like values).
+- `5` and `6`: billboards (rails, spindles, cobwebs, plants), always 5 indices. Index 0 is the pivot (z = 1, colour black, uv (0, 0)) and indices 1–4 are corner offsets (z = 0; x right, y down) in strip order. The loader maps them to engine types 5 and 4 (table 0x508A6C) and the renderer 0x4B70E0 places the pivot with the instance matrix, then turns the corners to the camera: code 5 by the camera matrix (fully facing), code 6 by a Y rotation of the camera's heading (upright, e.g. banister spindles). Mode bit 0x8 turns culling off. Drawing the pivot as a vertex (the first decode) produced spikes; drawing the corners as fixed geometry left spindles edge-on. The "normal" floats hold other data.
 
 Level vertices have a placeholder normal of (1, 0, 0); their lighting is baked into `color`. Bytes 1–3 of `color` vary like an RGB light value and byte 0 is 0x80/0xFF. **The byte order is unconfirmed.**
 

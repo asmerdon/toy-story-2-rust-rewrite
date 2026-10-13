@@ -156,6 +156,13 @@ Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when dra
 | 0x484380 | `MoveAndCollideCore` ~ | Swept resolve: 0x482A00 (polygons) + 0x483EF0 (floor), 3–4 passes; writes floor contact to `+0x8E` |
 | 0x49FAB0 | `SpawnChallengeReward` ~ | Matches type-58 positions to objects 0x71/0x73 |
 
+## Level rendering
+| Address | Name | Notes |
+|---|---|---|
+| 0x4CDDD0 | `DrawLevelSets` ✔ | Two passes: the second mesh set (low detail) with view clip from 10000 out, then depth cleared and the first set clipped at 12000. Per-instance culling 0x4BC720 by squared distance (0x5088B0/B4, set by 0x4BC410). Ranges from detail level `0x508D74` (0–2; table 0x508D24, 24 bytes per level: −, far-from, near-to, near planes, cull distances); 2 = 10000/12000, the exe's defaults. Without this split the two sets overlap coplanar and flicker (examples/overlap.rs: 2,725 pairs in level 1, all first-set vs second-set) |
+| 0x4B70E0 | `DrawMeshPrims` ✔ | Per primitive type: 0 list, 2 strip, 3 quads as strips, 4/5 billboards (see ngn.md codes 5/6) |
+| 0x4B6320 | `SetRenderState` ✔ | State bits → D3D: 4 ZENABLE off, 0x800 ZWRITE off, 0x10/0x20/0x40 cull CCW/CW/none, 0x400/0x4000/0x20000/0x100000… blend pairs, 0x8000/0x10000 ZBIAS 1/2 (only flat sprites use it) |
+
 ## Rendering primitives
 | Address | Name |
 |---|---|
