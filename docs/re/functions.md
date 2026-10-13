@@ -157,6 +157,9 @@ Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when dra
 | 0x47DE50 | `StartSample(slot, left, right, …)` ✔ | Volume = dB table 0x4FD668[max(l, r)] (hundredths of a dB); pan = (r − l) × 10000 / 128 |
 | 0x401000 markers | | 0x83–0x86 → sounds 0x30/0x10/0x17/0x43 |
 
+Idle voice lines: 0x4011D0 decrements 0x50A0BC every tick; when a fidget starts and it's 0, it's reset to 0x708 and 0x49EA90 plays 0xCE / 0xCF alternately (last one in 0x50A0B0).
+0x4A2D80 (`BuzzFootEffects`): frame-list markers 0x81/0x82 set 0x53C634 bits 1/2; this spawns dust or splash particles at Buzz's feet by floor surface (0x52B81C), via the particle spawner 0x40FDF0 (no sound).
+
 Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid, 0x17 stomp start, 0xF stomp impact (BUZSTOMP), 0x16 long-fall scream, 0x2F long-fall landing.
 
 ## Misc

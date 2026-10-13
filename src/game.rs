@@ -428,7 +428,14 @@ pub struct Player {
     random_pos: usize,
     /// Sounds requested since the caller last drained this.
     pub sounds: Vec<Sound>,
+    /// Ticks until Buzz may say an idle line again (0x50A0BC) and the last line (0x50A0B0).
+    voice_timer: i32,
+    last_voice: u16,
 }
+
+/// Idle voice lines alternate between these two sound ids, at most every 0x708 ticks (30 s).
+const IDLE_VOICE: [u16; 2] = [0xCE, 0xCF];
+const IDLE_VOICE_TICKS: i32 = 0x708;
 
 /// The read pointer into rand.dat goes back to the start after this many bytes.
 const RANDOM_WRAP: usize = 0x5DC;
@@ -464,6 +471,8 @@ impl Player {
             random: Vec::new(),
             random_pos: 0,
             sounds: Vec::new(),
+            voice_timer: 0,
+            last_voice: 0,
         }
     }
 
@@ -517,6 +526,12 @@ impl Player {
         {
             let which = self.next_random().unwrap_or(0) & 1;
             self.idle_sub = state::FIDGET + which as u16;
+            // Starting a fidget may come with a voice line, at most every 30 s.
+            if self.voice_timer == 0 {
+                self.voice_timer = IDLE_VOICE_TICKS;
+                self.last_voice = if self.last_voice == IDLE_VOICE[1] { IDLE_VOICE[0] } else { IDLE_VOICE[1] };
+                self.sounds.push(Sound { id: self.last_voice, voice: true });
+            }
         }
     }
 
@@ -610,6 +625,7 @@ impl Player {
         }
         self.fall_bookkeeping();
 
+        self.voice_timer = (self.voice_timer - 1).max(0);
         // Animation state, then the frame list. A list's 0xFE end code returns Buzz to state 0
         // and the original picks again straight away.
         for _ in 0..3 {
@@ -1146,6 +1162,8 @@ mod tests {
         // Entry 14 reads 4 (no), then 0 → fidget 0x1C (second byte 0); it ends back in idle.
         let first = seen.iter().position(|&s| s == state::FIDGET).expect("no fidget");
         assert!(seen[first..].contains(&state::IDLE), "{seen:?}");
+        // The first fidget brings an idle voice line.
+        assert!(p.sounds.iter().any(|s| s.voice && IDLE_VOICE.contains(&s.id)), "{:?}", p.sounds);
     }
 
     fn quad(a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]) -> Vec<[Vec3; 3]> {

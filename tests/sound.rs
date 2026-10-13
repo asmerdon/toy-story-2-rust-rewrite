@@ -16,7 +16,7 @@ fn level_sounds_load_and_buzz_sounds_resolve() {
     eprintln!("{} slots, {} samples loaded, missing {:?}", names.len(), bank.sample_count(), missing);
     assert!(bank.sample_count() + missing.len() >= names.len() - 5);
     // Buzz: jump voice, double jump, skid, stomp start/impact, fall scream, hard landing.
-    for id in [0x19u16, 0x10, 0x12, 0x17, 0xF, 0x16, 0x2F] {
+    for id in [0x19u16, 0x10, 0x12, 0x17, 0xF, 0x16, 0x2F, 0xCE, 0xCF] {
         let (s, vol, _) = bank.sound(id).unwrap_or_else(|| panic!("sound {id:#x} has no sample"));
         assert!(s.rate >= 8000 && !s.data.is_empty() && vol > 0, "sound {id:#x}");
     }
