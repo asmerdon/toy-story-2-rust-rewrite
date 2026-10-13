@@ -104,6 +104,16 @@ pub fn creature_batches(ngn: &Ngn, c: &Creature, origin: [f32; 3], anim: Option<
     out
 }
 
+/// Appends `more` into `into`, merging batches that share a texture.
+pub fn merge(into: &mut Vec<Batch>, more: Vec<Batch>) {
+    for b in more {
+        match into.iter_mut().find(|x| x.texture == b.texture) {
+            Some(x) => x.vertices.extend(b.vertices),
+            None => into.push(b),
+        }
+    }
+}
+
 /// Axis-aligned bounds of a set of batches (game units).
 pub fn bounds(batches: &[Batch]) -> Option<([f32; 3], [f32; 3])> {
     let mut it = batches.iter().flat_map(|b| &b.vertices).map(|v| v.pos);

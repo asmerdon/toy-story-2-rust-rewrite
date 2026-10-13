@@ -55,7 +55,7 @@ ts2/                    one crate for now; split into a workspace once it grows
 | Animations (`.ngn` 0x204 = `.anm`) | ✅ Decoded from the exe's sampler (Ghidra). All 845 animations parse. Model-space per-node poses, no hierarchy. `export-pose` writes posed OBJs. Visual check pending. See `docs/formats/anim.md`. |
 | `.ngn` 0x102/0x103/0x105 | ❌ Small tables (paths/triggers/visibility?). |
 | `.all` PS1 models | ✅ geometry for all 68 (9,556 polys), incl. smooth-shaded (per-vertex normal indices). Trailer not decoded. Now reference-only. |
-| `.raw` PS1 textures | Compressed; not needed on PC. |
+| `.raw` packet files | ✅ Container + LZ decompressor (all 827 packets exact). ✅ Creature spawn list (type 35): position + creature id. ❌ Spawn parameters, map (36), other tables, player start. See `docs/formats/packets.md`. |
 | `.bin` / `PAD\PATH*.BIN` | Not started. Level objects, AI paths. |
 | `fmv.bin`, `level.vis`, `TERRAIN.ALL` | Not started. |
 | `.sav` | Not started. 407 bytes, easy win. |
@@ -84,7 +84,9 @@ Remaining steps:
 ```
 cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn" buzz
 ```
-Next: identify creature spawn positions and the player start (likely `level.bin` / `PAD\PATH*.BIN` / chunks 0x102–0x105), the animation frame rate, and the collision data.
+The viewer now loads `level*.raw` next to the `.ngn` and shows every creature at its spawn point (N toggles).
+Notes: `level*.bin` is PS1 MIPS code (per-level overlays), not data. `level.dat` is loaded by the PC game, and its first section holds typed point lists, probably collision/terrain (parser 0x43E6E0).
+Next: player start, decoding `level.dat` for collision, then a controllable Buzz.
 
 Target for the full engine:
 - `winit` + `wgpu` renderer reproducing PS1 look (vertex colour × texture, optional affine warp/no-filter toggles), widescreen and high resolution.

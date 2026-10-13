@@ -6,6 +6,7 @@
 //! Controls:
 //!   right mouse + move   look          WASD          move
 //!   Space / Ctrl         up / down     Shift         move faster
+//!   N                    show / hide creatures at their spawn points (from level*.raw)
 //!   P                    place creature in front of camera
 //!   Tab                  next creature in this level
 //!   [ / ]                previous / next animation        , / .  slower / faster
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::{env, fs, process};
 use ts2::bmp;
-use ts2::formats::{anim, ngn};
+use ts2::formats::{anim, ngn, packets};
 use ts2::scene::{self, Batch, GpuVertex};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
@@ -126,6 +127,11 @@ struct Viewer {
     last: Instant,
     creature_idx: usize,
     creature_pos: Option<[f32; 3]>,
+    /// (index into ngn.creatures, position) for each spawn whose creature is in this level.
+    spawns: Vec<(usize, [f32; 3])>,
+    show_spawns: bool,
+    /// Current animation per creature (index into `anims[creature]`).
+    creature_anim: Vec<usize>,
     anim_idx: usize,
     anim_time: f32,
     speed: f32,
@@ -415,11 +421,21 @@ impl Viewer {
         self.cam.pos += v.normalize_or_zero() * speed * dt;
 
         self.anim_time += dt * ANIM_FPS * self.speed;
-        let (Some(pos), Some(gfx)) = (self.creature_pos, self.gfx.as_mut()) else { return };
-        let Some(c) = self.ngn.creatures.get(self.creature_idx) else { return };
-        let anim = self.anims[self.creature_idx].get(self.anim_idx);
-        let t = anim.map_or(0.0, |a| self.anim_time % (a.frame_count.max(2) - 1) as f32);
-        let batches = scene::creature_batches(&self.ngn, c, pos, anim.map(|a| (a, t)));
+        if let Some(a) = self.creature_anim.get_mut(self.creature_idx) {
+            *a = self.anim_idx;
+        }
+        let Some(gfx) = self.gfx.as_mut() else { return };
+        let mut placed: Vec<(usize, [f32; 3])> = self.creature_pos.map(|p| (self.creature_idx, p)).into_iter().collect();
+        if self.show_spawns {
+            placed.extend(self.spawns.iter().copied());
+        }
+        let mut batches = Vec::new();
+        for (ci, pos) in placed {
+            let c = &self.ngn.creatures[ci];
+            let anim = self.anims[ci].get(self.creature_anim[ci]);
+            let t = anim.map_or(0.0, |a| self.anim_time % (a.frame_count.max(2) - 1) as f32);
+            scene::merge(&mut batches, scene::creature_batches(&self.ngn, c, pos, anim.map(|a| (a, t))));
+        }
         gfx.creature = upload(&gfx.device, &batches, gfx.texture_bgs.len() - 1);
     }
 
@@ -435,9 +451,13 @@ impl Viewer {
         match code {
             KeyCode::Escape => el.exit(),
             KeyCode::KeyP => self.place_creature(),
+            KeyCode::KeyN => {
+                self.show_spawns = !self.show_spawns;
+                println!("spawns {}", if self.show_spawns { "shown" } else { "hidden" });
+            }
             KeyCode::Tab => {
                 self.creature_idx = (self.creature_idx + 1) % self.ngn.creatures.len().max(1);
-                self.anim_idx = 0;
+                self.anim_idx = self.creature_anim.get(self.creature_idx).copied().unwrap_or(0);
                 self.status();
             }
             KeyCode::BracketRight => {
@@ -475,7 +495,10 @@ impl ApplicationHandler for Viewer {
                 .expect("create window"),
         );
         let level = scene::level_batches(&self.ngn);
-        if let Some((lo, hi)) = scene::bounds(&level) {
+        if let Some(&(_, p)) = self.spawns.first() {
+            // Start just behind and above the first spawn.
+            self.cam.pos = Vec3::new(p[0], -p[1], p[2]) * WORLD_SCALE + Vec3::new(0.0, 1.5, 5.0);
+        } else if let Some((lo, hi)) = scene::bounds(&level) {
             let c = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
             self.cam.pos = Vec3::new(c[0], -c[1], c[2]) * WORLD_SCALE + Vec3::new(0.0, 2.0, 0.0);
         }
@@ -555,8 +578,27 @@ fn main() {
         .and_then(|name| ngn.creatures.iter().position(|c| c.name.eq_ignore_ascii_case(name)))
         .unwrap_or(0);
     println!("{} creatures: {:?}", ngn.creatures.len(), ngn.creatures.iter().map(|c| &c.name).collect::<Vec<_>>());
-    println!("right-drag look, WASD move, P place creature, Tab next creature, [ ] animation, C colour mode, T transparency");
 
+    // Spawns come from the packet file with the same stem (level.ngn -> level.raw).
+    let raw_path = std::path::Path::new(path).with_extension("raw");
+    let spawns: Vec<(usize, [f32; 3])> = match fs::read(&raw_path).map_err(|e| e.to_string()).and_then(|b| packets::parse(&b).map_err(|e| e.to_string())) {
+        Ok(pk) => {
+            let all: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
+            let found: Vec<_> = all
+                .iter()
+                .filter_map(|s| ngn.creatures.iter().position(|c| c.id == s.creature as usize).map(|ci| (ci, s.pos.map(|v| v as f32))))
+                .collect();
+            println!("{} spawns from {} ({} placeable)", all.len(), raw_path.display(), found.len());
+            found
+        }
+        Err(e) => {
+            println!("no spawns ({}: {e})", raw_path.display());
+            Vec::new()
+        }
+    };
+    println!("right-drag look, WASD move, N spawns, P place creature, Tab next creature, [ ] animation, C colour mode, T transparency");
+
+    let n_creatures = ngn.creatures.len();
     let mut viewer = Viewer {
         ngn,
         anims,
@@ -565,8 +607,11 @@ fn main() {
         keys: Default::default(),
         looking: false,
         last: Instant::now(),
+        creature_anim: vec![0; n_creatures],
         creature_idx,
         creature_pos: None,
+        spawns,
+        show_spawns: true,
         anim_idx: 0,
         anim_time: 0.0,
         speed: 1.0,
