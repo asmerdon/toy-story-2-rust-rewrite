@@ -21,7 +21,7 @@ directory:
 | 0x04 | i32 ×3 | Position x, y, z, level units (the game stores × 32) |
 | 0x10 | i32 | Type: 6 static (all shipped static objects; 7 is accepted too), 8 moved/rotated by a linked level object, ≥ 0x100 not collision (a block starting 0x12345678 is chained into a list at 0x728CF0) |
 | 0x1A | i16 | Linked level object (type 8): its position is written into that object's table entry at load |
-| 0x28 | u16 | Flags: 0x100 = disabled (skipped by the gatherer), 0x400 = always checked (outside the 5×5 grid), 0x200 common, meaning open |
+| 0x28 | u16 | Flags: 0x100 = disabled (skipped by the gatherer); 0x400 = room map: a quarter-scale floor plan (bounds × 4 = the level) whose low byte names the room, read by 0x4885C0, not collision; 0x200 common, meaning open |
 | 0x44 | i16 | Template id (< 100) |
 | 0x46 | i16 | 1 = instance: reuses the polygons of the object that defined this template id, at its own position |
 
@@ -59,7 +59,7 @@ Triangle: (v0, v0+e1, v0+e2). Quad: (v0, v0+e1, v0+e2) with `normal` and (v0+e3,
 - Not ported: the slope push in 0x484380 when standing (`local_26 < −0x1000`), riding movers (0x488E10 carries Buzz with a mover's velocity and spin), the 20-tick "stuck" counter.
 
 ## Movers (type 8)
-Level object table 0x7286EC (0x34 bytes per link id): position (×32), angles at +0x40 (0x72872C, 16-bit ×4), velocity at +0x48 (0x728734, set by 0x487900), spin at +0x54 (0x728740, set by 0x487970), flags at +0x66 (0x728752: 0x80 moving, 0x08 spinning/rotated, 0x100 carries Buzz), collision object index at +0x64. 0x488E10 applies velocity and spin every frame. 0x4878A0 / 0x4878D0 switch a mover's collision on/off (type 8 / 0). Movers are driven by per-level scripts (e.g. 0x42DCB0 a carousel, 0x49EC00 a platform that tilts under Buzz, 0x417380 a popping object), not by data.
+Scripts address movers by link id − 1 (0x4878A0(n) reads entry n + 1). Level object table 0x7286EC (0x34 bytes per link id): position (×32), angles at +0x40 (0x72872C, 16-bit ×4), velocity at +0x48 (0x728734, set by 0x487900), spin at +0x54 (0x728740, set by 0x487970), flags at +0x66 (0x728752: 0x80 moving, 0x08 spinning/rotated, 0x100 carries Buzz), collision object index at +0x64. 0x488E10 applies velocity and spin every frame. 0x4878A0 / 0x4878D0 switch a mover's collision on/off (type 8 / 0). Movers are driven by per-level scripts (e.g. 0x42DCB0 a carousel, 0x49EC00 a platform that tilts under Buzz, 0x417380 a popping object), not by data.
 
 ## Open
 - The per-level scripts that open doors and move platforms (level 1's is around 0x417680).

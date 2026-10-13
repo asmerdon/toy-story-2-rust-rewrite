@@ -48,7 +48,7 @@ fn level_1_rooms_and_movers() {
     let Some(dir) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
     let exe = exe::Exe::parse(fs::read(dir.join("toy2.exe")).unwrap()).unwrap();
     let t = terrain::parse(&fs::read(dir.join("data/level01/TERRAIN.ALL")).unwrap()).unwrap();
-    let mut w = game::World::from_terrain(&t);
+    let w = game::World::from_terrain(&t);
     let s = exe.player_start(1).unwrap();
     let start = glam::Vec3::from(s.pos);
     let room = w.room_at(start - glam::Vec3::Y * 200.0);

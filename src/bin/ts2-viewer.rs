@@ -272,8 +272,10 @@ struct Viewer {
     alpha_test: bool,
     /// Coins, tokens, batteries and power-ups (level.dat list 63 + special objects).
     pickups: Option<ts2::pickups::Pickups>,
-    /// Special id → (layer, instance) for the pickups drawn each frame.
-    pickup_instances: std::collections::HashMap<u8, (usize, usize)>,
+    /// Special objects (moved, turned and hidden by pickups and level scripts), drawn each frame.
+    specials: ts2::specials::Specials,
+    boxes: Option<ts2::boxes::Boxes>,
+    level1: Option<ts2::level1::Level1>,
     jingles: Vec<Jingle>,
     hud: String,
 }
@@ -302,9 +304,9 @@ struct LevelSets {
     far_bb: Vec<scene::Billboard>,
 }
 
-/// Leaves out zone-0 instances when `hide_zone0`, and the pickups' instances (drawn each frame).
-fn level_sets(ngn: &ngn::Ngn, hide_zone0: bool, pickups: &std::collections::HashMap<u8, (usize, usize)>) -> LevelSets {
-    let dynamic: std::collections::HashSet<(usize, usize)> = pickups.values().copied().collect();
+/// Leaves out zone-0 instances when `hide_zone0`, and the special objects (drawn each frame).
+fn level_sets(ngn: &ngn::Ngn, hide_zone0: bool, specials: &ts2::specials::Specials) -> LevelSets {
+    let dynamic: std::collections::HashSet<(usize, usize)> = specials.instances().collect();
     let keep = |l: usize, n: usize, i: &ngn::Instance| (!hide_zone0 || i.flags & 0xFFFF != 0) && !dynamic.contains(&(l, n));
     let (near, near_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && keep(l, n, i));
     let (far, far_bb) = scene::level_parts_where(ngn, |l, n, i| l > 0 && keep(l, n, i));
@@ -616,7 +618,17 @@ impl Viewer {
                     .filter(|(k, _)| self.keys.contains(k))
                     .fold(0, |acc, (_, b)| acc | b),
             };
-            let ticks = player.update(&self.world, input, dt);
+            // Boxes and the level script run inside each tick, just before Buzz moves (0x433700
+            // is called from 0x436220 there).
+            let (boxes, specials, script) = (&mut self.boxes, &mut self.specials, &mut self.level1);
+            let ticks = player.update_with(&self.world, input, dt, &mut |p, w| {
+                if let Some(b) = boxes.as_mut() {
+                    b.tick(p, w, specials);
+                    if let Some(l) = script.as_mut() {
+                        l.tick(w, specials, p, b);
+                    }
+                }
+            });
             if let Some(c) = self.orig_cam.as_mut() {
                 for _ in 0..ticks {
                     c.tick(player, &self.world);
@@ -624,12 +636,16 @@ impl Viewer {
             }
             // Sounds come from Buzz; the listener is the camera.
             let sounds: Vec<game::Sound> = player.sounds.drain(..).collect();
+            let sounds_at: Vec<(game::Sound, Vec3)> = player.sounds_at.drain(..).collect();
             if let Some(audio) = self.audio.as_mut() {
                 let to_game = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
                 let listener = Vec3::from(world_to_game(self.cam.pos));
                 let (right_g, fwd_g) = (to_game(right).normalize_or_zero(), to_game(Vec3::new(fwd.x, 0.0, fwd.z)).normalize_or_zero());
                 for s in sounds {
                     audio.play(s.id, s.voice, player.pos - listener, right_g, fwd_g);
+                }
+                for (s, at) in sounds_at {
+                    audio.play(s.id, s.voice, at - listener, right_g, fwd_g);
                 }
             }
             // Follow camera: orbit behind the player at chest height.
@@ -745,15 +761,16 @@ impl Viewer {
             let r = f.cross(Vec3::Y).normalize_or_zero();
             let u = r.cross(f).normalize_or_zero();
             scene::merge(&mut batches, pk.sprite_batches(&self.ngn, world_to_game(self.cam.pos), to_game(r), to_game(u)));
-            for (id, spin, scale) in pk.objects() {
-                if let Some(&(l, i)) = self.pickup_instances.get(&id) {
-                    scene::merge(&mut batches, scene::instance_batches(&self.ngn, l, i, spin, scale));
-                }
-            }
+            pk.apply(&mut self.specials);
             if pk.summary() != self.hud {
                 self.hud = pk.summary();
                 gfx.window.set_title(&format!("Toy Story 2 (Rust) - viewer   {}", self.hud));
             }
+        }
+        // Special objects at their current transforms; their billboards join the near set's.
+        let mut special_bb = Vec::new();
+        for s in self.specials.objects.values() {
+            scene::merge(&mut batches, scene::special_batches(&self.ngn, s, &mut special_bb));
         }
         if self.show_collision
             && let Some(c) = &self.collision_batch
@@ -768,7 +785,10 @@ impl Viewer {
             let r = f.cross(Vec3::Y).normalize_or_zero();
             let u = r.cross(f).normalize_or_zero();
             let white = gfx.texture_bgs.len() - 1;
-            gfx.billboards = std::array::from_fn(|k| upload(&gfx.device, &scene::billboard_batches(&self.billboards[k], to_game(r), to_game(u)), white));
+            let mut near = scene::billboard_batches(&self.billboards[0], to_game(r), to_game(u));
+            scene::merge(&mut near, scene::billboard_batches(&special_bb, to_game(r), to_game(u)));
+            let far = scene::billboard_batches(&self.billboards[1], to_game(r), to_game(u));
+            gfx.billboards = [upload(&gfx.device, &near, white), upload(&gfx.device, &far, white)];
         }
     }
 
@@ -835,7 +855,7 @@ impl Viewer {
                 // are hidden menu/HUD models. Unconfirmed for other levels, hence a toggle.
                 self.hide_zone0 = !self.hide_zone0;
                 let hide = self.hide_zone0;
-                let sets = level_sets(&self.ngn, hide, &self.pickup_instances);
+                let sets = level_sets(&self.ngn, hide, &self.specials);
                 if let Some(g) = self.gfx.as_mut() {
                     g.level = upload(&g.device, &sets.near, g.texture_bgs.len() - 1);
                     g.level_far = upload(&g.device, &sets.far, g.texture_bgs.len() - 1);
@@ -1022,16 +1042,10 @@ fn main() {
             }
         }
     });
-    let pickup_instances: std::collections::HashMap<u8, (usize, usize)> = pickups
-        .as_ref()
-        .map(|p| p.object_ids())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|id| ngn.specials.iter().find(|s| s.id == id as u16).map(|s| (id, (s.layer, s.instance))))
-        .collect();
+    let specials = ts2::specials::Specials::new(&ngn);
     // Zone-0 instances are camera-attached models (first-person helmet view), not level
     // geometry: hidden by default and never collided with.
-    let LevelSets { near: level, far: level_far, near_bb, far_bb } = level_sets(&ngn, true, &pickup_instances);
+    let LevelSets { near: level, far: level_far, near_bb, far_bb } = level_sets(&ngn, true, &specials);
     // Collision: the original's TERRAIN.ALL / TERR1.ALL next to the level, else the render mesh.
     let terrain = ts2::formats::terrain::path_for(std::path::Path::new(path))
         .and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)))
@@ -1072,6 +1086,15 @@ fn main() {
     });
     let player_creature = ngn.creatures.iter().position(|c| c.id == 0);
 
+    // Pushable boxes and the level's own script (level 1 only so far).
+    let mut specials = specials;
+    let level_lists = fs::read(level_path.with_extension("dat")).ok().and_then(|b| ts2::formats::leveldat::parse(&b).ok()).unwrap_or_default();
+    let level_no = exe::level_number(level_path);
+    let boxes = level_no.map(|lv| ts2::boxes::Boxes::new(lv, &level_lists, game_exe.as_ref(), &world, &mut specials));
+    let level1 = (level_no == Some(1)).then(|| ts2::level1::Level1::new(&world, &mut specials));
+    if let Some(b) = &boxes {
+        println!("{} pushable objects", b.boxes.len());
+    }
     if let Some(p) = pickups.as_mut() {
         p.probe_floors(&world);
         let coins = p.items.iter().filter(|i| i.is_sprite()).count();
@@ -1145,7 +1168,9 @@ fn main() {
         color_mode: 1,
         alpha_test: true,
         pickups,
-        pickup_instances,
+        specials,
+        boxes,
+        level1,
         jingles: Vec::new(),
         hud: String::new(),
     };

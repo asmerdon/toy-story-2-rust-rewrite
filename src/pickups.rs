@@ -480,14 +480,14 @@ impl Pickups {
         out
     }
 
-    /// Special objects to draw this frame: (id, spin, scale), skipping hidden ones.
-    pub fn objects(&self) -> impl Iterator<Item = (u8, [i32; 3], f32)> + '_ {
-        self.items.iter().filter(|p| !p.is_sprite() && p.scale > 0.0).map(|p| (p.id, p.spin, p.scale))
-    }
-
-    /// Special-object ids this module draws (so the static level leaves them out).
-    pub fn object_ids(&self) -> Vec<u8> {
-        self.items.iter().filter(|p| !p.is_sprite()).map(|p| p.id).collect()
+    /// Writes the special objects' tumble and scale (0x4CCCE0 / 0x4CCB20) into `specials`.
+    pub fn apply(&self, specials: &mut crate::specials::Specials) {
+        for p in self.items.iter().filter(|p| !p.is_sprite()) {
+            let id = p.id as i32;
+            specials.turn_from_own(id, p.spin);
+            let s = (p.scale * 4096.0) as i32;
+            specials.set_scale(id, [s; 3]);
+        }
     }
 
     pub fn summary(&self) -> String {

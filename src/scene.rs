@@ -174,6 +174,21 @@ pub fn billboard_batches(billboards: &[Billboard], right: [f32; 3], up: [f32; 3]
     out
 }
 
+/// A special object at its current position, angles and scale (`specials::Special`); its
+/// billboards go to `billboards`.
+pub fn special_batches(ngn: &Ngn, s: &crate::specials::Special, billboards: &mut Vec<Billboard>) -> Vec<Batch> {
+    let mut out = Vec::new();
+    if s.hidden {
+        return out;
+    }
+    let Some(inst) = ngn.layers.get(s.layer).and_then(|l| l.instances.get(s.instance)) else { return out };
+    let Some(mesh) = ngn.layers[s.layer].meshes.get(inst.mesh as usize) else { return out };
+    let placed = crate::formats::ngn::Instance { pos: s.pos, rot: s.angles, scale: s.scale, ..*inst };
+    let m = instance_matrix(&placed);
+    add_mesh_parts(ngn, &mut out, Some(billboards), mesh, Place::new(s.pos, 0.0), Some(&m));
+    out
+}
+
 /// One level instance, turned further by `spin` (12-bit angles added to its own, as the
 /// game's 0x4CCCE0 sets them) and scaled by `scale` on top of its own scale (0x4CCB20).
 pub fn instance_batches(ngn: &Ngn, layer: usize, index: usize, spin: [i32; 3], scale: f32) -> Vec<Batch> {

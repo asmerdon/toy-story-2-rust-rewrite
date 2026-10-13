@@ -108,6 +108,26 @@ Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+
 | 0x49E9D0 | `StepJingles` ✔ | PlaySound with a negative id starts a jingle (table 0x503828 + 4(−id − 1)): 3 i16 rumble, then {slot, PS1 pitch, volume, delay} steps, −1 ends, −2 n loops |
 | 0x49FD40 | `DrawHud` ~ | Counters; token sequence state 9 shows "you have collected a token! keep on playing / exit level" |
 
+## Level objects (ported: `src/specials.rs`, `src/boxes.rs`, `src/level1.rs`)
+| Address | Name | Notes |
+|---|---|---|
+| 0x4CCE30 / 0x4CCEF0 | `SetSpecialPos` / `GetSpecialPos` ✔ | Level units in; object units (× 32) out |
+| 0x4CCC70 / 0x4CCCE0 / 0x4CCD40 | special angles ✔ | Own + arg × 16 / arg × 16 / read ÷ 16 (12-bit in, 16-bit stored) |
+| 0x4CCB20 | `SetSpecialScale` ✔ | arg × own scale / 4096; all zero hides (flag 1 at instance +0x8C) |
+| 0x4CCFF0 | `ScaleAbout(dst, src)` ✔ | dst position pulled towards src's by src's scale, per axis |
+| 0x4CCBE0 | `SpecialMatrix` ✔ | Scale, rot Z, Y, X, translate |
+| 0x4878A0 / 0x4878D0 | `MoverOn` / `MoverOff` ✔ | Argument = link id − 1: the link table 0x7286EC is indexed by link id and these read entry (arg + 1). Set the terrain object's type to 8 / 0 |
+| 0x488510 | `PlaceMover(id, x, y, z)` ✔ | Object units; moves its bounds by the difference |
+| 0x488580 / 0x4885A0 | mover contact flags / contact data ✔ | Flags bit 1: Buzz touching its side, bit 2: standing on it; data: contact normal |
+| 0x4885C0 | `RoomAt(pos)` ✔ | At a quarter scale: the objects flagged 0x400 are a room map (bounds × 4 = the level), not collision; returns their flags low byte |
+| 0x4335D0 | `SetupBoxes(list)` ✔ | Triples {special, mover, path} until −1 (level 1: 0x4F0F90, seven entries) |
+| 0x4334D0 | `BoxSegment` ✔ | Heading, direction (normalised to 4096 by 0x451FD0), length; if the next point is straight below the segment end, +0x16 = length / 2 (slides off past halfway) |
+| 0x433700 | `PushBoxes` ✔ | Called from 0x436220 just before Buzz moves. Pick: on the floor, stick pushed, touching a box's side with the stick within ±0x180 of (contact normal heading − 0x800); voice 0x2D. Push ±8 of the segment heading: +0xC per tick (−0xC backwards), segment changes at the ends; past +0x16: slide off (+0x18 per tick, sound 0x31, Buzz frozen 10 ticks via 0x53C5DC), then fall (+0x40 per tick to 0x800, sound 0x2F on landing). Buzz's x/z velocity keeps his offset to the box; sound 0x2E while it moves |
+| 0x4171D0 | `Level1Setup` ✔ (objects part) | Tokens, boxes, reads specials 6/9/0x11/0x12/0xA/0x10, plank 0x15 flat, movers 8 and 14 off |
+| 0x417680 | `Level1Script` ~ (part ported) | Door (box 3 over → movers 14 on / 1 off, special 4 tips to 0x200), basement plank, fan 0xE, room 2 tops (0x417510) and pop-ups (0x417380: movers 12/13 off below phase 0x400, on at 0x1400), room 4 trampoline (mover 3: −0x980, −0xC00 from a stomp, sound 0x1C). Not yet: room 1 falling toys, Bo Peep, RC race, Hamm, the lift (special 6 + pole 8), room 3 spring, room 5 tilt (0x49EC00), room 6 shield |
+| 0x434090 | `StartJump(vy, phase)` ✔ | See Player |
+| 0x49F400 | `Near(a, b, r)` ✔ | (Δ >> 8)² < r² |
+
 ## Cutscene scripts
 | Address | Name | Notes |
 |---|---|---|

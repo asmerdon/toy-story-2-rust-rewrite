@@ -5,10 +5,13 @@
 
 pub mod audio;
 pub mod bmp;
+pub mod boxes;
 pub mod buzz;
 pub mod camera;
 pub mod export;
 pub mod formats;
 pub mod game;
+pub mod level1;
 pub mod pickups;
 pub mod scene;
+pub mod specials;

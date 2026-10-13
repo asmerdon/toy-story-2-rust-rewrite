@@ -120,10 +120,11 @@ struct ObjectInfo {
     flags: u16,
     /// Mover link id (record +0x1A); scripts address movers by link − 1.
     link: i16,
-    /// Collides (the gatherer's type check: 0x4878A0 sets type 8, 0x4878D0 type 0).
-    enabled: bool,
+    /// Collides (the gatherer's type check: 0x4878A0 sets type 8, 0x4878D0 type 0). Cells so
+    /// scripts can switch and move movers during a tick, while Buzz's collision reads them.
+    enabled: std::cell::Cell<bool>,
     /// Moved since load (0x488510), level units.
-    offset: Vec3,
+    offset: std::cell::Cell<Vec3>,
 }
 
 /// What a sweep hit.
@@ -135,6 +136,8 @@ pub struct Hit {
     pub normal: Vec3,
     /// How far the sphere already overlapped the surface at the start (0 for a clean hit).
     pub depth: f32,
+    /// Mover id (link − 1) of what was hit, if it is a mover.
+    pub mover: Option<i32>,
 }
 
 /// Overlap with a face that still counts as touching it from the front.
@@ -152,6 +155,8 @@ pub struct World {
     /// The room map (objects flagged 0x400): floors at a quarter of the level's scale, each
     /// object's flags low byte naming its room. Not collision.
     rooms: Vec<Tri>,
+    /// Each object's stored position (where its triangles are), for placing movers.
+    mover_home: Vec<Vec3>,
 }
 
 fn cell(v: f32) -> i32 {
@@ -176,7 +181,12 @@ impl World {
         let (mut tris, mut always, mut rooms, mut objects) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (i, o) in t.objects.iter().enumerate() {
             // Objects flagged 0x100 start disabled (the gatherer 0x485940 skips them).
-            objects.push(ObjectInfo { flags: o.flags, link: o.linked, enabled: matches!(o.kind, 6..=8) && o.flags & 0x100 == 0, offset: Vec3::ZERO });
+            objects.push(ObjectInfo {
+                flags: o.flags,
+                link: o.linked,
+                enabled: std::cell::Cell::new(matches!(o.kind, 6..=8) && o.flags & 0x100 == 0),
+                offset: std::cell::Cell::new(Vec3::ZERO),
+            });
             let to = if o.flags & 0x400 != 0 {
                 &mut rooms
             } else if o.kind == 8 {
@@ -193,6 +203,7 @@ impl World {
         w.objects = objects;
         w.always = always;
         w.rooms = rooms;
+        w.mover_home = t.objects.iter().map(|o| Vec3::from(o.pos.map(|v| v as f32))).collect();
         w
     }
 
@@ -203,20 +214,21 @@ impl World {
     }
 
     /// 0x4878A0 (`on`) / 0x4878D0: switch a mover's collision.
-    pub fn set_mover(&mut self, id: i32, on: bool) {
+    pub fn set_mover(&self, id: i32, on: bool) {
         if let Some(i) = self.mover(id) {
-            self.objects[i].enabled = on;
+            self.objects[i].enabled.set(on);
         }
     }
 
     pub fn mover_enabled(&self, id: i32) -> bool {
-        self.mover(id).is_some_and(|i| self.objects[i].enabled)
+        self.mover(id).is_some_and(|i| self.objects[i].enabled.get())
     }
 
-    /// 0x488510: move a mover by `delta` level units.
-    pub fn move_mover(&mut self, id: i32, delta: Vec3) {
+    /// 0x488510: put a mover at `pos` (level units); its collision moves with it, from where it
+    /// was loaded (the object's stored position).
+    pub fn place_mover(&self, id: i32, pos: Vec3) {
         if let Some(i) = self.mover(id) {
-            self.objects[i].offset += delta;
+            self.objects[i].offset.set(pos - self.mover_home[i]);
         }
     }
 
@@ -240,11 +252,17 @@ impl World {
         best.map(|(_, r)| r)
     }
 
+    /// Mover id (link − 1) of a triangle's object, if it is a mover.
+    fn mover_of(&self, t: &Tri) -> Option<i32> {
+        self.objects.get(t.obj as usize).map(|o| o.link as i32).filter(|&l| l != 0).map(|l| l - 1)
+    }
+
     /// Enabled always-checked triangles at their current positions.
     fn always_tris(&self) -> impl Iterator<Item = Tri> + '_ {
         self.always.iter().filter_map(|t| {
             let o = self.objects.get(t.obj as usize)?;
-            o.enabled.then(|| Tri { a: t.a + o.offset, b: t.b + o.offset, c: t.c + o.offset, ..*t })
+            let off = o.offset.get();
+            o.enabled.get().then(|| Tri { a: t.a + off, b: t.b + off, c: t.c + off, ..*t })
         })
     }
 
@@ -254,7 +272,7 @@ impl World {
             .near_box(lo, hi)
             .into_iter()
             .map(|i| self.tris[i as usize])
-            .filter(|t| t.obj == NO_OBJECT || self.objects.get(t.obj as usize).is_none_or(|o| o.enabled))
+            .filter(|t| t.obj == NO_OBJECT || self.objects.get(t.obj as usize).is_none_or(|o| o.enabled.get()))
             .collect();
         out.extend(self.always_tris().filter(|t| {
             let (tl, th) = (t.a.min(t.b).min(t.c), t.a.max(t.b).max(t.c));
@@ -293,7 +311,7 @@ impl World {
                 }
             }
         }
-        World { tris, grid, lo, hi, objects: Vec::new(), always: Vec::new(), rooms: Vec::new() }
+        World { tris, grid, lo, hi, objects: Vec::new(), always: Vec::new(), rooms: Vec::new(), mover_home: Vec::new() }
     }
 
     /// Triangles whose grid cells overlap the box around `lo..hi` (x/z).
@@ -353,6 +371,7 @@ impl World {
             }
         };
         for t in self.candidates(p0.min(p1) - reach, p0.max(p1) + reach) {
+            let mover = self.mover_of(&t);
             let lo = t.a.min(t.b).min(t.c) - reach;
             let hi = t.a.max(t.b).max(t.c) + reach;
             if p0.max(p1).cmplt(lo).any() || p0.min(p1).cmpgt(hi).any() {
@@ -368,17 +387,17 @@ impl World {
                     let s = if d0 > 0.0 { d0 / (d0 - d1) } else { 0.0 };
                     let q = p0 + d * s - n * (r + d0.min(0.0));
                     if inside(q, t.a, t.b, t.c, n) {
-                        keep(Some(Hit { t: s, normal: n, depth: (-d0).max(0.0) }));
+                        keep(Some(Hit { t: s, normal: n, depth: (-d0).max(0.0), mover }));
                     }
                 }
                 // Edges and corners only near the plane, as the original limits them.
                 let near = (d0 < 8.0 || d1 < 8.0) && (d0 >= -8.0 - r / 2.0 || d1 >= -8.0 - r / 2.0);
                 if near && d.dot(n) < 0.0 {
                     for (e0, e1) in [(t.a, t.b), (t.b, t.c), (t.c, t.a)] {
-                        keep(sweep_edge(p0, d, e0, e1, r + 1.0));
+                        keep(sweep_edge(p0, d, e0, e1, r + 1.0).map(|h| Hit { mover, ..h }));
                     }
                     for v in [t.a, t.b, t.c] {
-                        keep(sweep_point(p0, d, v, r + 2.0));
+                        keep(sweep_point(p0, d, v, r + 2.0).map(|h| Hit { mover, ..h }));
                     }
                 }
             }
@@ -433,7 +452,7 @@ fn sweep_point(p0: Vec3, d: Vec3, v: Vec3, r: f32) -> Option<Hit> {
         return None;
     }
     let normal = (p0 + d * t - v).normalize_or_zero();
-    Some(Hit { t, normal, depth: 0.0 })
+    Some(Hit { t, normal, depth: 0.0, mover: None })
 }
 
 /// Sphere centre moving p0 → p0+d against segment e0–e1 (a cylinder of radius r).
@@ -467,8 +486,11 @@ fn sweep_edge(p0: Vec3, d: Vec3, e0: Vec3, e1: Vec3, r: f32) -> Option<Hit> {
         return None;
     }
     let normal = (pc - (e0 + ed * s)).normalize_or_zero();
-    Some(Hit { t, normal, depth: 0.0 })
+    Some(Hit { t, normal, depth: 0.0, mover: None })
 }
+
+/// Code run inside a tick just before Buzz moves (see `Player::update_with`).
+pub type PreMove<'a> = dyn FnMut(&mut Player, &World) + 'a;
 
 /// A sound the game asked for this update, at Buzz's position (PlaySound 0x49E660, or the
 /// one-per-object voice channel 0x49EA60 when `voice`).
@@ -528,7 +550,7 @@ pub struct Player {
     /// Facing, 12-bit (+0x0E); 0 = +Z.
     pub facing: i32,
     /// Facing the stick asks for (+0x48).
-    target: i32,
+    pub target: i32,
     /// Velocity along / across the facing (+0x74 / +0x78).
     pub forward: i32,
     pub side: i32,
@@ -564,6 +586,16 @@ pub struct Player {
     random_pos: usize,
     /// Sounds requested since the caller last drained this.
     pub sounds: Vec<Sound>,
+    /// Sounds at other positions (level units), e.g. a pushed box.
+    pub sounds_at: Vec<(Sound, Vec3)>,
+    /// The mover Buzz's last wall contact belonged to, with the contact normal (link flags
+    /// bit 1 and the contact data 0x4885A0 reads), and the mover he stands on (bit 2).
+    pub wall_mover: Option<(i32, Vec3)>,
+    pub floor_mover: Option<(i32, Vec3)>,
+    /// The stick is pushed this tick (pad & 0xF0).
+    pub stick_pushed: bool,
+    /// 0x53C5DC.
+    pub push_lock: i32,
     /// Ticks until Buzz may say an idle line again (0x50A0BC) and the last line (0x50A0B0).
     voice_timer: i32,
     last_voice: u16,
@@ -615,6 +647,11 @@ impl Player {
             random: Vec::new(),
             random_pos: 0,
             sounds: Vec::new(),
+            sounds_at: Vec::new(),
+            wall_mover: None,
+            floor_mover: None,
+            stick_pushed: false,
+            push_lock: 0,
             voice_timer: 0,
             last_voice: 0,
             poles: Vec::new(),
@@ -695,6 +732,30 @@ impl Player {
         self.spawn_facing = self.facing;
     }
 
+    /// 0x434090 `StartJump(vy, phase)`: launched upwards by something (a spring, a bounce),
+    /// leaving the ground with the given jump phase (+0x8C; 2 = released, so a press can still
+    /// double jump).
+    pub fn start_jump(&mut self, vy: i32, phase: JumpPhase) {
+        self.jump = phase;
+        self.on_floor = false;
+        self.coyote = 0;
+        self.state = state::JUMP;
+        self.vel[1] = vy;
+        self.skid = 0;
+        self.jump_start = None;
+    }
+
+    /// Feet position in object units (level units × 32), as the game keeps it.
+    pub fn pos_obj(&self) -> [i32; 3] {
+        self.pos.to_array().map(|v| (v * 32.0).round() as i32)
+    }
+
+    /// Doing something that stops pushing boxes (0x53C828 bits other than "on the ground"):
+    /// climbing, stomping, a long-fall panic or its recovery.
+    pub fn busy(&self) -> bool {
+        self.climb > 0 || self.stomp != 0 || self.fall_timer < 0 || self.fall_timer == FALL_PANIC
+    }
+
     /// Facing in radians around the vertical axis (0 = +Z).
     pub fn yaw(&self) -> f32 {
         self.facing as f32 / 4096.0 * std::f32::consts::TAU
@@ -711,6 +772,12 @@ impl Player {
 
     /// Advances by `dt` seconds of game time in whole 60 Hz ticks; returns how many ran.
     pub fn update(&mut self, world: &World, input: Input, dt: f32) -> u32 {
+        self.update_with(world, input, dt, &mut |_, _| {})
+    }
+
+    /// As `update`, running `pre_move` each tick just before Buzz moves, where 0x436220 runs the
+    /// box pusher (0x433700), which steers his velocity and moves movers.
+    pub fn update_with(&mut self, world: &World, input: Input, dt: f32, pre_move: &mut PreMove<'_>) -> u32 {
         let mut ticks = 0;
         self.jump_latch |= input.jump;
         self.stomp_latch |= input.stomp;
@@ -722,7 +789,7 @@ impl Player {
             let stomp = self.stomp_latch;
             self.jump_latch = false;
             self.stomp_latch = false;
-            self.tick_pad(world, input.move_xz, input.dpad, held, pressed, stomp);
+            self.tick_pad_with(world, input.move_xz, input.dpad, held, pressed, stomp, pre_move);
             ticks += 1;
         }
         ticks
@@ -735,6 +802,12 @@ impl Player {
 
     /// One game tick with the raw d-pad and a jump press edge, as climbing needs them.
     pub fn tick_pad(&mut self, world: &World, stick: [f32; 2], dpad: u8, jump_held: bool, jump_pressed: bool, stomp_pressed: bool) {
+        self.tick_pad_with(world, stick, dpad, jump_held, jump_pressed, stomp_pressed, &mut |_, _| {});
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tick_pad_with(&mut self, world: &World, stick: [f32; 2], dpad: u8, jump_held: bool, jump_pressed: bool, stomp_pressed: bool, pre_move: &mut PreMove<'_>) {
+        self.stick_pushed = stick != [0.0, 0.0];
         let magnitude = stick[0].hypot(stick[1]).min(1.0);
         let pushing = magnitude > 0.0;
         // Movement profile.
@@ -789,6 +862,13 @@ impl Player {
             }
         }
 
+        // 0x53C5DC: after a box slides away, Buzz stands still for a few ticks.
+        if self.push_lock > 0 {
+            self.push_lock -= 1;
+            self.vel[0] = 0;
+            self.vel[2] = 0;
+        }
+        pre_move(self, world);
         self.move_and_collide(world);
 
         if self.on_floor {
@@ -1131,6 +1211,8 @@ impl Player {
         let mut d = v / 32.0;
         let was = self.on_floor;
         let mut floor = false;
+        self.wall_mover = None;
+        self.floor_mover = None;
         for _ in 0..PASSES {
             if d.length_squared() < 1e-8 {
                 break;
@@ -1152,7 +1234,13 @@ impl Player {
             v -= n * v.dot(n).min(0.0);
             if n.y < FLOOR_NY {
                 floor = true;
+                if let Some(m) = h.mover {
+                    self.floor_mover = Some((m, n));
+                }
             } else {
+                if let Some(m) = h.mover {
+                    self.wall_mover = Some((m, n));
+                }
                 c += Vec3::new(n.x, 0.0, n.z) * WALL_PUSH;
                 v.x *= 15.0 / 16.0;
                 v.z *= 15.0 / 16.0;
@@ -1166,6 +1254,7 @@ impl Player {
             {
                 c += down * (h.t - SKIN / STICK_DOWN).max(0.0) + h.normal * h.depth;
                 floor = true;
+                self.floor_mover = h.mover.map(|m| (m, h.normal));
             }
         }
         if floor && v.y > 0.0 {
