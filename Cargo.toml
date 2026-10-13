@@ -12,4 +12,13 @@ path = "src/lib.rs"
 name = "ts2-tool"
 path = "src/bin/ts2-tool.rs"
 
+[[bin]]
+name = "ts2-viewer"
+path = "src/bin/ts2-viewer.rs"
+
 [dependencies]
+bytemuck = { version = "1.21", features = ["derive"] }
+glam = "0.29"
+pollster = "0.4"
+wgpu = "24.0"
+winit = "0.30"

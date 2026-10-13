@@ -156,6 +156,24 @@ pub fn parse(b: &[u8]) -> Result<Animation, Error> {
 }
 
 impl Animation {
+    /// Node matrix at fractional frame `t`, interpolated as the engine does: translation and
+    /// scale lerped, rotation by lerping the two frames' matrices element-wise.
+    pub fn matrix_at(&self, node: usize, t: f32) -> Option<[[f32; 4]; 4]> {
+        let last = self.frame_count.saturating_sub(1) as usize;
+        let t = t.clamp(0.0, last as f32);
+        let f0 = (t.floor() as usize).min(last.saturating_sub(1));
+        let f1 = (f0 + 1).min(last);
+        let frac = t - f0 as f32;
+        let (a, b) = (self.pose(node, f0)?.matrix(), self.pose(node, f1)?.matrix());
+        let mut m = a;
+        for i in 0..4 {
+            for j in 0..4 {
+                m[i][j] = a[i][j] + (b[i][j] - a[i][j]) * frac;
+            }
+        }
+        Some(m)
+    }
+
     /// Pose of `node` at integer `frame`. None if the node isn't animated.
     pub fn pose(&self, node: usize, frame: usize) -> Option<NodePose> {
         let off = (*self.node_offsets.get(node)?)? as usize;

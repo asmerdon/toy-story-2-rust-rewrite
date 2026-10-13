@@ -79,7 +79,14 @@ Remaining steps:
 4. Import `SLUS_008.93` into a second Ghidra project (MIPS R3000) for comparison where x86 is unclear.
 5. Write findings to `docs/re/` (function address → name → purpose).
 
-### Phase 3: Engine
+### Phase 3: Engine (prototype viewer started)
+`ts2-viewer` (src/bin/ts2-viewer.rs) uses winit 0.30 + wgpu 24. It renders a level `.ngn` with nearest-filtered textures, black-as-transparent and PS1-style vertex colour modulation (selectable byte order). It has a fly camera, and can spawn any creature from the level with interpolated animation playback, including patches. CPU-side scene building is in `src/scene.rs`, BMP decoding in `src/bmp.rs`.
+```
+cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn" buzz
+```
+Next: identify creature spawn positions and the player start (likely `level.bin` / `PAD\PATH*.BIN` / chunks 0x102–0x105), the animation frame rate, and the collision data.
+
+Target for the full engine:
 - `winit` + `wgpu` renderer reproducing PS1 look (vertex colour × texture, optional affine warp/no-filter toggles), widescreen and high resolution.
 - Fixed-timestep simulation matching the original tick rate (the original's frame-timing bugs are what break it on modern PCs).
 - Input: keyboard (from `toy2.ini` defaults) + gamepad.
