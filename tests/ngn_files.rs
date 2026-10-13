@@ -89,6 +89,13 @@ fn every_creature_has_one_slot_per_node() {
             for node in &c.nodes {
                 assert_eq!(node.mesh.is_some(), node.flags & 1 != 0, "{} {} {}", f.display(), c.name, node.name);
             }
+            for p in &c.patches {
+                for (vi, ni) in p.vertices() {
+                    assert!(vi < c.shared_vertices.len(), "{} {}: patch vertex {vi} of {}", f.display(), c.name, c.shared_vertices.len());
+                    assert!(ni < c.nodes.len(), "{} {}: patch node {ni} of {}", f.display(), c.name, c.nodes.len());
+                }
+                assert!((p.material as usize) < c.shared_materials.len(), "{} {}: patch material {}", f.display(), c.name, p.material);
+            }
             total += 1;
         }
     }

@@ -86,6 +86,33 @@ pub fn creature_to_obj(c: &crate::formats::ngn::Creature, mtl_name: &str, pose: 
         }
         base += mesh.vertices.len();
     }
+
+    // Connecting patches: each vertex follows its own node's pose.
+    let node_matrix = |n: usize| pose.and_then(|(a, f)| a.pose(n, f)).map(|p| p.matrix());
+    for (pi, patch) in c.patches.iter().enumerate() {
+        let verts = patch.vertices();
+        let tex = c
+            .shared_materials
+            .get(patch.material as usize)
+            .and_then(|m| m.texture)
+            .and_then(|t| c.shared_textures.get(t as usize))
+            .map_or("untextured", String::as_str);
+        writeln!(obj, "o patch_{pi:02}\nusemtl {tex}").unwrap();
+        for &(vi, ni) in &verts {
+            let v = c.shared_vertices[vi];
+            let p = match node_matrix(ni) {
+                Some(m) => [0, 1, 2].map(|j| v.pos[0] * m[0][j] + v.pos[1] * m[1][j] + v.pos[2] * m[2][j] + m[3][j]),
+                None => v.pos,
+            };
+            let [x, y, z] = p.map(|c| c * LEVEL_SCALE);
+            writeln!(obj, "v {x} {} {z}\nvt {} {}", -y, v.uv[0], 1.0 - v.uv[1]).unwrap();
+        }
+        for [a, b, cc] in patch.triangles() {
+            let [a, b, cc] = [cc, b, a].map(|i| base + i);
+            writeln!(obj, "f {a}/{a} {b}/{b} {cc}/{cc}").unwrap();
+        }
+        base += verts.len();
+    }
     obj
 }
 

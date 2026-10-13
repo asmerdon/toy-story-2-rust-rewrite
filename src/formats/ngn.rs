@@ -356,6 +356,58 @@ pub struct CreatureNode {
     pub mesh: Option<Mesh>,
 }
 
+/// Connecting geometry from creature tag 0x208 (the exe's `hobjload.c` calls it a patch).
+/// Every vertex is a copy of a shared vertex (tag 0x207) that follows one node's transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Patch {
+    /// 0: a single quad, corner k = shared vertex `verts[k]` following `nodes[k]`.
+    /// n > 0: two rows of n vertices; row A = shared `verts[0]..+n` following `nodes[0]`,
+    /// row B = shared `verts[1]..+n` following `nodes[1]`.
+    pub count: i16,
+    /// Index into the creature's shared materials (tag 0x206).
+    pub material: i16,
+    pub nodes: [i16; 4],
+    pub verts: [i16; 4],
+}
+
+impl Patch {
+    /// The patch's vertices as (shared vertex index, node index), in the engine's order:
+    /// row A then row B for strips, corners 0..3 for quads.
+    pub fn vertices(&self) -> Vec<(usize, usize)> {
+        let at = |v: i16, n: i16| (v as usize, n as usize);
+        if self.count == 0 {
+            (0..4).map(|k| at(self.verts[k], self.nodes[k])).collect()
+        } else {
+            let n = self.count;
+            let a = (0..n).map(|i| at(self.verts[0] + i, self.nodes[0]));
+            let b = (0..n).map(|i| at(self.verts[1] + i, self.nodes[1]));
+            a.chain(b).collect()
+        }
+    }
+
+    /// Triangles over `vertices()` indices.
+    pub fn triangles(&self) -> Vec<[usize; 3]> {
+        if self.count == 0 {
+            return vec![[0, 1, 2], [0, 2, 3]];
+        }
+        let n = self.count as usize;
+        (0..n.saturating_sub(1)).flat_map(|i| [[i, i + 1, n + i + 1], [i, n + i + 1, n + i]]).collect()
+    }
+}
+
+fn read_patches(d: &mut Cur) -> Result<Vec<Patch>> {
+    let n = d.u32()?;
+    (0..n)
+        .map(|_| {
+            let count = d.u16()? as i16;
+            let material = d.u16()? as i16;
+            let nodes = [d.u16()? as i16, d.u16()? as i16, d.u16()? as i16, d.u16()? as i16];
+            let verts = [d.u16()? as i16, d.u16()? as i16, d.u16()? as i16, d.u16()? as i16];
+            Ok(Patch { count, material, nodes, verts })
+        })
+        .collect()
+}
+
 /// One creature from chunk 0x106: the PC-converted model, skeleton and animations.
 #[derive(Debug, Clone)]
 pub struct Creature {
@@ -367,8 +419,8 @@ pub struct Creature {
     pub shared_textures: Vec<String>,
     pub shared_materials: Vec<Material>,
     pub shared_vertices: Vec<Vertex>,
-    /// Tag 0x208, not decoded. Probably maps shared vertices to joints.
-    pub shared_map: Vec<u8>,
+    /// Tag 0x208: connecting geometry built from `shared_vertices`, each vertex following a node.
+    pub patches: Vec<Patch>,
     /// Tag 0x204 records. Same header (F0 FF 03 00) as the PS1 `.anm` files; not decoded.
     pub animations: Vec<Vec<u8>>,
 }
@@ -402,7 +454,7 @@ fn parse_creatures(b: &[u8], r: Range<usize>) -> Result<Vec<Creature>> {
                 shared_textures: Vec::new(),
                 shared_materials: Vec::new(),
                 shared_vertices: Vec::new(),
-                shared_map: Vec::new(),
+                patches: Vec::new(),
                 animations: Vec::new(),
             });
         }
@@ -429,7 +481,7 @@ fn parse_creatures(b: &[u8], r: Range<usize>) -> Result<Vec<Creature>> {
             0x205 => cr.shared_textures = read_texture_list(&mut d, end)?.0,
             0x206 => cr.shared_materials = read_materials(&mut d, at)?,
             0x207 => cr.shared_vertices = read_vertices(&mut d, at, len)?,
-            0x208 => cr.shared_map = d.take(len, "0x208")?.to_vec(),
+            0x208 => cr.patches = read_patches(&mut d)?,
             _ => return Err(Error::Malformed { at, what: format!("unknown creature tag {tag:#x}") }),
         }
         if d.o != end {
