@@ -300,7 +300,15 @@ pub struct Player {
     spawn_facing: i32,
     /// Plays the move table; set by the caller when toy2.exe is available.
     pub anim: Option<BuzzAnimator>,
+    /// `data\rand.dat`, the game's table of random bytes, and the read position (0x52ADAC).
+    random: Vec<u8>,
+    random_pos: usize,
 }
+
+/// The read pointer into rand.dat goes back to the start after this many bytes.
+const RANDOM_WRAP: usize = 0x5DC;
+/// Entry of the standing list where Buzz may start a fidget.
+const FIDGET_ENTRY: u32 = 14;
 
 impl Player {
     pub fn new(pos: Vec3) -> Player {
@@ -328,6 +336,38 @@ impl Player {
             spawn: pos,
             spawn_facing: 0,
             anim: None,
+            random: Vec::new(),
+            random_pos: 0,
+        }
+    }
+
+    /// Gives the player the game's random table (`data\rand.dat`); without it Buzz never fidgets.
+    pub fn set_random_table(&mut self, bytes: Vec<u8>) {
+        self.random = bytes;
+        self.random_pos = 0;
+    }
+
+    fn next_random(&mut self) -> Option<u8> {
+        let b = *self.random.get(self.random_pos)?;
+        self.random_pos += 1;
+        if self.random_pos > RANDOM_WRAP {
+            self.random_pos = 0;
+        }
+        Some(b)
+    }
+
+    /// While standing on the idle list's entry 14, one random byte a tick; 1 in 4 starts a
+    /// fidget (0x1C or 0x1D, by a second byte). Part of 0x4011D0.
+    fn roll_fidget(&mut self) {
+        let at_entry = self.anim.as_ref().and_then(|a| a.entry()) == Some((state::IDLE, FIDGET_ENTRY));
+        if !at_entry || self.state != state::IDLE {
+            return;
+        }
+        if let Some(b) = self.next_random()
+            && b & 3 == 0
+        {
+            let which = self.next_random().unwrap_or(0) & 1;
+            self.idle_sub = state::FIDGET + which as u16;
         }
     }
 
@@ -430,6 +470,8 @@ impl Player {
             if !anim.as_mut().is_some_and(|a| a.tick(state, speed)) {
                 break;
             }
+            // 0xFE also clears the standing sub-state (0x50A098).
+            self.idle_sub = 0;
         }
 
         if self.pos.y > world.hi.y + 4000.0 {
@@ -653,50 +695,53 @@ impl Player {
     }
 
     /// The part of 0x4011D0 that picks the animation state for the moves ported so far.
-    /// Not yet: teeter (10/11), idle fidgets (0x1C/0x1D) and states set by other systems.
+    /// Not yet: teeter (10/11) and states set by other systems.
     fn select_state(&mut self, pushing: bool) {
-        let s = &mut self.state;
         if self.coyote == 0 {
             self.idle_sub = 0;
-            if *s == state::JUMP {
+            if self.state == state::JUMP {
                 if self.vel[1] > 0 {
-                    *s = state::FALL;
+                    self.state = state::FALL;
                 }
-            } else if *s == 5 {
-                *s = state::LAND;
+            } else if self.state == 5 {
+                self.state = state::LAND;
             }
             if self.fall_timer == FALL_PANIC {
-                *s = state::FALL_PANIC;
+                self.state = state::FALL_PANIC;
             }
         } else {
-            if *s == state::FALL {
-                *s = state::LAND;
+            if self.state == state::FALL {
+                self.state = state::LAND;
             }
             if self.forward < 0x200 && self.side.abs() < 0x200 && !pushing {
-                if *s == state::LAND {
+                if self.state == state::LAND {
                     self.idle_sub = 0;
                 } else {
+                    // Teeter (10/11) would be chosen here when Buzz's centre is over a drop;
+                    // our point floor ray never leaves him standing like that.
                     if self.idle_sub == 0 {
                         self.idle_sub = state::IDLE;
+                    } else if self.idle_sub == state::IDLE {
+                        self.roll_fidget();
                     }
-                    *s = self.idle_sub;
+                    self.state = self.idle_sub;
                 }
             } else {
                 self.idle_sub = 0;
-                *s = state::RUN;
+                self.state = state::RUN;
             }
             if self.skid != 0 {
-                *s = state::SKID;
+                self.state = state::SKID;
             }
         }
         if self.stomp > 0 {
-            *s = state::STOMP;
+            self.state = state::STOMP;
         }
         if self.stomp < -STOMP_HANG {
-            *s = state::STOMP_LAND;
+            self.state = state::STOMP_LAND;
         }
         if self.fall_timer < 0 {
-            *s = state::FALL_RECOVER;
+            self.state = state::FALL_RECOVER;
         }
     }
 }
@@ -883,6 +928,27 @@ mod tests {
         assert!(panicked);
         p.tick(&w, [0.0; 2], false, false);
         assert_eq!(p.state, state::FALL_RECOVER);
+    }
+
+    #[test]
+    fn standing_still_rolls_a_fidget_on_entry_14() {
+        use crate::formats::exe::BuzzMove;
+        let row = |list: Vec<u8>| BuzzMove { frames: vec![], end: 0, list, anim: 0, base_anim: 0, rate_raw: 0x10000 };
+        let mut moves: Vec<BuzzMove> = (0..33).map(|_| row(vec![0, 0xFF, 1])).collect();
+        moves[state::IDLE as usize] = row((0..16).chain([0xFF, 16]).collect());
+        moves[state::FIDGET as usize] = row(vec![0, 1, 2, 0xFE]);
+        let w = room();
+        let mut p = landed(&w);
+        p.anim = Some(BuzzAnimator::new(moves));
+        p.set_random_table(vec![4, 0, 0, 0]);
+        let mut seen = Vec::new();
+        for _ in 0..40 {
+            p.tick(&w, [0.0; 2], false, false);
+            seen.push(p.state);
+        }
+        // Entry 14 reads 4 (no), then 0 → fidget 0x1C (second byte 0); it ends back in idle.
+        let first = seen.iter().position(|&s| s == state::FIDGET).expect("no fidget");
+        assert!(seen[first..].contains(&state::IDLE), "{seen:?}");
     }
 
     #[test]

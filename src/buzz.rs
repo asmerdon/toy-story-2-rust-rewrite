@@ -24,6 +24,8 @@ pub mod state {
     pub const STOMP: u16 = 0x17;
     /// Stomp impact.
     pub const STOMP_LAND: u16 = 0x18;
+    /// Idle fidgets, picked at random while standing.
+    pub const FIDGET: u16 = 0x1C;
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +99,11 @@ impl BuzzAnimator {
         }
         self.pos += inc as u32;
         self.settle(state)
+    }
+
+    /// The state whose list is playing and the current entry in it.
+    pub fn entry(&self) -> Option<(u16, u32)> {
+        Some((self.current?, self.pos >> 16))
     }
 
     /// The pose for the current list position.

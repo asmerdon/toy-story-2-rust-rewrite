@@ -167,6 +167,7 @@ struct Viewer {
     player_yaw_offset: f32,
     jump_pressed: bool,
     collision_batch: Option<scene::Batch>,
+    random_table: Option<Vec<u8>>,
     show_collision: bool,
     stomp_pressed: bool,
     /// Animation browsed with [ ] in play mode, shown on Buzz until 0 is pressed.
@@ -567,6 +568,9 @@ impl Viewer {
         let mut player = game::Player::new(feet);
         player.set_facing(yaw);
         player.anim = self.buzz.clone();
+        if let Some(r) = &self.random_table {
+            player.set_random_table(r.clone());
+        }
         self.player = Some(player);
         self.creature_idx = ci;
         self.anim_preview = None;
@@ -782,6 +786,8 @@ fn main() {
             game::World::from_batches(&level)
         }
     };
+    // The game's random bytes (data/rand.dat, next to the levelNN folders): idle fidgets.
+    let random_table = std::path::Path::new(path).parent().and_then(|d| d.parent()).and_then(|d| std::fs::read(d.join("rand.dat")).ok());
     // Collision overlay (K): the terrain triangles, nudged up so they don't z-fight the floor.
     let collision_batch = terrain.as_ref().map(|t| scene::Batch {
         vertices: t
@@ -819,6 +825,7 @@ fn main() {
         anim_preview: None,
         jump_pressed: false,
         collision_batch,
+        random_table,
         show_collision: false,
         stomp_pressed: false,
         ngn,

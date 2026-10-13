@@ -86,7 +86,7 @@ Alternate profiles in 0x436220 use accel 0x10/0x08 and jumps of −0x640 / −0x
 
 Buzz states (`0x52F390`): 0 run (speed-scaled), 1 stand, 2 jump (rising), 3 fall, 4 land, 5 (from timer `+0x94` > 0x44, not the double jump), 8 double jump (wings), 0xC long-fall panic, 0xD fall recovery, 0x12 skid, 0x17/0x18 stomp, 10/11 teeter on a ledge (front/behind probe), 0x1C/0x1D idle fidgets, 0x1F swim; others are set by flags from other systems (hurt, specials) and not yet labelled. `0x52F39C` = on ground. Velocity `0x52F368/36C/370`.
 
-Ported in `src/game.rs` (`Player::tick`, 60 Hz, integer units) and `src/buzz.rs` (`BuzzAnimator`, the 0x401000 stepper): profile, stomp, airborne, turn, accelerate, coyote counter, fall timer, and the 0x4011D0 states 0–4, 8, 0xC, 0xD, 0x12, 0x17, 0x18. Collision is still ours.
+Ported in `src/game.rs` (`Player::tick`, 60 Hz, integer units) and `src/buzz.rs` (`BuzzAnimator`, the 0x401000 stepper): profile, stomp, airborne, turn, accelerate, coyote counter, fall timer, and the 0x4011D0 states 0–4, 8, 0xC, 0xD, 0x12, 0x17, 0x18 and the idle fidgets 0x1C/0x1D (rand.dat: 2,048 bytes loaded at 0x84C3E0, read pointer 0x52ADAC reset per level, wraps after 0x5DC; one byte per tick on idle entry 14, 1 in 4 fidgets). 0xFE also clears the standing sub-state 0x50A098. Collision is still ours.
 
 Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+10 (InitLevelPlay subtracts 10 and switches to the `level1` files).
 
