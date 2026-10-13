@@ -8,7 +8,7 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 - Rust: stable via rustup (`%USERPROFILE%\.cargo\bin`), MSVC build tools installed
 - Ghidra 12.1.4: `C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC`; JDK 21 (Temurin) in `C:\Program Files\Eclipse Adoptium\`
 - Decompiled output: `re/out/c/<address>.c` (1,317 functions), plus `re/out/strings.tsv` and `functions.tsv`. **Git-ignored and must never be committed.** Re-generate with the command in PROJECT.md (Phase 2).
-- Tests: `set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`, then `cargo test --release` (25 tests)
+- Tests: `set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`, then `cargo test --release` (26 tests)
 - Viewer: `cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"`
 
 ## Rules
@@ -19,7 +19,7 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 
 ## Status
 See the README table in PROJECT.md. In short:
-- **Formats done:** `.ngn` (textures, level meshes, instances, creatures, patches), `.anm`/0x204 animations, `.raw` packets (LZ) and creature spawns, the `.all` PS1 models, the exe player-start table and Buzz's move table.
+- **Formats done:** `TERRAIN.ALL` collision, `.ngn` (textures, level meshes, instances, creatures, patches), `.anm`/0x204 animations, `.raw` packets (LZ) and creature spawns, the `.all` PS1 models, the exe player-start table and Buzz's move table.
 - **Viewer:**
   - renders levels with textures, vertex colour and the three blend modes
   - every creature appears at its spawn point and animates
@@ -27,8 +27,8 @@ See the README table in PROJECT.md. In short:
   - Z shows the zone-0 meshes (the first-person helmet view), which are hidden by default
 
 ## Known issues / next steps (in priority order)
-Done: double-jump formula and wings; Buzz's controller as a 60 Hz integer port (stomp on E, turning and skid, coyote time, long fall); the 0x401000 frame-list stepper (0xFE ends a list); the base root-node offset for overlay animations (0x43BA80).
-1. **Real collision:** port the original (move-and-collide 0x434550 → 0x4855F0/0x484380, floor query 0x486280/0x4863A0, `level.dat` sections 2–3, parser 0x43E6E0) instead of the render-triangle collision in `src/game.rs`.
+Done: collision from the original `TERRAIN.ALL` (K shows it); double-jump formula and wings; Buzz's controller as a 60 Hz integer port (stomp on E, turning and skid, coyote time, long fall); the 0x401000 frame-list stepper (0xFE ends a list); the base root-node offset for overlay animations (0x43BA80).
+1. **Collision resolve:** the original collision data (`TERRAIN.ALL`, docs/formats/terrain.md) is now loaded and used; the resolve is still ours (floor ray + wall sphere). Port 0x484380 → 0x482A00 / 0x483EF0 next, then the type-8 movers (platforms/doors driven by level objects, `level.dat` section 3 parsed by 0x43E6E0).
 2. **Remaining Buzz states:** teeter (10/11, needs the floor probe 0x486280), idle fidgets (0x1C/0x1D, the shared random-byte pointer 0x52ADAC), climb (0x4354E0), swim (0x4A4BB0), sounds (0x49E660 ids are noted in comments; `sfx\*.wav` mapping via the table at 0x502950), stomp dust and camera shake. The original's camera (0x403450 and friends) isn't ported either.
 3. **Enemies:** behaviour per creature type (spawn records have 19 undecoded parameter bytes; per-creature frame-list tables set the speeds).
 4. **Deferred cosmetic items:** level instance rotation/scale fields, the `0x41` 26-byte material tail, and the `.ngn` chunks 0x102/0x103/0x105.

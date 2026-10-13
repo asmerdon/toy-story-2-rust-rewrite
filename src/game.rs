@@ -105,6 +105,15 @@ impl World {
                 tris.push([0, 1, 2].map(|i| Vec3::from(t[i].pos)));
             }
         }
+        World::from_triangles(tris)
+    }
+
+    /// From the original collision data (`TERRAIN.ALL`, see `formats::terrain`).
+    pub fn from_terrain(t: &crate::formats::terrain::Terrain) -> World {
+        World::from_triangles(t.static_triangles().into_iter().map(|t| t.map(Vec3::from)).collect())
+    }
+
+    pub fn from_triangles(tris: Vec<[Vec3; 3]>) -> World {
         let mut normals = Vec::with_capacity(tris.len());
         let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));

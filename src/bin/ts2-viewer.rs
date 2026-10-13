@@ -166,6 +166,8 @@ struct Viewer {
     buzz: Option<buzz::BuzzAnimator>,
     player_yaw_offset: f32,
     jump_pressed: bool,
+    collision_batch: Option<scene::Batch>,
+    show_collision: bool,
     stomp_pressed: bool,
     /// Animation browsed with [ ] in play mode, shown on Buzz until 0 is pressed.
     anim_preview: Option<usize>,
@@ -531,6 +533,11 @@ impl Viewer {
             let t = anim.map_or(0.0, |a| self.anim_time % (a.frame_count.max(2) - 1) as f32);
             scene::merge(&mut batches, scene::creature_batches(&self.ngn, c, pos, yaw, anim.map(|a| (a, t))));
         }
+        if self.show_collision
+            && let Some(c) = &self.collision_batch
+        {
+            batches.push(c.clone());
+        }
         gfx.creature = upload(&gfx.device, &batches, gfx.texture_bgs.len() - 1);
     }
 
@@ -597,6 +604,10 @@ impl Viewer {
                     g.level = upload(&g.device, &level, g.texture_bgs.len() - 1);
                 }
                 println!("zone-0 meshes {}", if hide { "hidden" } else { "shown" });
+            }
+            KeyCode::KeyK => {
+                self.show_collision = !self.show_collision;
+                println!("collision overlay {}", if self.show_collision { "shown" } else { "hidden" });
             }
             KeyCode::KeyN => {
                 self.show_spawns = !self.show_spawns;
@@ -751,7 +762,35 @@ fn main() {
     // Zone-0 instances are camera-attached models (first-person helmet view), not level
     // geometry: hidden by default and never collided with.
     let level = scene::level_batches_filtered(&ngn, |i| i.flags & 0xFFFF != 0);
-    let world = game::World::from_batches(&level);
+    // Collision: the original's TERRAIN.ALL / TERR1.ALL next to the level, else the render mesh.
+    let terrain = ts2::formats::terrain::path_for(std::path::Path::new(path))
+        .and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)))
+        .and_then(|(p, b)| match ts2::formats::terrain::parse(&b) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                println!("{}: {e}", p.display());
+                None
+            }
+        });
+    let world = match &terrain {
+        Some(t) => {
+            println!("collision from the original terrain file ({} objects; K shows it)", t.objects.len());
+            game::World::from_terrain(t)
+        }
+        None => {
+            println!("no terrain file: colliding with the render geometry");
+            game::World::from_batches(&level)
+        }
+    };
+    // Collision overlay (K): the terrain triangles, nudged up so they don't z-fight the floor.
+    let collision_batch = terrain.as_ref().map(|t| scene::Batch {
+        vertices: t
+            .static_triangles()
+            .into_iter()
+            .flat_map(|tri| tri.map(|p| scene::GpuVertex { pos: [p[0], p[1] - 4.0, p[2]], uv: [0.0; 2], color: [0xFF, 0x30, 0xC0, 0x30] }))
+            .collect(),
+        ..Default::default()
+    });
     let player_creature = ngn.creatures.iter().position(|c| c.id == 0);
 
     // Player start: table in the user's toy2.exe (game dir = two levels above levelNN\).
@@ -779,6 +818,8 @@ fn main() {
         player_yaw_offset: std::f32::consts::PI,
         anim_preview: None,
         jump_pressed: false,
+        collision_batch,
+        show_collision: false,
         stomp_pressed: false,
         ngn,
         anims,

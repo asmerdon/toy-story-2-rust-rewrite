@@ -129,6 +129,12 @@ Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when dra
 | 0x452310 | `LoadPackets` ✔ | "Loading packet data %s"; type 35 creature list, 36 map |
 | 0x47B170 | `Unpack` ✔ | LZ decompressor (docs/formats/packets.md) |
 | 0x43E6E0 | `ParseLevelDat` ~ | level.dat sections 1–3 |
+| 0x489C30 | `InitCollision` ✔ | Loads `levelNN	errain|terr1|terr2|terr3.all` (mode bits), bounds per object, 5×5 grid. docs/formats/terrain.md |
+| 0x489980 | `LoadTerrain` ✔ | Directory of 76-byte object records → object table 0x7295A8 (300 × 0x34); instances share template data |
+| 0x485940 | `GatherCollision` ✔ | Polygons within ±0x500 of a point into one of 8 caches |
+| 0x486520 | `FloorHeight` ~ | Height under a point from the gathered polygons (rotates type-8 movers by their level object's angles) |
+| 0x486280 / 0x4863A0 | `FloorBelow` / `PlayerFloor` ✔ | Wrappers: gather + 0x486520; the player version probes from y − 0x400 and handles standing on movers |
+| 0x484380 | `MoveAndCollideCore` ~ | Swept resolve: 0x482A00 (polygons) + 0x483EF0 (floor), 3–4 passes; writes floor contact to `+0x8E` |
 | 0x49FAB0 | `SpawnChallengeReward` ~ | Matches type-58 positions to objects 0x71/0x73 |
 
 ## Rendering primitives

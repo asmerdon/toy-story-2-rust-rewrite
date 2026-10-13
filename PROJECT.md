@@ -57,7 +57,8 @@ ts2/                    one crate for now; split into a workspace once it grows
 | `.all` PS1 models | ✅ geometry for all 68 (9,556 polys), incl. smooth-shaded (per-vertex normal indices). Trailer not decoded. Now reference-only. |
 | `.raw` packet files | ✅ Container + LZ decompressor (all 827 packets exact). ✅ Creature spawn list (type 35): position + creature id. ❌ Spawn parameters, map (36), other tables, player start. See `docs/formats/packets.md`. |
 | `.bin` / `PAD\PATH*.BIN` | Not started. Level objects, AI paths. |
-| `fmv.bin`, `level.vis`, `TERRAIN.ALL` | Not started. |
+| `TERRAIN.ALL` / `TERR1.ALL` | ✅ Collision polygons per object (docs/formats/terrain.md). Used by play mode. |
+| `fmv.bin`, `level.vis` | Not started. |
 | `.sav` | Not started. 407 bytes, easy win. |
 
 Details: `docs/formats/all.md`, `docs/formats/ngn.md`.
@@ -86,7 +87,7 @@ cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy
 ```
 The viewer now loads `level*.raw` next to the `.ngn` and shows every creature at its spawn point (N toggles).
 Notes: `level*.bin` is PS1 MIPS code (per-level overlays), not data. `level.dat` is loaded by the PC game, and its first section holds typed point lists, probably collision/terrain (parser 0x43E6E0).
-**Play mode:** F starts Buzz at the level's original start. Buzz's controller is a port of the original's 60 Hz routines (run, gradual turning and skid, variable-height jump, double jump with wings, stomp on E, coyote time, long-fall panic), animated from the exe's move table. Collision still uses the render triangles (floor ray + chest-height wall sphere).
+**Play mode:** F starts Buzz at the level's original start. Buzz's controller is a port of the original's 60 Hz routines (run, gradual turning and skid, variable-height jump, double jump with wings, stomp on E, coyote time, long-fall panic), animated from the exe's move table. Collision uses the original `TERRAIN.ALL` polygons (K overlays them) with our own resolve (floor ray + chest-height wall sphere).
 
 `level.dat` section 1 (decoded): 53 typed point lists. Types 0–40 are paths (0–8 are challenge routes), type 58 holds challenge reward positions (250 units above the floor, matched against pickup objects by 0x49FAB0), type 63 has 4 values per point, and type 65 is 22 five-point zones. Sections 2–3 (128-byte cells, 20-byte object records) are not decoded. Per-level sound lists: tables at 0x4FD140 / 0x4FD5E0, used by 0x47EC20.
 
