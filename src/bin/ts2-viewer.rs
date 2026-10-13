@@ -7,7 +7,7 @@
 //!   right mouse + move   look          WASD          move
 //!   Space / Ctrl         up / down     Shift         move faster
 //!   N                    show / hide creatures at their spawn points (from level*.raw)
-//!   Z                    hide / show zone-0 meshes (hidden menu/HUD models in level01)
+//!   Z                    hide / show zone-0 meshes (first-person helmet view; hidden by default)
 //!   P                    place creature in front of camera
 //!   F                    play as Buzz (drops him below the camera) / back to free camera
 //!     in play mode: WASD run, Space jump, right-drag orbit camera,
@@ -469,7 +469,11 @@ impl Viewer {
                 }
             }
             let m = m.normalize_or_zero();
-            let input = game::Input { move_xz: [m.x, -m.z], jump: std::mem::take(&mut self.jump_pressed) };
+            let input = game::Input {
+                move_xz: [m.x, -m.z],
+                jump: std::mem::take(&mut self.jump_pressed),
+                jump_held: self.keys.contains(&KeyCode::Space),
+            };
             player.update(&self.world, input, dt);
             // Follow camera: orbit behind the player at chest height.
             let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
@@ -740,7 +744,9 @@ fn main() {
     println!("right-drag look, WASD move, N spawns, P place creature, Tab next creature, [ ] animation, C colour mode, T transparency");
 
     let n_creatures = ngn.creatures.len();
-    let level = scene::level_batches(&ngn);
+    // Zone-0 instances are camera-attached models (first-person helmet view), not level
+    // geometry: hidden by default and never collided with.
+    let level = scene::level_batches_filtered(&ngn, |i| i.flags & 0xFFFF != 0);
     let world = game::World::from_batches(&level);
     let player_creature = ngn.creatures.iter().position(|c| c.id == 0);
 
@@ -781,7 +787,7 @@ fn main() {
         creature_pos: None,
         spawns,
         show_spawns: true,
-        hide_zone0: false,
+        hide_zone0: true,
         anim_idx: 0,
         anim_time: 0.0,
         speed: 1.0,

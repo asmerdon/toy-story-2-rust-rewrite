@@ -47,7 +47,7 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | `0x4DF3F0` (data) | `BuzzMoveTable` ✔ | 33 × 20 bytes: frame-list ptr, overlay anim, base anim, rate (16.16 per tick; negative = scaled by horizontal speed), flag. Uses all 35 animations (tests/player_start.rs) |
 | 0x401000 | `StepBuzzSeq` ~ | Frame-list step with event markers ≥ 0x80 |
 | 0x434090 | `StartJump(vy, kind)` ✔ | Clears on-ground (`0x52F39C`), state 2, vy = arg; normal callers pass −0xC00 |
-| 0x4340D0 | `BounceBuzz(obj, vy, …)` ~ | Same from creature code |
+| 0x4340D0 | `BuzzAirborne(obj, jumpVy, force)` ✔ | Jump start, variable height (release while rising: +0x180/k², then halve − 0x100/k²), double jump (−0x900/k after release+press, height-limited, clamp 0x22A–0x74C), gravity 0x100/k² per tick, terminal 0x800 (k = 2; k = 4 with flag 0x52F340&0x100). Jump phase at +0x8C: 1 held, 2 released, 5/6 double |
 | 0x4A4BB0 | `BuzzSwim` ✔ | Drifts towards a target depth; Cross raises it; vy clamped ±0x180 |
 | 0x490860 | `FrameTimer` ✔ | Ticks = elapsed ms × 60 / 1000 → **60 ticks per second**; alternative fixed mode is 2 ticks/frame |
 
@@ -57,7 +57,7 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x436220 | `BuzzControl` ✔ | Fills a movement profile, runs the helpers below, scales velocity by ticks, calls move-and-collide |
 | 0x4346C0 | `BuzzTurn` ✔ | Turns facing towards the stick at the profile's turn rate |
 | 0x4343D0 | `BuzzGroundAccel` ✔ | World velocity → forward/sideways; accelerate/brake/clamp by profile; back to world |
-| 0x434D20 | `BuzzFall` ~ | Airborne gravity 0x40/tick, terminal 0x800 |
+| 0x434D20 | `BuzzStomp` ✔ | Circle in the air: hang, then slam at 0x800 (states 0x17/0x18), dust + 40-tick recovery on impact |
 | 0x434550 | `BuzzMoveAndCollide` ~ | Applies velocity and resolves collision |
 | 0x4354E0 | `BuzzClimb` ✔ | Pole/ladder: up/down moves (cap 0x400, slide 0x800), jump off −0x400 + facing push, or −0x600 |
 | 0x4359D0 / 0x435100 / 0x435F30 | other movement modes ? | |
@@ -69,9 +69,10 @@ Default ground profile (object units per tick; ÷32 × 60 → level units per se
 | Max forward speed | 0x380 | 1,680 /s |
 | Acceleration while pushing (accel 0x28 + friction 0x30) | 0x58 /tick | 9,900 /s² |
 | Friction | 0x30 /tick | 5,400 /s² |
-| Normal jump | −0x600 | 2,880 /s up |
+| Normal jump | −0x600 | 2,880 /s up (full height only while held) |
+| Double jump | −0x480 | 2,160 /s up |
 | Turn-rate field | 0x400 | |
-| Gravity (airborne) | 0x40 /tick | 7,200 /s² |
+| Gravity (airborne, 0x4340D0) | 0x100/k² = 0x40 /tick | 7,200 /s² |
 | Terminal fall | 0x800 | 3,840 /s |
 
 Alternate profiles in 0x436220 use accel 0x10/0x08 and jumps of −0x640 / −0x3C0 / −0x300 (air control, special surfaces; not yet labelled). `StartJump(−0xC00)` is a special, bigger jump.

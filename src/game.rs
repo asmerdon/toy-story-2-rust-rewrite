@@ -29,11 +29,23 @@ const RUN_SPEED: f32 = per_s(0x380 as f32);
 const RUN_ACCEL: f32 = per_s2((0x28 + 0x30) as f32);
 /// Friction when not pushing: 0x30 per tick.
 const RUN_FRICTION: f32 = per_s2(0x30 as f32);
-/// Normal jump: vy = -0x600 (passed to 0x4340D0 by the controller).
+/// Normal jump: vy = -0x600 (passed to the airborne routine 0x4340D0 by the controller).
 const JUMP_SPEED: f32 = per_s(0x600 as f32);
-/// Airborne gravity 0x40 per tick, capped at 0x800 (0x434D20). Very likely, not certain.
+// Airborne routine 0x4340D0 with its normal divisor k = 2:
+/// Gravity 0x100 / k² = 0x40 per tick.
 const GRAVITY: f32 = per_s2(0x40 as f32);
+/// Terminal fall 0x800.
 const TERMINAL_FALL: f32 = per_s(0x800 as f32);
+/// Releasing jump while rising faster than 800 / k: add 0x180 / k², then halve and subtract 0x100 / k².
+const JUMP_CUT_THRESHOLD: f32 = per_s(400.0);
+const JUMP_CUT_BOOST: f32 = per_s(0x60 as f32);
+const JUMP_CUT_SUB: f32 = per_s(0x40 as f32);
+/// Double jump: vy = -0x900 / k, allowed while not rising faster than 0x400.
+const DOUBLE_JUMP_SPEED: f32 = per_s(0x480 as f32);
+const DOUBLE_JUMP_MAX_RISE: f32 = per_s(0x400 as f32);
+/// When already above the first jump's start, the original computes a reduced boost (a float
+/// expression not yet decoded) clamped to [0x22A, 0x74C]; we use the lower bound.
+const DOUBLE_JUMP_SPEED_HIGH: f32 = per_s(0x22A as f32);
 const CELL: f32 = 1024.0;
 /// |normal.y| above this is floor/ceiling, below is wall.
 const FLOOR_NY: f32 = 0.6;
@@ -173,19 +185,36 @@ pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     a + ab * (vb * denom) + ac * (vc * denom)
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Input {
     /// Desired move direction in game space (x, z), length ≤ 1.
     pub move_xz: [f32; 2],
+    /// Jump pressed this frame (edge).
     pub jump: bool,
+    /// Jump button currently held.
+    pub jump_held: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Motion {
     Idle,
     Run,
-    /// `rising` while moving upward (game -Y).
-    Air { rising: bool },
+    /// `rising` while moving upward (game -Y); `double` after a double jump.
+    Air { rising: bool, double: bool },
+}
+
+/// Jump phase, as the original keeps it at player +0x8C.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JumpPhase {
+    /// On the ground (or fell off a ledge without jumping).
+    #[default]
+    None,
+    /// First jump, button still held (phase 1).
+    Holding,
+    /// First jump, button released; a new press can double jump (phase 2).
+    Released,
+    /// Double jump, button held (phase 5) / released (phase 6).
+    Double,
 }
 
 #[derive(Debug, Clone)]
@@ -197,11 +226,14 @@ pub struct Player {
     pub yaw: f32,
     pub grounded: bool,
     pub spawn: Vec3,
+    pub jump: JumpPhase,
+    /// Height where the first jump started (limits the double jump).
+    jump_start_y: f32,
 }
 
 impl Player {
     pub fn new(pos: Vec3) -> Player {
-        Player { pos, vel: Vec3::ZERO, yaw: 0.0, grounded: false, spawn: pos }
+        Player { pos, vel: Vec3::ZERO, yaw: 0.0, grounded: false, spawn: pos, jump: JumpPhase::None, jump_start_y: pos.y }
     }
 
     /// Horizontal speed in level units per second.
@@ -211,7 +243,7 @@ impl Player {
 
     pub fn motion(&self) -> Motion {
         if !self.grounded {
-            Motion::Air { rising: self.vel.y < 0.0 }
+            Motion::Air { rising: self.vel.y < 0.0, double: self.jump == JumpPhase::Double }
         } else if self.vel.x.hypot(self.vel.z) > 10.0 {
             Motion::Run
         } else {
@@ -234,9 +266,27 @@ impl Player {
         if pushing {
             self.yaw = mx.atan2(mz);
         }
-        if input.jump && self.grounded {
-            self.vel.y = -JUMP_SPEED; // up is -Y
+        // Jumping, after the airborne routine 0x4340D0 (up is -Y).
+        if self.grounded && input.jump {
+            self.vel.y = -JUMP_SPEED;
             self.grounded = false;
+            self.jump = JumpPhase::Holding;
+            self.jump_start_y = self.pos.y;
+        } else if !input.jump_held {
+            // Letting go while still rising cuts the jump short.
+            if self.jump == JumpPhase::Holding {
+                if self.vel.y < 0.0 {
+                    if self.vel.y < -JUMP_CUT_THRESHOLD {
+                        self.vel.y += JUMP_CUT_BOOST;
+                    }
+                    self.vel.y = self.vel.y / 2.0 - JUMP_CUT_SUB;
+                }
+                self.jump = JumpPhase::Released;
+            }
+        } else if input.jump && self.jump == JumpPhase::Released && self.vel.y > -DOUBLE_JUMP_MAX_RISE {
+            let above_start = self.pos.y < self.jump_start_y;
+            self.vel.y = -if above_start { DOUBLE_JUMP_SPEED_HIGH } else { DOUBLE_JUMP_SPEED };
+            self.jump = JumpPhase::Double;
         }
         self.vel.y = (self.vel.y + GRAVITY * dt).min(TERMINAL_FALL);
 
@@ -255,6 +305,7 @@ impl Player {
             p.y = f;
             self.vel.y = 0.0;
             self.grounded = true;
+            self.jump = JumpPhase::None;
         }
         self.pos = p;
 
@@ -296,23 +347,50 @@ mod tests {
         let w = room();
         let mut p = Player::new(Vec3::new(0.0, 0.0, 0.0));
         for _ in 0..240 {
-            p.update(&w, Input { move_xz: [1.0, 0.0], jump: false }, 1.0 / 60.0);
+            p.update(&w, Input { move_xz: [1.0, 0.0], ..Default::default() }, 1.0 / 60.0);
         }
         assert!(p.pos.x < 1000.0 - RADIUS + 5.0 && p.pos.x > 800.0, "{:?}", p.pos);
     }
 
-    #[test]
-    fn jump_goes_up_then_lands() {
+    /// Jumps from the floor, holding the button for `hold` frames; returns the peak height.
+    fn jump_peak(hold: usize) -> (f32, Player) {
         let w = room();
         let mut p = Player::new(Vec3::ZERO);
         p.update(&w, Input::default(), 1.0 / 60.0);
-        p.update(&w, Input { move_xz: [0.0; 2], jump: true }, 1.0 / 60.0);
+        p.update(&w, Input { jump: true, jump_held: true, ..Default::default() }, 1.0 / 60.0);
         let mut peak: f32 = 0.0;
-        for _ in 0..120 {
-            p.update(&w, Input::default(), 1.0 / 60.0);
+        for i in 0..180 {
+            p.update(&w, Input { jump_held: i < hold, ..Default::default() }, 1.0 / 60.0);
             peak = peak.min(p.pos.y);
         }
-        assert!(peak < -300.0, "peak {peak}");
-        assert!(p.grounded);
+        (peak, p)
+    }
+
+    #[test]
+    fn held_jump_goes_higher_than_tap_and_lands() {
+        let (full, p) = jump_peak(120);
+        let (tap, _) = jump_peak(0);
+        // Full jump: v²/2g = 2880² / (2·7200) = 576 units.
+        assert!((full + 576.0).abs() < 40.0, "full jump peak {full}");
+        assert!(tap > full / 2.0, "tap {tap} should be well below full {full}");
+        assert!(p.grounded && p.jump == JumpPhase::None);
+    }
+
+    #[test]
+    fn double_jump_needs_release_then_press() {
+        let w = room();
+        let mut p = Player::new(Vec3::ZERO);
+        p.update(&w, Input::default(), 1.0 / 60.0);
+        p.update(&w, Input { jump: true, jump_held: true, ..Default::default() }, 1.0 / 60.0);
+        // Hold to near the apex, release, then press again.
+        for _ in 0..20 {
+            p.update(&w, Input { jump_held: true, ..Default::default() }, 1.0 / 60.0);
+        }
+        p.update(&w, Input::default(), 1.0 / 60.0);
+        assert_eq!(p.jump, JumpPhase::Released);
+        let before = p.vel.y;
+        p.update(&w, Input { jump: true, jump_held: true, ..Default::default() }, 1.0 / 60.0);
+        assert_eq!(p.jump, JumpPhase::Double);
+        assert!(p.vel.y < before, "double jump should push upward");
     }
 }

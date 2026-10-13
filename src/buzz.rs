@@ -12,6 +12,8 @@ pub mod state {
     pub const JUMP: usize = 2;
     pub const FALL: usize = 3;
     pub const LAND: usize = 4;
+    /// Double jump (anim 6); held until landing, then LAND.
+    pub const DOUBLE_JUMP: usize = 5;
 }
 
 pub struct BuzzAnimator {
@@ -44,9 +46,10 @@ impl BuzzAnimator {
         // Transitions as in 0x4011D0: rising → falling when moving down; falling → landing on
         // touchdown; landing plays out before standing/running.
         let next = match (motion, self.state) {
-            (Motion::Air { rising: true }, _) => state::JUMP,
-            (Motion::Air { rising: false }, _) => state::FALL,
-            (_, state::FALL | state::JUMP) => state::LAND,
+            (Motion::Air { double: true, .. }, _) => state::DOUBLE_JUMP,
+            (Motion::Air { rising: true, .. }, _) => state::JUMP,
+            (Motion::Air { rising: false, .. }, _) => state::FALL,
+            (_, state::FALL | state::JUMP | state::DOUBLE_JUMP) => state::LAND,
             (Motion::Idle, state::LAND) if !self.seq.finished => state::LAND,
             (Motion::Run, state::LAND) if !self.seq.finished => state::LAND,
             (Motion::Idle, _) => state::IDLE,
