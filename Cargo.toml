@@ -1,0 +1,15 @@
+[package]
+name = "ts2"
+version = "0.1.0"
+edition = "2024"
+description = "Clean-room Rust reimplementation of Toy Story 2 (PC, 1999) that loads assets from a user's own install"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ts2-tool"
+path = "src/bin/ts2-tool.rs"
+
+[dependencies]

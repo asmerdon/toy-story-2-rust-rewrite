@@ -1,0 +1,8 @@
+/target
+/out
+# Never commit original game data or anything extracted from it
+*.all
+*.anm
+*.ngn
+*.raw
+*.obj
