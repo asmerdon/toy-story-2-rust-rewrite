@@ -162,9 +162,9 @@ pub enum Prim {
     Triangles,
     /// Engine code 4. Each quad is in perimeter order.
     Quads,
-    /// Engine code 5. 5-vertex polygon in strip order.
+    /// Engine code 5. Sprite quad: pivot + 4 corners in strip order.
     Strip,
-    /// Engine code 6. 5-vertex polygon in fan order.
+    /// Engine code 6. Sprite quad, same layout as 5.
     Fan,
     Other(u32),
 }
@@ -196,6 +196,10 @@ impl Group {
         match self.prim {
             Prim::Triangles => i.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect(),
             Prim::Quads => i.chunks_exact(4).flat_map(|q| [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]).collect(),
+            // Codes 5 and 6 are flat sprite quads: index 0 is a pivot point (black, uv 0,0, shared
+            // by every quad of the mesh, not part of the shape) and the other four are the
+            // corners in strip order. Drawing the pivot gave the spikes seen on rails and webs.
+            Prim::Strip | Prim::Fan if i.len() == 5 => vec![[i[1], i[2], i[3]], [i[2], i[4], i[3]]],
             Prim::Strip => (2..i.len())
                 .map(|k| if k % 2 == 0 { [i[k - 2], i[k - 1], i[k]] } else { [i[k - 1], i[k - 2], i[k]] })
                 .collect(),

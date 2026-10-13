@@ -41,8 +41,7 @@ A mesh is a run of `{u32 tag, u32 len, body}` records ending with tag `0x00`.
 The primitive codes are the engine's own:
 - `1`: triangle list
 - `4`: quad list (perimeter order). Every count is divisible by 4 across all levels.
-- `5`: 5-vertex strip
-- `6`: 5-vertex fan
+- `5` and `6`: flat sprite quads (rails, spindles, cobwebs, plants), always 5 indices. Index 0 is a pivot point (colour black, uv (0, 0), shared by every quad of the mesh, off the shape) and indices 1–4 are the quad's corners in strip order. All vertices lie in the mesh's z = 0 plane and the materials have mode bit 0x8, so these are probably sprites that the engine can turn about the pivot; we draw them as placed. Drawing the pivot as a vertex (as the first decode did) produced fans of spikes. The "normal" floats of these vertices hold other data (tiny denormal-like values).
 
 Level vertices have a placeholder normal of (1, 0, 0); their lighting is baked into `color`. Bytes 1–3 of `color` vary like an RGB light value and byte 0 is 0x80/0xFF. **The byte order is unconfirmed.**
 
