@@ -585,8 +585,9 @@ impl Player {
         (self.pos.y * 32.0).round() as i32
     }
 
-    /// Advances by `dt` seconds of game time in whole 60 Hz ticks.
-    pub fn update(&mut self, world: &World, input: Input, dt: f32) {
+    /// Advances by `dt` seconds of game time in whole 60 Hz ticks; returns how many ran.
+    pub fn update(&mut self, world: &World, input: Input, dt: f32) -> u32 {
+        let mut ticks = 0;
         self.jump_latch |= input.jump;
         self.stomp_latch |= input.stomp;
         self.accum = (self.accum + dt * TICKS).min(MAX_TICKS_PER_UPDATE);
@@ -598,7 +599,9 @@ impl Player {
             self.jump_latch = false;
             self.stomp_latch = false;
             self.tick_pad(world, input.move_xz, input.dpad, held, pressed, stomp);
+            ticks += 1;
         }
+        ticks
     }
 
     /// One game tick (no d-pad, jump press = held).

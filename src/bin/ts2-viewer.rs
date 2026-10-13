@@ -174,6 +174,9 @@ struct Viewer {
     anims: Vec<Vec<anim::Animation>>,
     gfx: Option<Gfx>,
     cam: Camera,
+    /// The original follow camera (play mode) and whether it drives the view (V toggles).
+    orig_cam: Option<ts2::camera::Camera>,
+    use_orig_cam: bool,
     keys: std::collections::HashSet<KeyCode>,
     looking: bool,
     last: Instant,
@@ -517,7 +520,12 @@ impl Viewer {
                     .filter(|(k, _)| self.keys.contains(k))
                     .fold(0, |acc, (_, b)| acc | b),
             };
-            player.update(&self.world, input, dt);
+            let ticks = player.update(&self.world, input, dt);
+            if let Some(c) = self.orig_cam.as_mut() {
+                for _ in 0..ticks {
+                    c.tick(player, &self.world);
+                }
+            }
             // Sounds come from Buzz; the listener is the camera.
             let sounds: Vec<game::Sound> = player.sounds.drain(..).collect();
             if let Some(audio) = self.audio.as_mut() {
@@ -530,7 +538,16 @@ impl Viewer {
             }
             // Follow camera: orbit behind the player at chest height.
             let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
-            self.cam.pos = target - fwd * 4.5;
+            match self.orig_cam.as_ref().filter(|_| self.use_orig_cam) {
+                Some(c) => {
+                    self.cam.pos = game_to_world(c.position().to_array());
+                    let g = c.forward();
+                    let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
+                    self.cam.yaw = w.x.atan2(-w.z);
+                    self.cam.pitch = w.y.clamp(-1.0, 1.0).asin();
+                }
+                None => self.cam.pos = target - fwd * 4.5,
+            }
         } else {
             let mut v = Vec3::ZERO;
             for (k, d) in [
@@ -620,6 +637,7 @@ impl Viewer {
             player.set_random_table(r.clone());
         }
         player.set_poles(self.poles.clone());
+        self.orig_cam = Some(ts2::camera::Camera::new(&player));
         self.player = Some(player);
         self.creature_idx = ci;
         self.anim_preview = None;
@@ -657,6 +675,10 @@ impl Viewer {
                     g.level = upload(&g.device, &level, g.texture_bgs.len() - 1);
                 }
                 println!("zone-0 meshes {}", if hide { "hidden" } else { "shown" });
+            }
+            KeyCode::KeyV => {
+                self.use_orig_cam = !self.use_orig_cam;
+                println!("{}", if self.use_orig_cam { "original camera" } else { "free follow camera (right-drag to orbit)" });
             }
             KeyCode::KeyK => {
                 self.show_collision = !self.show_collision;
@@ -911,6 +933,8 @@ fn main() {
         anims,
         gfx: None,
         cam: Camera { pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0 },
+        orig_cam: None,
+        use_orig_cam: true,
         keys: Default::default(),
         looking: false,
         last: Instant::now(),

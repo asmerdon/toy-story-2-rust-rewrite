@@ -41,7 +41,8 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | `0x52ADAC` (data) | `g_playerPtr` ~ | Pointer used by many systems (camera/targets?) |
 | `0x52AD88` (data) | `g_pad` ✔ | In-game pad bits, PS1 layout (below) |
 | 0x4038E0 | `PlayerLockOn` ✔ | Collects targets in range; R1 (0x800) cycles the lock-on target |
-| 0x4045E0 | `PlayerMove` ~ | 601 lines; facing angle × sine table 0x4FE788, recursive |
+| 0x4045E0 | `CameraUpdate` ✔ (main path ported, `src/camera.rs`) | Struct: pos +0, target +0xC, height followers +0x18/+0x1C, look pitch +0x20, look yaw +0x22, distance +0x26 (eases to 0x50A128 = 0x4B0 by 0x20/tick), yaw +0x28, pitch +0x2E (rests at 0x40), whisker state +0x32. Lag 0x52AD98 = 0x10 (position moves 1/(lag/2) per tick). Auto mode (0x52F0CC & 0x40, on by default): moving → yaw −= diff/(2·0x2A) towards Buzz's facing (0x60 while skidding; diff > 0x600 turns the other way ×3); standing still (0x50A534 timer) → swing behind him. Manual mode: L2/R2 orbit 0x10/tick, Triangle snaps behind. Line of sight: 0x48A4C0 / 0x48C860 whiskers (left, right, up) nudge yaw ±0x60 and pitch −0x200..0x300; 0x48D530 pulls the camera in. Stomp shake 0x50A510. Close to Buzz (< 400 units) it rises |
+| 0x403450 | `CameraInit` ✔ | Behind Buzz at 0x4B0, 0x3200 above the floor there, pitch 0x40 |
 
 | 0x4011D0 | `UpdateBuzzAnimState` ✔ | Picks Buzz's state (`0x52F390`) and plays its row of the move table into slots +0x12 (overlay) / +0x16 (base) |
 | `0x4DF3F0` (data) | `BuzzMoveTable` ✔ | 33 × 20 bytes: frame-list ptr, overlay anim, base anim, rate (16.16 per tick; negative = scaled by horizontal speed), flag. Uses all 35 animations (tests/player_start.rs) |
@@ -55,7 +56,7 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x433F40 | `StickTarget` ✔ | Target facing `+0x48` = d-pad table 0x4F5AC8 + camera angle; returns magnitude (0x4000 = full) |
 | 0x43BA80 | `PoseBuzzAnim` ✔ | Buzz's own pose builder (buffer 0x53EEE0, 0x6C/node). Base first, then overlay; the base's root node (6) moves point (0,−200,0) and that offset is added to every overlay node's translation (upper body follows hips, up to ~100 units). −3 advances the output node, −1/−2 don't (no shipped animation has −1/−2 before an animated node) |
 | 0x43B0C0 / 0x43ACA0 | `LoadHierChars` ~ | Loads `chars\*.all` per creature into the pose system |
-| 0x4A4BB0 | `BuzzSwim` ✔ | Drifts towards a target depth; Cross raises it; vy clamped ±0x180 |
+| 0x4A4BB0 | `BuzzHover` ✔ | Hover boots (was mislabelled swim): while timer 0x882920 runs (600 ticks from 0x4A4B70, a pickup), Buzz drifts to a height 0x882928 above the floor (0x2000–0xC000; Cross raises it 0x400/tick, else it sinks), vy ±0x20/tick capped ±0x180, jet particles 0x51–0x53, sound 0x50; anim state 0x1F |
 | 0x490860 | `FrameTimer` ✔ | Ticks = elapsed ms × 60 / 1000 → **60 ticks per second**; alternative fixed mode is 2 ticks/frame |
 
 ### Buzz's controller (cluster 0x433xxx–0x436xxx; earlier mislabelled as creature AI)

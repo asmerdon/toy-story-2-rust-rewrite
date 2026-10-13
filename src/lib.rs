@@ -6,6 +6,7 @@
 pub mod audio;
 pub mod bmp;
 pub mod buzz;
+pub mod camera;
 pub mod export;
 pub mod formats;
 pub mod game;
