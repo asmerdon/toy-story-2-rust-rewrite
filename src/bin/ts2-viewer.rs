@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::{env, fs, process};
 use ts2::bmp;
-use ts2::formats::{anim, ngn, packets};
+use ts2::formats::{anim, exe, ngn, packets};
 use ts2::game;
 use ts2::scene::{self, Batch, GpuVertex};
 use wgpu::util::DeviceExt;
@@ -152,6 +152,8 @@ struct Viewer {
     player: Option<game::Player>,
     /// Index of BUZZ (id 0) in `ngn.creatures`, if present.
     player_creature: Option<usize>,
+    /// Original player start for this level, from the user's toy2.exe.
+    start: Option<exe::PlayerStart>,
     /// Animation indices for idle, run and jump. Placeholders until the real ones are identified.
     player_anims: [usize; 3],
     player_yaw_offset: f32,
@@ -503,7 +505,8 @@ impl Viewer {
         self.status();
     }
 
-    /// F: drop Buzz onto the floor below the camera, or return to free camera.
+    /// F: put Buzz at the level's original start (or, with Shift or no start known, onto the
+    /// floor below the camera). F again returns to the free camera.
     fn toggle_play(&mut self) {
         if self.player.take().is_some() {
             println!("free camera");
@@ -513,9 +516,15 @@ impl Viewer {
             println!("this level has no BUZZ creature to play");
             return;
         };
-        let g = Vec3::from(world_to_game(self.cam.pos + self.cam.forward() * 3.0));
-        let feet = self.world.floor_below(g.x, g.z, g.y).map_or(g, |y| Vec3::new(g.x, y, g.z));
-        self.player = Some(game::Player::new(feet));
+        let (g, yaw) = match self.start {
+            Some(s) if !self.held(KeyCode::ShiftLeft) => (Vec3::from(s.pos), s.yaw_radians()),
+            _ => (Vec3::from(world_to_game(self.cam.pos + self.cam.forward() * 3.0)), 0.0),
+        };
+        // The game snaps the start height to the floor; search a little above the stored point.
+        let feet = self.world.floor_below(g.x, g.z, g.y - 600.0).map_or(g, |y| Vec3::new(g.x, y, g.z));
+        let mut player = game::Player::new(feet);
+        player.yaw = yaw;
+        self.player = Some(player);
         self.creature_idx = ci;
         self.anim_idx = self.player_anims[0];
         println!(
@@ -589,7 +598,10 @@ impl ApplicationHandler for Viewer {
                 .expect("create window"),
         );
         let level = std::mem::take(&mut self.level);
-        if let Some(&(_, p)) = self.spawns.first() {
+        if let Some(s) = self.start {
+            // Start behind and above the original player start.
+            self.cam.pos = game_to_world(s.pos) + Vec3::new(0.0, 1.5, 5.0);
+        } else if let Some(&(_, p)) = self.spawns.first() {
             // Start just behind and above the first spawn.
             self.cam.pos = Vec3::new(p[0], -p[1], -p[2]) * WORLD_SCALE + Vec3::new(0.0, 1.5, 5.0);
         } else if let Some((lo, hi)) = scene::bounds(&level) {
@@ -696,11 +708,27 @@ fn main() {
     let level = scene::level_batches(&ngn);
     let world = game::World::from_batches(&level);
     let player_creature = ngn.creatures.iter().position(|c| c.id == 0);
+
+    // Player start: table in the user's toy2.exe (game dir = two levels above levelNN\).
+    let level_path = std::path::Path::new(path);
+    let start = level_path
+        .ancestors()
+        .nth(3)
+        .map(|game_dir| game_dir.join("toy2.exe"))
+        .and_then(|exe_path| fs::read(exe_path).ok())
+        .and_then(|b| exe::Exe::parse(b).ok())
+        .zip(exe::level_number(level_path))
+        .and_then(|(e, level)| e.player_start(level).ok());
+    match start {
+        Some(s) => println!("player start {:?}, facing {:.0} degrees (F to play, Shift+F to drop at camera)", s.pos, s.yaw_radians().to_degrees()),
+        None => println!("no player start found (toy2.exe not next to data\\, or not a main level file)"),
+    }
     let mut viewer = Viewer {
         level,
         world,
         player: None,
         player_creature,
+        start,
         player_anims: [0, 1, 2],
         // Buzz's model faces -Z in game space; confirmed in play testing (two R presses).
         player_yaw_offset: std::f32::consts::PI,

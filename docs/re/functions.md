@@ -31,10 +31,25 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 ## Player
 | Address | Name | Notes |
 |---|---|---|
-| `0x52ADAC` (data) | `g_player` ~ | Pointer to Buzz's object; used throughout |
+| `0x52F300` (data) | `g_buzz` ✔ | Buzz's object: +0/+4/+8 position (level units × 32), +0xE facing (12-bit), +0x12/+0x16 animations |
+| `0x52F34C` (data) | `g_checkpoint` ~ | Respawn position, updated by 0x4A28F0, cleared to 0xFFFE2584 by 0x42B2D0 |
+| `0x882940` (data) | `g_fallRecovery` ~ | Position restored by 0x4A5540 (y + 0x1600) |
+| `0x4F59A4` (data) | `PlayerStartTable` ✔ | 16 bytes per game level 1..15: i32 x, y, z (×32), i16 facing. Verified against every level's floor (tests/player_start.rs) |
+| 0x414720 | `InitPlayerForLevel` ✔ | Calls ResetPlayer, then sets the camera from Buzz (0x403450) |
+| 0x433D50 | `ResetPlayer(obj, level)` ✔ | Clears the struct, loads the start table entry, snaps to floor (0x4863A0) − 0x100, sets facing, animations = 0xFFFF |
+| 0x440260 | `SetPlayerPos(x, y, z)` ✔ | Used by creature code to move Buzz |
+| `0x52ADAC` (data) | `g_playerPtr` ~ | Pointer used by many systems (camera/targets?) |
 | `0x52AD88` (data) | `g_pad` ✔ | In-game pad bits, PS1 layout (below) |
-| 0x4038E0 | `PlayerControl` ~ | 452 lines; tests d-pad/shoulder bits of `g_pad` |
+| 0x4038E0 | `PlayerLockOn` ✔ | Collects targets in range; R1 (0x800) cycles the lock-on target |
 | 0x4045E0 | `PlayerMove` ~ | 601 lines; facing angle × sine table 0x4FE788, recursive |
+
+Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+10 (InitLevelPlay subtracts 10 and switches to the `level1` files).
+
+## Cutscene scripts
+| Address | Name | Notes |
+|---|---|---|
+| 0x402610 / 0x4027F0 | `StartCutscene(id)` ~ | Saves Buzz state, looks up id in the table at 0x50A150 (16 bytes: id, level.dat table, sub-script), runs the script at 0x4DF69C / 0x4DF6CC |
+| 0x402A10 | `RunCutsceneScript` ✔ | Opcode 0 = select level.dat point table; 1 = place Buzz at point k (×32, snap to floor); … |
 
 ### Pad bits (PS1 layout, confirmed by "press jump to exit" testing 0x4000)
 | Bit | Button | | Bit | Button |
