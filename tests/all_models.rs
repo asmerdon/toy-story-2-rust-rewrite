@@ -44,3 +44,19 @@ fn woody_reaches_geometry_end() {
     assert_eq!(m.stop, Stop::GeometryEnd);
     assert_eq!(m.poly_count(), 240);
 }
+
+/// Smooth-shaded models: normal blocks + per-vertex normal indices.
+#[test]
+fn smooth_models_reach_geometry_end() {
+    let Some(dir) = game_dir() else { return };
+    for name in ["chars/buzz", "chars/bopeep", "chars5/buzz", "chars5/zemp", "chars5/bub"] {
+        let m = all::parse(&fs::read(dir.join(format!("data/{name}.all"))).unwrap()).unwrap();
+        assert_eq!(m.stop, Stop::GeometryEnd, "{name}");
+        for p in &m.parts {
+            if !p.normal_indices.is_empty() {
+                assert_eq!(p.normal_indices.len(), p.vertex_count(), "{name}");
+            }
+        }
+        assert!(m.parts.iter().any(|p| !p.normals.is_empty()), "{name} has no normals");
+    }
+}

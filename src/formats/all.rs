@@ -8,7 +8,10 @@
 //!   u32 == 0          -> end of current part
 //!   u32 == 0x12345678 -> end of geometry; trailer section follows (unparsed)
 //!   byte[3] is a PS1 GPU polygon code -> polygon record
-//!   otherwise          -> normal block: u16 count, u16 unknown, count * (i16 x,y,z, u16 w)
+//!   otherwise          -> normal block for the part that just ended:
+//!                         u16 count, u16 flags, count * (i16 x,y,z, u16 w),
+//!                         one u16 normal index per vertex of that part's polygons
+//!                         (0xFFFF = none), padded to 4 bytes
 //! ```
 //!
 //! Polygon record (n = 3 for triangles, 4 for quads):
@@ -53,11 +56,24 @@ impl Poly {
     }
 }
 
+pub const NO_NORMAL: u16 = 0xFFFF;
+
 #[derive(Debug, Clone, Default)]
 pub struct Part {
     pub polys: Vec<Poly>,
-    /// Normal list that preceded this part's polygons, if any.
+    /// Smooth-shading normals (4.12 fixed point). Empty for flat/prelit parts.
     pub normals: Vec<[i16; 3]>,
+    /// One entry per polygon vertex, in polygon order, indexing `normals` (or [`NO_NORMAL`]).
+    /// Empty when the part has no normal block.
+    pub normal_indices: Vec<u16>,
+    /// Upper u16 of the normal block header (0, 0x800, 0x1000, 0x4CC seen). Unknown.
+    pub normal_flags: u16,
+}
+
+impl Part {
+    pub fn vertex_count(&self) -> usize {
+        self.polys.iter().map(|p| p.verts.len()).sum()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,23 +151,27 @@ impl Reader<'_> {
     }
 }
 
-/// A normal block is accepted only if every entry has unit length in 4.12 fixed point,
+/// Validates a normal block for a part with `vertex_count` vertices and returns its byte length.
+/// Every normal must have unit length in 4.12 fixed point and every index must be in range,
 /// which keeps us from mistaking trailer data for geometry.
-fn normal_block_len(b: &[u8], o: usize) -> Option<usize> {
-    let count = u16::from_le_bytes([b[o], b[o + 1]]) as usize;
-    let len = 4 + 8 * count;
-    if count == 0 || o + len > b.len() {
+fn normal_block_len(b: &[u8], o: usize, vertex_count: usize) -> Option<usize> {
+    let rd16 = |p: usize| u16::from_le_bytes([b[p], b[p + 1]]);
+    let count = rd16(o) as usize;
+    let idx_start = o + 4 + 8 * count;
+    let len = (idx_start - o + 2 * vertex_count).next_multiple_of(4);
+    if vertex_count == 0 || o + len > b.len() {
         return None;
     }
     for i in 0..count {
         let e = o + 4 + 8 * i;
-        let c = |k: usize| i16::from_le_bytes([b[e + 2 * k], b[e + 2 * k + 1]]) as f64;
+        let c = |k: usize| rd16(e + 2 * k) as i16 as f64;
         let mag = (c(0) * c(0) + c(1) * c(1) + c(2) * c(2)).sqrt();
         if (mag - 4096.0).abs() > 40.0 {
             return None;
         }
     }
-    Some(len)
+    let indices_ok = (0..vertex_count).map(|i| rd16(idx_start + 2 * i)).all(|i| i == NO_NORMAL || (i as usize) < count);
+    indices_ok.then_some(len)
 }
 
 pub fn parse(b: &[u8]) -> Result<Model, Error> {
@@ -198,14 +218,23 @@ pub fn parse(b: &[u8]) -> Result<Model, Error> {
             continue;
         }
 
-        if let Some(len) = normal_block_len(b, r.o) {
+        // Normal blocks follow the terminator of the part they belong to.
+        let prev = parts.last_mut().filter(|p: &&mut Part| cur.polys.is_empty() && p.normals.is_empty() && p.normal_indices.is_empty());
+        if let Some(prev) = prev
+            && let Some(len) = normal_block_len(b, r.o, prev.vertex_count())
+        {
+            let end = r.o + len;
             let count = r.u16() as usize;
-            let _unknown = r.u16();
+            prev.normal_flags = r.u16();
             for _ in 0..count {
-                cur.normals.push([r.i16(), r.i16(), r.i16()]);
+                prev.normals.push([r.i16(), r.i16(), r.i16()]);
                 let _w = r.u16();
             }
-            debug_assert_eq!(len, 4 + 8 * count);
+            for _ in 0..prev.vertex_count() {
+                let i = r.u16();
+                prev.normal_indices.push(i);
+            }
+            r.o = end;
             continue;
         }
 

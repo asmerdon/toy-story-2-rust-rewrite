@@ -1,7 +1,63 @@
 //! Debug exporters for inspecting parsed assets in external tools (Blender etc.).
 
 use crate::formats::all::Model;
+use crate::formats::ngn::{Instance, Layer, Ngn};
 use std::fmt::Write;
+
+const LEVEL_SCALE: f32 = 1.0 / 256.0;
+
+/// World position of a mesh vertex: translation only.
+/// Rotation and scale are already baked into the vertices. Applying them reduces the number of
+/// vertices shared between neighbouring pieces (level01: 507 → 388 seams for rotated instances).
+fn instance_transform(inst: &Instance, p: [f32; 3]) -> [f32; 3] {
+    [p[0] + inst.pos[0], p[1] + inst.pos[1], p[2] + inst.pos[2]]
+}
+
+/// Level geometry as OBJ + MTL. Textures are referenced as `<name>.bmp` next to the OBJ.
+/// Returns (obj, mtl).
+pub fn level_to_obj(ngn: &Ngn, mtl_name: &str, apply_instances: bool) -> (String, String) {
+    let mut obj = format!("mtllib {mtl_name}\n");
+    let mut mtl = String::new();
+    for t in &ngn.textures {
+        writeln!(mtl, "newmtl {0}\nKd 1 1 1\nmap_Kd {0}.bmp\n", t.name).unwrap();
+    }
+    writeln!(mtl, "newmtl untextured\nKd 0.8 0.8 0.8\n").unwrap();
+
+    let mut base = 1usize;
+    for (li, layer) in ngn.layers.iter().enumerate() {
+        for (ii, (inst, mesh)) in layer_items(layer, apply_instances).enumerate() {
+            writeln!(obj, "o L{li}_{ii:04}_{}", mesh.name).unwrap();
+            for v in &mesh.vertices {
+                let [x, y, z] = inst.map_or(v.pos, |i| instance_transform(i, v.pos)).map(|c| c * LEVEL_SCALE);
+                // Bytes 1..=3 treated as RGB with 0x80 = 1.0 (PS1 convention); unconfirmed.
+                let [r, g, b] = [v.color[1], v.color[2], v.color[3]].map(|c| (c as f32 / 128.0).min(1.0));
+                writeln!(obj, "v {x} {} {z} {r:.3} {g:.3} {b:.3}", -y).unwrap();
+            }
+            for v in &mesh.vertices {
+                writeln!(obj, "vt {} {}", v.uv[0], 1.0 - v.uv[1]).unwrap();
+            }
+            for g in &mesh.groups {
+                let mat = mesh.group_texture(g).unwrap_or("untextured");
+                writeln!(obj, "usemtl {mat}").unwrap();
+                for [a, b, c] in g.triangles() {
+                    // Y is flipped, so reverse winding.
+                    let [a, b, c] = [c, b, a].map(|i| base + i as usize);
+                    writeln!(obj, "f {a}/{a} {b}/{b} {c}/{c}").unwrap();
+                }
+            }
+            base += mesh.vertices.len();
+        }
+    }
+    (obj, mtl)
+}
+
+fn layer_items(layer: &Layer, apply_instances: bool) -> Box<dyn Iterator<Item = (Option<&Instance>, &crate::formats::ngn::Mesh)> + '_> {
+    if apply_instances && !layer.instances.is_empty() {
+        Box::new(layer.instances.iter().filter_map(|i| layer.meshes.get(i.mesh as usize).map(|m| (Some(i), m))))
+    } else {
+        Box::new(layer.meshes.iter().map(|m| (None, m)))
+    }
+}
 
 /// Wavefront OBJ with per-vertex colours (`v x y z r g b`, which Blender imports).
 /// One `o` object per part. Y is flipped so the model stands upright (PS1 +Y is down).
