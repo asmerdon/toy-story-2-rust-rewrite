@@ -54,7 +54,7 @@ Level vertices have a placeholder normal of (1, 0, 0); their lighting is baked i
 u32 count, u32 stride (44)
 count × { f32 pos[3], u32 rot[3], f32 scale[3], u32 mesh_index, u32 flags }
 ```
-`mesh_index == i` in all shipped files. **Only the translation is applied.** Rotation and scale are already baked into the vertices. Evidence on level01: counting world-space vertices shared between different instances gave 507 shared with rotation ignored vs 388 with it applied, for the 352 rotated instances. Every axis order and sign was tried, and ignoring rotation won in all cases. Scale made no difference either way. What `rot` and `flags` are for (collision? culling? animated objects?) is open.
+`mesh_index == i` in all shipped files. Meshes are in the instance's local space: **rotation and scale must be applied** (scale, then rotate about Z, Y, X; angles are 16-bit, 0x4000 = 90°), then the translation. Evidence: the collision data (`TERRAIN.ALL`) is stored in world orientation, and applying rot + scale puts the vertices of about 110 rotated level-1 instances (136 in level 2) onto collision surfaces, against 2 (4) that fit better unrotated (`examples/rotfit.rs`). Level 1's instance 38 (rot 270° about X) matches its collision object's box exactly (tests/terrain.rs). An earlier note here said rotation was already baked in; that test read the angles as 12-bit, where 0x4000 is a whole number of turns. What `flags` mean is still open.
 
 ## 0x106 creatures
 

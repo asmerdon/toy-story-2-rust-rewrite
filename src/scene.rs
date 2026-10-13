@@ -91,11 +91,26 @@ pub fn level_batches_filtered(ngn: &Ngn, keep: impl Fn(&crate::formats::ngn::Ins
     for layer in &ngn.layers {
         for inst in layer.instances.iter().filter(|i| keep(i)) {
             if let Some(mesh) = layer.meshes.get(inst.mesh as usize) {
-                add_mesh(ngn, &mut out, mesh, Place::new(inst.pos, 0.0), None);
+                let m = instance_matrix(inst);
+                add_mesh(ngn, &mut out, mesh, Place::new(inst.pos, 0.0), Some(&m));
             }
         }
     }
     out
+}
+
+/// An instance's rotation and scale as a row-vector matrix (no translation): scale, then
+/// rotate about Z, Y, X by its 16-bit angles (0x4000 = 90°). Checked against the collision
+/// data, which is stored in world orientation (examples/rotfit.rs: rotating moves most rotated
+/// instances onto their collision surfaces).
+pub fn instance_matrix(inst: &crate::formats::ngn::Instance) -> [[f32; 4]; 4] {
+    use glam::Mat3;
+    let a = |r: u32| (r & 0xFFFF) as f32 / 65536.0 * std::f32::consts::TAU;
+    let r = Mat3::from_rotation_x(a(inst.rot[0])) * Mat3::from_rotation_y(a(inst.rot[1])) * Mat3::from_rotation_z(a(inst.rot[2]));
+    let r = r * Mat3::from_diagonal(glam::Vec3::from(inst.scale));
+    // Row i of a row-vector matrix is column i of the column-vector one.
+    let c = |i: usize| r.col(i).to_array();
+    [[c(0)[0], c(0)[1], c(0)[2], 0.0], [c(1)[0], c(1)[1], c(1)[2], 0.0], [c(2)[0], c(2)[1], c(2)[2], 0.0], [0.0, 0.0, 0.0, 1.0]]
 }
 
 /// A creature at `origin` (game units) turned by `yaw` radians about the vertical axis,

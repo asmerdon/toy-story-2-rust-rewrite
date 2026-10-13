@@ -27,10 +27,10 @@ See the README table in PROJECT.md. In short:
   - Z shows the zone-0 meshes (the first-person helmet view), which are hidden by default
 
 ## Known issues / next steps (in priority order)
-Done: sound effects (src/audio.rs, the original positional volume/pan); swept-sphere collision after the original resolver, and teeter; collision from the original `TERRAIN.ALL` (K shows it); double-jump formula and wings; Buzz's controller as a 60 Hz integer port (stomp on E, turning and skid, coyote time, long fall); the 0x401000 frame-list stepper (0xFE ends a list); the base root-node offset for overlay animations (0x43BA80).
+Done: level instances now rotated and scaled (fixes the plant leaves/lamp/wheels and doors drawn lying down); sound effects (src/audio.rs, the original positional volume/pan); swept-sphere collision after the original resolver, and teeter; collision from the original `TERRAIN.ALL` (K shows it); double-jump formula and wings; Buzz's controller as a 60 Hz integer port (stomp on E, turning and skid, coyote time, long fall); the 0x401000 frame-list stepper (0xFE ends a list); the base root-node offset for overlay animations (0x43BA80).
 1. **Doors and moving platforms (level scripts):** type-8 movers sit at their start positions. They're driven by per-level hand-written scripts (level 1's starts at 0x417680 and uses 0x417380, 0x41BC20, 0x41BEE0, 0x41E150), not data. Ghidra now covers them (2,811 functions). Port level 1's first; also riding movers (0x488E10) and the resolver's slope push.
 2. **Remaining Buzz states:** climb (0x4354E0), swim (0x4A4BB0), footstep sounds (markers 0x81/0x82 set flags in 0x53C634 that another routine turns into surface sounds), idle voice lines (0xCE/0xCF every 30 s), stomp dust and camera shake, music (CD audio, not in the install). The original's camera (0x403450 and friends) isn't ported either.
 3. **Enemies:** behaviour per creature type (spawn records have 19 undecoded parameter bytes; per-creature frame-list tables set the speeds).
-4. **Deferred cosmetic items:** level instance rotation/scale fields, the `0x41` 26-byte material tail, and the `.ngn` chunks 0x102/0x103/0x105.
+4. **Deferred cosmetic items:** the `0x41` 26-byte material tail, and the `.ngn` chunks 0x102/0x103/0x105.
 
 Tools: `ts2-tool anim-info <file.ngn> <creature>` prints every animation's node table. Buzz: nodes 0–6 legs (base anims, root 6), 7–19 upper body incl. wings 11/12 (right) and 17/18 (left), 20–22 never animated.
