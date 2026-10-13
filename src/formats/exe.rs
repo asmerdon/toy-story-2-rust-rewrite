@@ -87,8 +87,11 @@ pub const BUZZ_JUMP_SPEED_OBJ: i32 = 0xC00;
 pub struct BuzzMove {
     /// Frame list: frame numbers (< 0x80) and event markers (≥ 0x80), up to the 0xFF.
     pub frames: Vec<u8>,
-    /// Byte after 0xFF: 1 = hold the last frame, n > 1 = loop back n entries, 0 = stop.
+    /// Byte after 0xFF: 1 = hold the last frame, n > 1 = loop back n entries, 0 = stop
+    /// (also used for 0xFE).
     pub end: u8,
+    /// The whole list as stored, through its end code: 0xFF n, or 0xFE (back to state 0).
+    pub list: Vec<u8>,
     /// Overlay animation (object slot +0x12): applied on top, only to the nodes it animates.
     pub anim: i32,
     /// Base animation (object slot +0x16): applied to every node first.
@@ -117,8 +120,11 @@ impl Exe {
                     va += 1;
                 }
                 // 0xFE ends the list and returns Buzz to state 0 (0x401000); treat as "stop".
-                let end = if self.at(va, 1)?[0] == 0xFE { 0 } else { self.at(va + 1, 1)?[0] };
-                Ok(BuzzMove { frames, end, anim: w(1) as i32, base_anim: w(2) as i32, rate_raw: w(3) as i32 })
+                let fe = self.at(va, 1)?[0] == 0xFE;
+                let end = if fe { 0 } else { self.at(va + 1, 1)?[0] };
+                let mut list = frames.clone();
+                list.extend_from_slice(if fe { &[0xFE][..] } else { self.at(va, 2)? });
+                Ok(BuzzMove { frames, end, list, anim: w(1) as i32, base_anim: w(2) as i32, rate_raw: w(3) as i32 })
             })
             .collect()
     }

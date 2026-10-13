@@ -166,6 +166,7 @@ struct Viewer {
     buzz: Option<buzz::BuzzAnimator>,
     player_yaw_offset: f32,
     jump_pressed: bool,
+    stomp_pressed: bool,
     /// Animation browsed with [ ] in play mode, shown on Buzz until 0 is pressed.
     anim_preview: Option<usize>,
     anim_idx: usize,
@@ -473,6 +474,7 @@ impl Viewer {
                 move_xz: [m.x, -m.z],
                 jump: std::mem::take(&mut self.jump_pressed),
                 jump_held: self.keys.contains(&KeyCode::Space),
+                stomp: std::mem::take(&mut self.stomp_pressed),
             };
             player.update(&self.world, input, dt);
             // Follow camera: orbit behind the player at chest height.
@@ -509,11 +511,10 @@ impl Viewer {
         }
         let mut batches = Vec::new();
         if let (Some(p), Some(ci)) = (&self.player, self.player_creature) {
-            let yaw = p.yaw + self.player_yaw_offset;
-            match (self.anim_preview, self.buzz.as_mut()) {
+            let yaw = p.yaw() + self.player_yaw_offset;
+            match (self.anim_preview, p.anim.as_ref().and_then(|a| a.pose())) {
                 // Real move table: base layer + overlay at the frame its frame list gives.
-                (None, Some(buzz)) => {
-                    let pose = buzz.update(p.motion(), p.horizontal_speed(), dt);
+                (None, Some(pose)) => {
                     let layer = |(ai, f): (usize, f32)| self.anims[ci].get(ai).map(|a| (a, f));
                     let c = &self.ngn.creatures[ci];
                     scene::merge(
@@ -551,18 +552,19 @@ impl Viewer {
             return;
         };
         let (g, yaw) = match self.start {
-            Some(s) if !self.held(KeyCode::ShiftLeft) => (Vec3::from(s.pos), s.yaw_radians()),
-            _ => (Vec3::from(world_to_game(self.cam.pos + self.cam.forward() * 3.0)), 0.0),
+            Some(s) if !self.held(KeyCode::ShiftLeft) => (Vec3::from(s.pos), s.angle as i32),
+            _ => (Vec3::from(world_to_game(self.cam.pos + self.cam.forward() * 3.0)), 0),
         };
         // The game snaps the start height to the floor; search a little above the stored point.
         let feet = self.world.floor_below(g.x, g.z, g.y - 600.0).map_or(g, |y| Vec3::new(g.x, y, g.z));
         let mut player = game::Player::new(feet);
-        player.yaw = yaw;
+        player.set_facing(yaw);
+        player.anim = self.buzz.clone();
         self.player = Some(player);
         self.creature_idx = ci;
         self.anim_preview = None;
         println!(
-            "play mode: WASD run, Space jump, right-drag camera, F to exit. Animations come from the original \
+            "play mode: WASD run, Space jump (again in the air: double jump), E stomp, right-drag camera, F to exit. Animations come from the original \
              move table{}; [ ] previews any animation, 0 returns to the move table",
             if self.buzz.is_some() { "" } else { " (not available: toy2.exe not found)" }
         );
@@ -575,6 +577,8 @@ impl Viewer {
             KeyCode::KeyP => self.place_creature(),
             KeyCode::KeyF => self.toggle_play(),
             KeyCode::Space if self.player.is_some() => self.jump_pressed = true,
+            // Circle (stomp). The original's keyboard default is F, which toggles play mode here.
+            KeyCode::KeyE if self.player.is_some() => self.stomp_pressed = true,
             KeyCode::Digit0 if self.player.is_some() => {
                 self.anim_preview = None;
                 println!("Buzz animations from the original move table");
@@ -775,6 +779,7 @@ fn main() {
         player_yaw_offset: std::f32::consts::PI,
         anim_preview: None,
         jump_pressed: false,
+        stomp_pressed: false,
         ngn,
         anims,
         gfx: None,

@@ -48,7 +48,7 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x401000 | `StepBuzzSeq` ✔ | One entry per 0x10000 of rate. 0x81/0x82 footsteps (on ground), 0x83–0x86 sounds 0x30/0x10/0x17/0x43, 0xFE = done → state 0, 0xFF n = back n (n = 1 holds, fraction cleared) |
 | 0x434090 | `StartJump(vy, kind)` ✔ | Clears on-ground (`0x52F39C`), state 2, vy = arg; normal callers pass −0xC00 |
 | 0x4340D0 | `BuzzAirborne(obj, jumpVy, force)` ✔ | Jump start, variable height (release while rising: +0x180/k², then halve − 0x100/k²), double jump (−0x900/k after release+press, height-limited, clamp 0x22A–0x74C), gravity 0x100/k² per tick, terminal 0x800 (k = 2; k = 4 with flag 0x52F340&0x100). Jump phase at +0x8C: 1 held, 2 released, 5/6 double |
-| | (0x4340D0 details) ✔ | Double-jump speed above the start: `sqrt(2·(0x100/k²)·(0x6A80 − h))` (peak 0x6A80 above the first jump's start, `0x53C674`; valid flag `0x53C61C`), truncated, clamped 0x22A–0x74C. Writes state 8 (`+0x90`) and plays sound 0x10. `+0x8E` = floor contact from collision (0x484380); `+0x9C` = 6-tick coyote counter (set while on floor, 0x436220), so jumps start while it's non-zero and the double jump needs it at 0. Pressing while rising faster than 0x400 wastes the double jump (phase 2→3). Phase resets to 0 only on release while on the floor |
+| | (0x4340D0 details) ✔ | Double-jump speed above the start: `sqrt(2·(0x100/k²)·(0x6A80 − h))` (peak 0x6A80 above the first jump's start, `0x53C674`; valid flag `0x53C61C`), truncated, clamped 0x22A–0x74C. Writes state 8 (`+0x90`) and plays sound 0x10. `+0x8E` = floor contact from collision (0x484380); `+0x9C` = 6-tick coyote counter (set while on floor, 0x436220), so jumps start while it's non-zero and the double jump needs it at 0. A press that can't double jump moves phase 2→3 (in practice only after special jumps: the release cut keeps normal jumps below 0x400 upward). Phase resets to 0 only on release while on the floor |
 | `0x53C838` (data) | `g_fallTimer` ✔ | Counts while falling (vy > 0x80); > 60 ticks → 0x50 (panic, state 0xC, sound 0x16; a press with phase 0 gets a rescue double jump); landing at 0x50 → −0x46 (70-tick recovery, state 0xD, sound 0x2F, velocity zeroed) |
 | 0x433ED0 | `ClearBuzzSpecials` ✔ | Zeroes fall/stomp/skid/etc. timers |
 | 0x49E660 | `PlaySound(id, obj)` ✔ | Sound table 0x502950 (16 bytes per id) |
@@ -85,6 +85,8 @@ Default ground profile (object units per tick; ÷32 × 60 → level units per se
 Alternate profiles in 0x436220 use accel 0x10/0x08 and jumps of −0x640 / −0x3C0 / −0x300 (air control, special surfaces; not yet labelled). `StartJump(−0xC00)` is a special, bigger jump.
 
 Buzz states (`0x52F390`): 0 run (speed-scaled), 1 stand, 2 jump (rising), 3 fall, 4 land, 5 (from timer `+0x94` > 0x44, not the double jump), 8 double jump (wings), 0xC long-fall panic, 0xD fall recovery, 0x12 skid, 0x17/0x18 stomp, 10/11 teeter on a ledge (front/behind probe), 0x1C/0x1D idle fidgets, 0x1F swim; others are set by flags from other systems (hurt, specials) and not yet labelled. `0x52F39C` = on ground. Velocity `0x52F368/36C/370`.
+
+Ported in `src/game.rs` (`Player::tick`, 60 Hz, integer units) and `src/buzz.rs` (`BuzzAnimator`, the 0x401000 stepper): profile, stomp, airborne, turn, accelerate, coyote counter, fall timer, and the 0x4011D0 states 0–4, 8, 0xC, 0xD, 0x12, 0x17, 0x18. Collision is still ours.
 
 Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+10 (InitLevelPlay subtracts 10 and switches to the `level1` files).
 

@@ -54,3 +54,31 @@ fn buzz_move_table_matches_his_animations() {
     // The table uses every one of Buzz's animations.
     assert_eq!(used.len(), anims.len(), "unused animations: {used:?}");
 }
+
+#[test]
+fn buzz_animator_plays_every_state_within_its_animations() {
+    let Some(dir) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let exe = exe::Exe::parse(fs::read(dir.join("toy2.exe")).unwrap()).unwrap();
+    let moves = exe.buzz_moves().unwrap();
+    let n = ngn::parse(&fs::read(dir.join("data/level01/level.ngn")).unwrap()).unwrap();
+    let buzz = n.creatures.iter().find(|c| c.id == 0).unwrap();
+    let anims: Vec<anim::Animation> = buzz.animations.iter().map(|a| anim::parse(a).unwrap()).collect();
+    let mut a = ts2::buzz::BuzzAnimator::new(moves.clone());
+    let mut ended = 0;
+    for s in 0..moves.len() as u16 {
+        let mut state = s;
+        for _ in 0..300 {
+            if a.tick(&mut state, 0x380) {
+                ended += 1;
+                break;
+            }
+            let p = a.pose().unwrap();
+            for (ai, t) in [p.base, p.overlay] {
+                assert!(t < anims[ai].frame_count as f32, "state {s}: time {t} in animation {ai} of {} frames", anims[ai].frame_count);
+            }
+        }
+    }
+    // Landing (4) and other one-shot rows end with 0xFE.
+    assert!(ended >= 1);
+    assert!(moves[4].list.ends_with(&[0xFE]), "{:?}", moves[4].list);
+}

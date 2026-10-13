@@ -104,8 +104,24 @@ pub fn creature_batches(ngn: &Ngn, c: &Creature, origin: [f32; 3], yaw: f32, ani
     creature_batches_layered(ngn, c, origin, yaw, anim, None)
 }
 
+/// Point on the base layer's root node that the overlay follows (0x43BA80).
+const ROOT_ANCHOR: [f32; 3] = [0.0, -200.0, 0.0];
+
+/// How far the base layer's root node moves `ROOT_ANCHOR` from its rest position. Buzz's pose
+/// builder (0x43BA80) adds this to every overlay node's translation, so the upper body follows
+/// the hips. Only when the layers are different animations and the base has a root node.
+fn root_offset(base: Option<(&Animation, f32)>, overlay: Option<(&Animation, f32)>) -> Option<[f32; 3]> {
+    let ((b, t), (o, _)) = (base?, overlay?);
+    if std::ptr::eq(b, o) || b.root_node < 0 {
+        return None;
+    }
+    let m = b.matrix_at(b.root_node as usize, t)?;
+    let p = transform(Some(&m), ROOT_ANCHOR);
+    Some([0, 1, 2].map(|k| p[k] - ROOT_ANCHOR[k]))
+}
+
 /// As the game draws objects (0x4CD7B0): the `base` animation poses every node it covers,
-/// then `overlay` replaces the nodes it animates.
+/// then `overlay` replaces the nodes it animates, shifted by the base's root-node offset.
 pub fn creature_batches_layered(
     ngn: &Ngn,
     c: &Creature,
@@ -116,8 +132,15 @@ pub fn creature_batches_layered(
 ) -> Vec<Batch> {
     let mut out = Vec::new();
     let place = Place::new(origin, yaw);
+    let offset = root_offset(base, overlay).unwrap_or([0.0; 3]);
     let matrices: Vec<Option<[[f32; 4]; 4]>> = (0..c.nodes.len())
-        .map(|n| overlay.and_then(|(a, t)| a.matrix_at(n, t)).or_else(|| base.and_then(|(a, t)| a.matrix_at(n, t))))
+        .map(|n| {
+            let over = overlay.and_then(|(a, t)| a.matrix_at(n, t)).map(|mut m| {
+                (0..3).for_each(|k| m[3][k] += offset[k]);
+                m
+            });
+            over.or_else(|| base.and_then(|(a, t)| a.matrix_at(n, t)))
+        })
         .collect();
     for (n, node) in c.nodes.iter().enumerate() {
         if let Some(mesh) = &node.mesh {
