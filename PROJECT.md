@@ -52,7 +52,7 @@ ts2/                    one crate for now; split into a workspace once it grows
 | `.ngn` textures (0x104) | ✅ Named BMP files; exported as-is. |
 | `.ngn` level geometry (0x100/0x101) | ✅ All 20 level files, ~400k triangles. Mesh tags, materials → textures, tri/quad/strip/fan groups, placements (translation only, verified by seam matching). Exports to OBJ+MTL+BMP. |
 | `.ngn` creatures (0x106) | ✅ structure for all 146 creature records: node names, per-node meshes with textures and normals, shared smooth-joint buffers. Exports to OBJ. ❌ Shared-joint attachment (0x208). |
-| Animations (`.ngn` 0x204 = `.anm`) | ❌ **Next blocker.** Compressed PS1 keyframe format; best decoded from the exe in Ghidra. |
+| Animations (`.ngn` 0x204 = `.anm`) | ✅ Decoded from the exe's sampler (Ghidra). All 845 animations parse. Model-space per-node poses, no hierarchy. `export-pose` writes posed OBJs. Visual check pending. See `docs/formats/anim.md`. |
 | `.ngn` 0x102/0x103/0x105 | ❌ Small tables (paths/triggers/visibility?). |
 | `.all` PS1 models | ✅ geometry for all 68 (9,556 polys), incl. smooth-shaded (per-vertex normal indices). Trailer not decoded. Now reference-only. |
 | `.raw` PS1 textures | Compressed; not needed on PC. |
@@ -64,7 +64,15 @@ Details: `docs/formats/all.md`, `docs/formats/ngn.md`.
 
 Exit criterion: a viewer that renders any level with its characters standing in it. Everything except animation is now in place for this.
 
-### Phase 2: Code reverse-engineering (Ghidra)
+### Phase 2: Code reverse-engineering (Ghidra), started
+Setup: Ghidra 12.1.4 at `C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC`, Temurin JDK 21. The headless script `tools/ghidra/DumpAround.java` writes a function list, strings with their users, and decompiled C for all 1,317 functions to `re/out/`, which is git-ignored and must never be committed. Re-run with:
+```
+set JAVA_HOME=C:\Program Files\Eclipse Adoptium\<jdk-21 folder>
+C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC\support\analyzeHeadless.bat re\proj TS2 -import re\toy2.exe -overwrite -scriptPath tools\ghidra -postScript DumpAround.java re\out
+```
+Known functions so far: creature loader 0x4CA420 (`hobjload.c`), animation store 0x4CA040, object draw/animate 0x4CD880, node sampler 0x4CD170/0x4CD1B0, rotate X/Y/Z 0x4A9AA0/0x4A9CB0/0x4A9EC0, mesh loaders 0x4CB320/0x4CB4E0/0x4CB970/0x4CC970 (`objload.c`), CD check 0x4A6390 (`validate.tta`), CD-audio config 0x412D70.
+
+Remaining steps:
 1. Import `toy2.exe`, apply MSVC6 runtime signatures, label functions via the source-file assert strings (`Win95.cpp Line 227` etc.).
 2. Find the loaders (`objload.c`, `hobjload.c`) first; they confirm the Phase 1 formats.
 3. Then: main loop and timing, player state machine, camera, collision, creature behaviours (by `creatures.cfg` id), level scripting, menus, save/load.

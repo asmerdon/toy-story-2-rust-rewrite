@@ -52,22 +52,30 @@ pub fn level_to_obj(ngn: &Ngn, mtl_name: &str, apply_instances: bool) -> (String
 }
 
 /// One creature's node meshes as OBJ (one object per node), using the level's MTL.
+/// With `pose = Some((anim, frame))`, each node's mesh is transformed by its decoded pose
+/// (row-vector convention: v' = v · M, model space, no hierarchy).
 /// Smooth-joint geometry from the shared vertex buffer (tag 0x207) is not included yet.
-pub fn creature_to_obj(c: &crate::formats::ngn::Creature, mtl_name: &str) -> String {
+pub fn creature_to_obj(c: &crate::formats::ngn::Creature, mtl_name: &str, pose: Option<(&crate::formats::anim::Animation, usize)>) -> String {
     let mut obj = format!("mtllib {mtl_name}\n");
     let mut base = 1usize;
     for (ni, node) in c.nodes.iter().enumerate() {
         let Some(mesh) = &node.mesh else { continue };
+        let m = pose.and_then(|(a, f)| a.pose(ni, f)).map(|p| p.matrix());
+        let xf = |p: [f32; 3], w: f32| match &m {
+            Some(m) => [0, 1, 2].map(|j| p[0] * m[0][j] + p[1] * m[1][j] + p[2] * m[2][j] + w * m[3][j]),
+            None => p,
+        };
         writeln!(obj, "o {:02}_{}", ni, node.name).unwrap();
         for v in &mesh.vertices {
-            let [x, y, z] = v.pos.map(|c| c * LEVEL_SCALE);
+            let [x, y, z] = xf(v.pos, 1.0).map(|c| c * LEVEL_SCALE);
             writeln!(obj, "v {x} {} {z}", -y).unwrap();
         }
         for v in &mesh.vertices {
             writeln!(obj, "vt {} {}", v.uv[0], 1.0 - v.uv[1]).unwrap();
         }
         for v in &mesh.vertices {
-            writeln!(obj, "vn {} {} {}", v.normal[0], -v.normal[1], v.normal[2]).unwrap();
+            let [x, y, z] = xf(v.normal, 0.0);
+            writeln!(obj, "vn {x} {} {z}", -y).unwrap();
         }
         for g in &mesh.groups {
             writeln!(obj, "usemtl {}", mesh.group_texture(g).unwrap_or("untextured")).unwrap();

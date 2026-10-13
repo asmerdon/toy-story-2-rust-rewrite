@@ -1,5 +1,7 @@
 /target
 /out
+# Ghidra projects and decompiler output are derived from the original exe
+/re
 # Never commit original game data or anything extracted from it
 *.all
 *.anm

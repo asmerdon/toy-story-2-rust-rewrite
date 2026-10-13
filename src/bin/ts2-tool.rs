@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::{env, fs, process};
 use ts2::export::{creature_to_obj, level_to_obj, model_to_obj};
 use ts2::formats::all::{self, Stop};
-use ts2::formats::ngn;
+use ts2::formats::{anim, ngn};
 
 const OBJ_SCALE: f32 = 1.0 / 256.0;
 
@@ -21,10 +21,12 @@ fn main() {
         Some("scan-ngn") if args.len() == 3 => scan_ngn(Path::new(&args[2])),
         Some("export-level") if args.len() == 4 => export_level(Path::new(&args[2]), Path::new(&args[3]), true),
         Some("export-level-raw") if args.len() == 4 => export_level(Path::new(&args[2]), Path::new(&args[3]), false),
+        Some("export-pose") if args.len() == 7 => export_pose(Path::new(&args[2]), &args[3], &args[4], &args[5], Path::new(&args[6])),
         _ => {
             eprintln!(
                 "usage:\n  ts2-tool scan-models <game_dir>\n  ts2-tool export-obj <file.all> <out.obj>\n  ts2-tool export-all <game_dir> <out_dir>\n  \
-                 ts2-tool scan-ngn <game_dir>\n  ts2-tool export-level <file.ngn> <out_dir>\n  ts2-tool export-level-raw <file.ngn> <out_dir>   (meshes untransformed)"
+                 ts2-tool scan-ngn <game_dir>\n  ts2-tool export-level <file.ngn> <out_dir>\n  ts2-tool export-level-raw <file.ngn> <out_dir>   (meshes untransformed)\n  \
+                 ts2-tool export-pose <file.ngn> <creature> <anim|all> <frame|all> <out_dir>"
             );
             process::exit(2);
         }
@@ -149,7 +151,7 @@ fn export_level(input: &Path, out_dir: &Path, apply_instances: bool) -> Res {
     }
     for c in &n.creatures {
         let name = format!("creature_{:02}_{}.obj", c.id, c.name.to_ascii_lowercase());
-        fs::write(out_dir.join(name), creature_to_obj(c, &mtl_name))?;
+        fs::write(out_dir.join(name), creature_to_obj(c, &mtl_name, None))?;
     }
     println!(
         "{} -> {} ({} textures, {} layers, {} creatures)",
@@ -159,6 +161,33 @@ fn export_level(input: &Path, out_dir: &Path, apply_instances: bool) -> Res {
         n.layers.len(),
         n.creatures.len()
     );
+    Ok(())
+}
+
+/// Writes `<creature>_a<anim>_f<frame>.obj` for the requested animation(s) and frame(s).
+fn export_pose(input: &Path, creature: &str, anim_sel: &str, frame_sel: &str, out_dir: &Path) -> Res {
+    let n = ngn::parse(&fs::read(input)?)?;
+    let c = n
+        .creatures
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(creature))
+        .ok_or_else(|| format!("no creature {creature} in {}; have {:?}", input.display(), n.creatures.iter().map(|c| &c.name).collect::<Vec<_>>()))?;
+    fs::create_dir_all(out_dir)?;
+    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+    let mtl_name = format!("{stem}.mtl");
+    let anims: Vec<usize> = if anim_sel == "all" { (0..c.animations.len()).collect() } else { vec![anim_sel.parse()?] };
+    let mut written = 0;
+    for ai in anims {
+        let raw = c.animations.get(ai).ok_or_else(|| format!("{} has {} animations", c.name, c.animations.len()))?;
+        let a = anim::parse(raw)?;
+        let frames: Vec<usize> = if frame_sel == "all" { (0..a.frame_count as usize).collect() } else { vec![frame_sel.parse()?] };
+        for f in frames {
+            let name = format!("{}_a{ai:02}_f{f:03}.obj", c.name.to_ascii_lowercase());
+            fs::write(out_dir.join(name), creature_to_obj(c, &mtl_name, Some((&a, f))))?;
+            written += 1;
+        }
+    }
+    println!("wrote {written} posed OBJ(s) to {} (textures/MTL come from export-level of the same file)", out_dir.display());
     Ok(())
 }
 
