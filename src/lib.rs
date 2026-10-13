@@ -3,6 +3,7 @@
 //! This crate never contains original game data. All assets are loaded at runtime
 //! from the user's own install.
 
+pub mod audio;
 pub mod bmp;
 pub mod buzz;
 pub mod export;

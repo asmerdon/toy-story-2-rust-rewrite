@@ -14,6 +14,8 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+static ZEROS: [u8; 4096] = [0; 4096];
+
 pub struct Exe {
     bytes: Vec<u8>,
     image_base: u32,
@@ -50,10 +52,14 @@ impl Exe {
     /// Bytes at virtual address `va`.
     pub fn at(&self, va: u32, len: usize) -> Result<&[u8], Error> {
         let rva = va.checked_sub(self.image_base).ok_or_else(|| Error(format!("{va:#x} below image base")))?;
-        for &(vaddr, _vsize, raw, rsize) in &self.sections {
+        for &(vaddr, vsize, raw, rsize) in &self.sections {
             if rva >= vaddr && rva + len as u32 <= vaddr + rsize {
                 let o = (raw + rva - vaddr) as usize;
                 return self.bytes.get(o..o + len).ok_or_else(|| Error(format!("{va:#x} outside file")));
+            }
+            // Past the section's file data but inside its memory size: zero-filled at load.
+            if rva >= vaddr + rsize && rva + len as u32 <= vaddr + vsize && len <= ZEROS.len() {
+                return Ok(&ZEROS[..len]);
             }
         }
         Err(Error(format!("{va:#x} not in any section")))

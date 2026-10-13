@@ -90,7 +90,8 @@ public class DumpAround extends GhidraScript {
             while (a.compareTo(text.getEnd()) < 0 && !monitor.isCancelled()) {
                 Function f = getFunctionContaining(a);
                 if (f != null) {
-                    a = f.getBody().getMaxAddress().add(1);
+                    // Bodies can be non-contiguous: skip only the range holding `a`.
+                    a = f.getBody().getRangeContaining(a).getMaxAddress().add(1);
                     continue;
                 }
                 int b = getByte(a) & 0xFF;

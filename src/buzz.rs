@@ -38,6 +38,20 @@ pub struct BuzzAnimator {
     current: Option<u16>,
     /// List position, 16.16 (`0x52F380`): entry index and progress to the next.
     pos: u32,
+    /// Sound ids from the list's event markers since the last drain.
+    pub sounds: Vec<u16>,
+}
+
+/// Sound for a frame-list event marker (0x401000): 0x83–0x86. 0x81/0x82 are footsteps,
+/// which the original turns into surface-dependent sounds elsewhere (not ported yet).
+fn marker_sound(code: u8) -> Option<u16> {
+    match code {
+        0x83 => Some(0x30),
+        0x84 => Some(0x10),
+        0x85 => Some(0x17),
+        0x86 => Some(0x43),
+        _ => None,
+    }
 }
 
 /// What to draw: (animation index, time in frames) for the base layer and the overlay.
@@ -49,7 +63,7 @@ pub struct BuzzPose {
 
 impl BuzzAnimator {
     pub fn new(moves: Vec<BuzzMove>) -> BuzzAnimator {
-        BuzzAnimator { moves, current: None, pos: 0 }
+        BuzzAnimator { moves, current: None, pos: 0, sounds: Vec::new() }
     }
 
     fn list(&self) -> &[u8] {
@@ -76,8 +90,10 @@ impl BuzzAnimator {
                 }
                 // Back n entries (n = 1 holds the last frame).
                 0xFF => self.pos = self.pos.wrapping_sub((at(self, i + 1) as u32) << 16),
-                // 0x81/0x82 footsteps, 0x83–0x86 sounds 0x30/0x10/0x17/0x43: not played yet.
-                _ => self.pos += 0x10000,
+                code => {
+                    self.sounds.extend(marker_sound(code));
+                    self.pos += 0x10000;
+                }
             }
         }
         false

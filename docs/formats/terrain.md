@@ -44,14 +44,23 @@ i16 −1 (+ padding to the stated size)
 | 16–18 | Unit normal × 16384. Floors point to −Y (+Y is down) |
 | 19–21 | Quad: the second half's normal. Triangle: word 20 = 0x7FFF, others unknown (precomputed edge data?) |
 
-Triangle: (v0, v0+e1, v0+e2). Quad: (v0, v0+e1, v0+e3) and (v0, v0+e3, v0+e2).
+Triangle: (v0, v0+e1, v0+e2). Quad: (v0, v0+e1, v0+e2) with `normal` and (v0+e3, v0+e2, v0+e1) with `normal2` (the e1–e2 diagonal, as 0x481FB0 tests them).
 
 ## Runtime structures (for reference)
 - Object table 0x7295A8: 300 × 0x34 bytes (pos × 32, data pointer at +0x10, bounds, type at +0x2C, flags at +0x2E).
 - 0x489C30 sorts static objects into a 5×5 grid over the level (cells at 0x7270A4, index list 0x72D2B0); type-8 objects and flag-0x400 objects go in an always-checked list.
 - 0x485940 gathers polygons near a point (± 0x500 level units in x/z) into one of 8 caches (0x5C0 bytes each, up to 0xF0 polygons).
 
+## Resolver (ported in `src/game.rs`, `World::sweep` + `Player::move_and_collide`)
+- Buzz is one sphere: radius = collider slot field +0x2C (4000 object units = 125 level units, set by 0x489C30); 0x484380 lifts the centre by 0xC0 + radius, so the sphere's bottom is 6 level units above his feet (his feet rest slightly inside the floor, as in the original).
+- 0x481FB0 per polygon: the face (only when the centre crosses the plane offset by the radius from the front: start ≥ 0, end < 0; hit point inside the triangle via 0x481140), then, when the motion passes near the plane, the edges as cylinders (radius + 0x20, 0x4813B0) and corners as spheres (radius + 0x40, 0x481D00). Quads are split along e1–e2: (v0, v0+e1, v0+e2) and (v0+e3, v0+e2, v0+e1), each with its own normal.
+- 0x482A00 keeps the earliest hit, moves there minus a small skin and responds: normal y < −0x2000 (slopes up to 60°) is a floor (slide, floor contact); anything else is a wall (slide, push out 3 level units, horizontal speed × 15/16). 0x484380 runs this 3–4 times per tick.
+- 0x483EF0 keeps Buzz on the floor he was standing on. We use a short downward sweep (64 units) instead.
+- Not ported: the slope push in 0x484380 when standing (`local_26 < −0x1000`), riding movers (0x488E10 carries Buzz with a mover's velocity and spin), the 20-tick "stuck" counter.
+
+## Movers (type 8)
+Level object table 0x7286EC (0x34 bytes per link id): position (×32), angles at +0x40 (0x72872C, 16-bit ×4), velocity at +0x48 (0x728734, set by 0x487900), spin at +0x54 (0x728740, set by 0x487970), flags at +0x66 (0x728752: 0x80 moving, 0x08 spinning/rotated, 0x100 carries Buzz), collision object index at +0x64. 0x488E10 applies velocity and spin every frame. 0x4878A0 / 0x4878D0 switch a mover's collision on/off (type 8 / 0). Movers are driven by per-level scripts (e.g. 0x42DCB0 a carousel, 0x49EC00 a platform that tilts under Buzz, 0x417380 a popping object), not by data.
+
 ## Open
-- The resolver (0x484380 → swept 0x482A00 and floor slide 0x483EF0, 3–4 passes per tick; Buzz's position is raised by 0xC0 + a per-mover offset during the test). We use our own floor ray + wall sphere against these triangles.
-- Type-8 movers follow level objects (`level.dat` section 3 / object table 0x7286EC), not ported; drawn at their start positions.
+- The per-level scripts that open doors and move platforms (level 1's is around 0x417680).
 - `level05/terrain.flr/.grd/.scn/.wal/.wuv` look like pipeline leftovers.

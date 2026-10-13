@@ -98,6 +98,38 @@ fn world_to_game(p: Vec3) -> [f32; 3] {
     [p.x / WORLD_SCALE, -p.y / WORLD_SCALE, -p.z / WORLD_SCALE]
 }
 
+/// Sound output: the level's samples, mixed with the original's volume and pan.
+struct AudioOut {
+    _stream: rodio::OutputStream,
+    handle: rodio::OutputStreamHandle,
+    bank: ts2::audio::SoundBank,
+    /// Buzz's voice channel: one voice line at a time (0x49EA60 / 0x4A3E60).
+    voice: Option<rodio::Sink>,
+}
+
+impl AudioOut {
+    fn play(&mut self, id: u16, voice: bool, rel: Vec3, right: Vec3, forward: Vec3) {
+        if voice && self.voice.as_ref().is_some_and(|v| !v.empty()) {
+            return;
+        }
+        let Some((sample, vol, _)) = self.bank.sound(id) else { return };
+        let (l, r) = ts2::audio::positional(vol, rel, right, forward);
+        let (gl, gr) = self.bank.gains(l, r);
+        if gl.max(gr) < 1e-3 {
+            return;
+        }
+        let stereo: Vec<i16> = sample.data.iter().flat_map(|&s| [(s as f32 * gl) as i16, (s as f32 * gr) as i16]).collect();
+        let source = rodio::buffer::SamplesBuffer::new(2, sample.rate, stereo);
+        let Ok(sink) = rodio::Sink::try_new(&self.handle) else { return };
+        sink.append(source);
+        if voice {
+            self.voice = Some(sink);
+        } else {
+            sink.detach();
+        }
+    }
+}
+
 struct GpuBatch {
     texture: usize,
     blend: scene::Blend,
@@ -164,6 +196,7 @@ struct Viewer {
     /// Animation indices for idle, run and jump. Placeholders until the real ones are identified.
     /// Buzz's move table from toy2.exe; drives his animations in play mode.
     buzz: Option<buzz::BuzzAnimator>,
+    audio: Option<AudioOut>,
     player_yaw_offset: f32,
     jump_pressed: bool,
     collision_batch: Option<scene::Batch>,
@@ -480,6 +513,16 @@ impl Viewer {
                 stomp: std::mem::take(&mut self.stomp_pressed),
             };
             player.update(&self.world, input, dt);
+            // Sounds come from Buzz; the listener is the camera.
+            let sounds: Vec<game::Sound> = player.sounds.drain(..).collect();
+            if let Some(audio) = self.audio.as_mut() {
+                let to_game = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
+                let listener = Vec3::from(world_to_game(self.cam.pos));
+                let (right_g, fwd_g) = (to_game(right).normalize_or_zero(), to_game(Vec3::new(fwd.x, 0.0, fwd.z)).normalize_or_zero());
+                for s in sounds {
+                    audio.play(s.id, s.voice, player.pos - listener, right_g, fwd_g);
+                }
+            }
             // Follow camera: orbit behind the player at chest height.
             let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
             self.cam.pos = target - fwd * 4.5;
@@ -809,6 +852,27 @@ fn main() {
         .and_then(|b| exe::Exe::parse(b).ok());
     let start = game_exe.as_ref().zip(exe::level_number(level_path)).and_then(|(e, level)| e.player_start(level).ok());
     let buzz = game_exe.as_ref().and_then(|e| e.buzz_moves().ok()).map(buzz::BuzzAnimator::new);
+    // Sound effects from data\sfx, as the level loads them (0x47EC20).
+    let audio = game_exe.as_ref().zip(exe::level_number(level_path)).and_then(|(e, level)| {
+        let sfx = level_path.parent()?.parent()?.join("sfx");
+        let bank = match ts2::audio::SoundBank::load(e, &sfx, level) {
+            Ok(b) => b,
+            Err(err) => {
+                println!("no sound: {err}");
+                return None;
+            }
+        };
+        match rodio::OutputStream::try_default() {
+            Ok((stream, handle)) => {
+                println!("sound: {} samples for level {level}", bank.sample_count());
+                Some(AudioOut { _stream: stream, handle, bank, voice: None })
+            }
+            Err(err) => {
+                println!("no sound output: {err}");
+                None
+            }
+        }
+    });
     match start {
         Some(s) => println!("player start {:?}, facing {:.0} degrees (F to play, Shift+F to drop at camera)", s.pos, s.yaw_radians().to_degrees()),
         None => println!("no player start found (toy2.exe not next to data\\, or not a main level file)"),
@@ -820,6 +884,7 @@ fn main() {
         player_creature,
         start,
         buzz,
+        audio,
         // Buzz's model faces -Z in game space; confirmed in play testing (two R presses).
         player_yaw_offset: std::f32::consts::PI,
         anim_preview: None,

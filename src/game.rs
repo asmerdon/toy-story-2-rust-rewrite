@@ -345,6 +345,14 @@ fn sweep_edge(p0: Vec3, d: Vec3, e0: Vec3, e1: Vec3, r: f32) -> Option<Hit> {
     Some(Hit { t, normal })
 }
 
+/// A sound the game asked for this update, at Buzz's position (PlaySound 0x49E660, or the
+/// one-per-object voice channel 0x49EA60 when `voice`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sound {
+    pub id: u16,
+    pub voice: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Input {
     /// Desired move direction in game space (x, z), length ≤ 1 (the stick).
@@ -418,6 +426,8 @@ pub struct Player {
     /// `data\rand.dat`, the game's table of random bytes, and the read position (0x52ADAC).
     random: Vec<u8>,
     random_pos: usize,
+    /// Sounds requested since the caller last drained this.
+    pub sounds: Vec<Sound>,
 }
 
 /// The read pointer into rand.dat goes back to the start after this many bytes.
@@ -453,6 +463,7 @@ impl Player {
             anim: None,
             random: Vec::new(),
             random_pos: 0,
+            sounds: Vec::new(),
         }
     }
 
@@ -460,6 +471,10 @@ impl Player {
     pub fn set_random_table(&mut self, bytes: Vec<u8>) {
         self.random = bytes;
         self.random_pos = 0;
+    }
+
+    fn sound(&mut self, id: u16) {
+        self.sounds.push(Sound { id, voice: false });
     }
 
     fn next_random(&mut self) -> Option<u8> {
@@ -607,6 +622,12 @@ impl Player {
             // 0xFE also clears the standing sub-state (0x50A098).
             self.idle_sub = 0;
         }
+        if let Some(a) = self.anim.as_mut() {
+            let ids: Vec<u16> = a.sounds.drain(..).collect();
+            for id in ids {
+                self.sound(id);
+            }
+        }
 
         if self.pos.y > world.hi.y + 4000.0 {
             let (spawn, facing, anim) = (self.spawn, self.spawn_facing, self.anim.take());
@@ -622,6 +643,7 @@ impl Player {
         let can = matches!(self.jump, JumpPhase::Holding | JumpPhase::Released) || self.state == state::DOUBLE_JUMP;
         if pressed && !blocked && can {
             self.stomp = 1;
+            self.sound(0x17);
         }
         if self.stomp == 0 {
             return 0;
@@ -648,8 +670,9 @@ impl Player {
             }
             return 7;
         } else {
-            // Impact: dust, sound 0xF and a camera shake in the original (not drawn yet).
+            // Impact: dust and a camera shake in the original (not drawn yet).
             self.stomp = STOMP_RECOVERY;
+            self.sound(0xF);
         }
         0
     }
@@ -687,6 +710,7 @@ impl Player {
                 };
                 self.jump = JumpPhase::Double;
                 self.state = state::DOUBLE_JUMP;
+                self.sounds.push(Sound { id: 0x10, voice: false });
             }
             match self.jump {
                 JumpPhase::Holding | JumpPhase::Double | JumpPhase::DoubleReleased => {
@@ -710,6 +734,7 @@ impl Player {
                     *vy = JUMP_VY;
                     self.skid = 0;
                     self.jump_start = Some(y);
+                    self.sounds.push(Sound { id: 0x19, voice: true });
                 }
             }
         }
@@ -757,6 +782,7 @@ impl Player {
             self.tap_start = self.target;
             if self.coyote != 0 {
                 self.skid = SKID_TICKS;
+                self.sound(0x12);
             }
         }
         self.facing &= 0xFFF;
@@ -841,9 +867,10 @@ impl Player {
                 }
             } else {
                 if self.fall_timer == FALL_PANIC {
-                    // Landing after a long fall: sound 0x2F, stop dead, recover.
+                    // Landing after a long fall: stop dead, recover.
                     self.fall_timer = FALL_RECOVERY;
                     self.vel = [0; 3];
+                    self.sound(0x2F);
                 }
                 if self.fall_timer > 0 {
                     self.fall_timer = 0;
@@ -852,7 +879,10 @@ impl Player {
         } else {
             self.fall_timer += 1;
             if self.fall_timer > FALL_PANIC_AFTER {
-                // Sound 0x16; cancels a stomp.
+                // Cancels a stomp. The original requests the scream every tick; once is enough.
+                if self.fall_timer != FALL_PANIC + 1 {
+                    self.sound(0x16);
+                }
                 self.fall_timer = FALL_PANIC;
                 self.stomp = 0;
             }

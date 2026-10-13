@@ -20,5 +20,6 @@ path = "src/bin/ts2-viewer.rs"
 bytemuck = { version = "1.21", features = ["derive"] }
 glam = "0.29"
 pollster = "0.4"
+rodio = { version = "0.19", default-features = false }
 wgpu = "24.0"
 winit = "0.30"

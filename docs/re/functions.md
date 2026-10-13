@@ -146,6 +146,19 @@ Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when dra
 | 0x4A9750 | `MatTranslate` ~ |
 | 0x4A9F60 | `MatMul` ~ |
 
+## Sound (ported in `src/audio.rs`)
+| Address | Name | Notes |
+|---|---|---|
+| 0x47EC20 | `LoadLevelSounds` ✔ | Slots from name lists: global (0x4FD140[0], from slot 1), level effects (0x4FD140[level], from 87), voices (0x4FD5E0[level], from 67); file `data\sfx\<name>.wav` |
+| 0x47E5B0 / 0x47E420 | `LoadWav` / `CreateBuffer` ✔ | DirectSound buffer flags 0x80E0 (frequency, pan, volume); the sample's own rate is kept per slot (0x726234) |
+| 0x49E660 | `PlaySound(id, obj)` ✔ | 16-byte entries at 0x502950: slot (0x4000 = per-level remap at 0x5028E8, pairs of level/slot), PS1 pitch (unused on PC), volume, second volume, pitch-variation shift. obj < 0x100 → fixed left/right (0x4A37E0), else positional (0x4A3810) |
+| 0x49EA60 / 0x49EA90 | `PlayVoice` ✔ | Same, one voice per object (0x4A3E60 checks) |
+| 0x4A3810 | `PositionalVolume` ✔ | Offset to the listener in camera space (x × 4, z × 2 per level unit); ears at x = ±0x400; per-ear volume = (0xC00 − distance) / 24 × vol / 128, 0–128 |
+| 0x47DE50 | `StartSample(slot, left, right, …)` ✔ | Volume = dB table 0x4FD668[max(l, r)] (hundredths of a dB); pan = (r − l) × 10000 / 128 |
+| 0x401000 markers | | 0x83–0x86 → sounds 0x30/0x10/0x17/0x43 |
+
+Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid, 0x17 stomp start, 0xF stomp impact (BUZSTOMP), 0x16 long-fall scream, 0x2F long-fall landing.
+
 ## Misc
 | Address | Name | Notes |
 |---|---|---|
