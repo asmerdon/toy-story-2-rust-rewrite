@@ -51,6 +51,15 @@ Object position is an int × 1/32. Rotation applies X, then Y + 0x800 (a half-tu
 - Decoded Hamm idle frames: the body node stays at 0°. The four legs move in mirrored pairs within about ±25° and change smoothly frame to frame. The head turns +15° → −12°. Translations are tens of units against mesh offsets of hundreds, consistent with rest-pose deltas.
 - **Not yet confirmed visually.** `ts2-tool export-pose` writes posed OBJs for checking in Blender.
 
+## Playback sequences (why speed varies per character)
+Game code doesn't advance animation time at a fixed rate. It plays a **frame sequence**: a byte list of frame numbers, one entry per game tick. The object's time word (`+0x18`, 16.16) takes its integer part from the current byte, and the sequence pointer lives at object `+0x74`.
+- **Set:** `0x405CF0(obj, anim, seq)` writes the animation number to `+0x12`, points `+0x74` at sequence `seq`, and sets time = first byte << 16.
+- **Step:** `0x405C80(obj)` advances one byte. On `0xFF` the following byte decides what happens:
+  - `1`: hold the last frame (and set the fraction to 0xFFFF)
+  - *n*: jump back *n* bytes to loop
+  - `0xFF` followed by `0`: stop on the current frame
+- One shared table of 25 sequences lives at `0x4E0588` (entries 1–25, mostly 0..N−1 frame by frame, some partial ranges or holds). Creature-specific code presumably has its own tables, which is why Hamm plays slowly and the robots fast. Find them per creature when porting its behaviour.
+
 ## Open
 - How the smooth-joint shared vertices (creature tags 0x207/0x208) follow the nodes.
 - Which animation number is which move (idle, walk, jump…). That lives in the game code that selects slot `+0x12`.
