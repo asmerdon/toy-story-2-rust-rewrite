@@ -52,17 +52,20 @@ impl Poly {
 
     /// The polygon as triangles of absolute points (object position added).
     pub fn triangles(&self, at: [f32; 3]) -> Vec<[[f32; 3]; 3]> {
-        let p = |e: Option<[i16; 3]>| {
-            let e = e.unwrap_or([0; 3]);
-            [0, 1, 2].map(|k| at[k] + self.v0[k] as f32 + e[k] as f32)
-        };
-        let (a, b, c) = (p(None), p(Some(self.e1)), p(Some(self.e2)));
-        if self.is_triangle() {
-            vec![[a, b, c]]
-        } else {
-            let d = p(Some(self.e3));
-            vec![[a, b, d], [a, d, c]]
+        self.triangles_with_normals(at).into_iter().map(|(t, _)| t).collect()
+    }
+
+    /// Triangles with their unit normals, split as the sweep test 0x481FB0 does: (v0, v0+e1,
+    /// v0+e2) with `normal`, and for quads (v0+e3, v0+e2, v0+e1) with `normal2`.
+    pub fn triangles_with_normals(&self, at: [f32; 3]) -> Vec<([[f32; 3]; 3], [f32; 3])> {
+        let p = |e: [i16; 3]| [0, 1, 2].map(|k| at[k] + self.v0[k] as f32 + e[k] as f32);
+        let unit = |n: [i16; 3]| n.map(|v| v as f32 / 16384.0);
+        let (a, b, c) = (p([0; 3]), p(self.e1), p(self.e2));
+        let mut out = vec![([a, b, c], unit(self.normal))];
+        if !self.is_triangle() {
+            out.push(([p(self.e3), c, b], unit(self.normal2)));
         }
+        out
     }
 }
 
@@ -161,6 +164,15 @@ impl Terrain {
             .iter()
             .filter(|o| matches!(o.kind, 6..=8) && o.flags & 0x100 == 0)
             .flat_map(|o| self.shapes[o.shape].iter().flat_map(move |p| p.triangles(o.pos.map(|v| v as f32))))
+            .collect()
+    }
+
+    /// As `static_triangles`, with each triangle's stored unit normal (its solid side faces it).
+    pub fn collision_triangles(&self) -> Vec<([[f32; 3]; 3], [f32; 3])> {
+        self.objects
+            .iter()
+            .filter(|o| matches!(o.kind, 6..=8) && o.flags & 0x100 == 0)
+            .flat_map(|o| self.shapes[o.shape].iter().flat_map(move |p| p.triangles_with_normals(o.pos.map(|v| v as f32))))
             .collect()
     }
 }

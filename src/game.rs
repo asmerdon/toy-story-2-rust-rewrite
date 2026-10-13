@@ -15,11 +15,23 @@ use glam::Vec3;
 use std::collections::HashMap;
 
 pub const PLAYER_HEIGHT: f32 = 460.0;
-const RADIUS: f32 = 110.0;
-/// Height of the wall-collision sphere centre above the feet.
-const CHEST: f32 = 240.0;
-const STEP_UP: f32 = 130.0;
-const SNAP_DOWN: f32 = 80.0;
+/// Buzz collides as one sphere: radius 4000 object units (collider slot field +0x2C, set by
+/// 0x489C30), its bottom 0xC0 above his feet (0x484380 lifts the centre by 0xC0 + radius).
+const BODY_RADIUS: f32 = 4000.0 / 32.0;
+const BODY_LIFT: f32 = 0xC0 as f32 / 32.0;
+/// Resolver passes per tick (0x484380 runs 3, or 4 when few polygons are near).
+const PASSES: usize = 4;
+/// Distance kept from a surface after a hit.
+const SKIN: f32 = 0.5;
+/// Walls push Buzz out by 3 level units (normal × 3 / 512 in 2.14 units) and cost 1/16 of his
+/// horizontal speed (0x482A00, one tick per frame).
+const WALL_PUSH: f32 = 3.0;
+/// While on the ground, follow it down slopes and steps by up to this much per tick.
+const STICK_DOWN: f32 = 64.0;
+/// Teeter (0x4011D0): a drop counts when the floor is more than 0x1000 object units below; the
+/// probes are 0x1000 object units ahead and behind (sine table >> 2).
+const TEETER_DROP: f32 = 128.0;
+const TEETER_PROBE: f32 = 128.0;
 /// Game logic ticks per second (0x490860).
 pub const TICKS: f32 = 60.0;
 /// Most ticks run for one rendered frame, so a stall doesn't fast-forward the game.
@@ -82,12 +94,32 @@ fn double_jump_speed_high(h_obj: i32) -> i32 {
 }
 
 const CELL: f32 = 1024.0;
-/// |normal.y| above this is floor/ceiling, below is wall.
-const FLOOR_NY: f32 = 0.6;
+/// Floor-like contacts: normal y below this (+Y is down, so floors point to −Y). The resolver
+/// treats normals with y < −0x2000 (of 0x4000) as floors: slopes up to 60°.
+const FLOOR_NY: f32 = -0.5;
+
+#[derive(Debug, Clone, Copy)]
+struct Tri {
+    a: Vec3,
+    b: Vec3,
+    c: Vec3,
+    /// Unit normal on the solid side's face.
+    n: Vec3,
+    /// Render-geometry fallback: winding unknown, so collide from both sides.
+    two_sided: bool,
+}
+
+/// What a sweep hit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hit {
+    /// Fraction of the motion travelled before contact.
+    pub t: f32,
+    /// Contact normal, pointing from the surface towards the sphere.
+    pub normal: Vec3,
+}
 
 pub struct World {
-    tris: Vec<[Vec3; 3]>,
-    normals: Vec<Vec3>,
+    tris: Vec<Tri>,
     grid: HashMap<(i32, i32), Vec<u32>>,
     pub lo: Vec3,
     pub hi: Vec3,
@@ -98,6 +130,7 @@ fn cell(v: f32) -> i32 {
 }
 
 impl World {
+    /// From visible geometry (when there is no terrain file): two-sided.
     pub fn from_batches(batches: &[Batch]) -> World {
         let mut tris = Vec::new();
         for b in batches {
@@ -108,19 +141,42 @@ impl World {
         World::from_triangles(tris)
     }
 
-    /// From the original collision data (`TERRAIN.ALL`, see `formats::terrain`).
+    /// From the original collision data (`TERRAIN.ALL`, see `formats::terrain`), one-sided
+    /// with the stored normals, as the original tests them.
     pub fn from_terrain(t: &crate::formats::terrain::Terrain) -> World {
-        World::from_triangles(t.static_triangles().into_iter().map(|t| t.map(Vec3::from)).collect())
+        let tris = t
+            .collision_triangles()
+            .into_iter()
+            .map(|(p, n)| {
+                let [a, b, c] = p.map(Vec3::from);
+                Tri { a, b, c, n: Vec3::from(n).normalize_or_zero(), two_sided: false }
+            })
+            .collect();
+        World::build(tris)
     }
 
+    /// Plain triangles, two-sided, normals from the winding.
     pub fn from_triangles(tris: Vec<[Vec3; 3]>) -> World {
-        let mut normals = Vec::with_capacity(tris.len());
+        let tris = tris
+            .into_iter()
+            .map(|[a, b, c]| {
+                let mut n = (b - a).cross(c - a).normalize_or_zero();
+                // Prefer the upward (−Y) face for floors so floor_below reads them consistently.
+                if n.y > 0.0 {
+                    n = -n;
+                }
+                Tri { a, b, c, n, two_sided: true }
+            })
+            .collect();
+        World::build(tris)
+    }
+
+    fn build(tris: Vec<Tri>) -> World {
         let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         for (i, t) in tris.iter().enumerate() {
-            normals.push((t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero());
-            let tlo = t[0].min(t[1]).min(t[2]);
-            let thi = t[0].max(t[1]).max(t[2]);
+            let tlo = t.a.min(t.b).min(t.c);
+            let thi = t.a.max(t.b).max(t.c);
             lo = lo.min(tlo);
             hi = hi.max(thi);
             for cx in cell(tlo.x)..=cell(thi.x) {
@@ -129,28 +185,34 @@ impl World {
                 }
             }
         }
-        World { tris, normals, grid, lo, hi }
+        World { tris, grid, lo, hi }
     }
 
-    fn near(&self, p: Vec3, r: f32) -> impl Iterator<Item = u32> + '_ {
-        let (x0, x1, z0, z1) = (cell(p.x - r), cell(p.x + r), cell(p.z - r), cell(p.z + r));
+    /// Triangles whose grid cells overlap the box around `lo..hi` (x/z).
+    fn near_box(&self, lo: Vec3, hi: Vec3) -> Vec<u32> {
+        let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        (x0..=x1)
-            .flat_map(move |cx| (z0..=z1).map(move |cz| (cx, cz)))
-            .filter_map(|k| self.grid.get(&k))
-            .flatten()
-            .copied()
-            .filter(move |i| seen.insert(*i))
+        for cx in cell(lo.x)..=cell(hi.x) {
+            for cz in cell(lo.z)..=cell(hi.z) {
+                if let Some(v) = self.grid.get(&(cx, cz)) {
+                    out.extend(v.iter().copied().filter(|i| seen.insert(*i)));
+                }
+            }
+        }
+        out
     }
 
-    /// Height (y, game space) of the nearest floor at or below `from_y` under (x, z).
+    /// Height (y, game space) of the nearest floor at or below `from_y` under (x, z): the
+    /// point floor query (0x486280 / 0x486520).
     pub fn floor_below(&self, x: f32, z: f32, from_y: f32) -> Option<f32> {
+        let p = Vec3::new(x, 0.0, z);
         let mut best: Option<f32> = None;
-        for i in self.near(Vec3::new(x, 0.0, z), 0.0) {
-            if self.normals[i as usize].y.abs() < FLOOR_NY {
+        for i in self.near_box(p, p) {
+            let t = &self.tris[i as usize];
+            if t.n.y > FLOOR_NY {
                 continue;
             }
-            let [a, b, c] = self.tris[i as usize];
+            let (a, b, c) = (t.a, t.b, t.c);
             let d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
             if d.abs() < 1e-6 {
                 continue;
@@ -169,66 +231,119 @@ impl World {
         best
     }
 
-    /// Moves a sphere out of wall triangles. Returns the corrected centre.
-    pub fn push_out(&self, mut c: Vec3, r: f32) -> Vec3 {
-        for _ in 0..3 {
-            let mut moved = false;
-            for i in self.near(c, r).collect::<Vec<_>>() {
-                if self.normals[i as usize].y.abs() >= FLOOR_NY {
-                    continue;
-                }
-                let [a, b, t] = self.tris[i as usize];
-                let q = closest_point_on_triangle(c, a, b, t);
-                let d = c - q;
-                let dist = d.length();
-                if dist < r && dist > 1e-4 {
-                    // Push horizontally only, so walls never lift or sink the player.
-                    let push = Vec3::new(d.x, 0.0, d.z).normalize_or_zero() * (r - dist);
-                    c += push;
-                    moved = true;
-                }
+    /// Earliest contact of a sphere of radius `r` moving from `p0` by `d` (the sweep 0x481FB0
+    /// runs for each polygon: its face, then its edges as cylinders and corners as spheres).
+    pub fn sweep(&self, p0: Vec3, d: Vec3, r: f32) -> Option<Hit> {
+        let p1 = p0 + d;
+        let reach = Vec3::splat(r + 2.0);
+        let mut best: Option<Hit> = None;
+        let mut keep = |h: Option<Hit>| {
+            if let Some(h) = h
+                && best.is_none_or(|b| h.t < b.t)
+            {
+                best = Some(h);
             }
-            if !moved {
-                break;
+        };
+        for i in self.near_box(p0.min(p1) - reach, p0.max(p1) + reach) {
+            let t = &self.tris[i as usize];
+            let lo = t.a.min(t.b).min(t.c) - reach;
+            let hi = t.a.max(t.b).max(t.c) + reach;
+            if p0.max(p1).cmplt(lo).any() || p0.min(p1).cmpgt(hi).any() {
+                continue;
+            }
+            for n in if t.two_sided { [t.n, -t.n].to_vec() } else { vec![t.n] } {
+                let d0 = n.dot(p0 - t.a) - r;
+                let d1 = n.dot(p1 - t.a) - r;
+                // Faces only stop motion into their front side.
+                if d0 >= 0.0 && d1 < 0.0 {
+                    let s = d0 / (d0 - d1);
+                    let q = p0 + d * s - n * r;
+                    if inside(q, t.a, t.b, t.c, n) {
+                        keep(Some(Hit { t: s, normal: n }));
+                    }
+                }
+                // Edges and corners only near the plane, as the original limits them.
+                let near = (d0 < 8.0 || d1 < 8.0) && (d0 >= -8.0 - r / 2.0 || d1 >= -8.0 - r / 2.0);
+                if near && d.dot(n) < 0.0 {
+                    for (e0, e1) in [(t.a, t.b), (t.b, t.c), (t.c, t.a)] {
+                        keep(sweep_edge(p0, d, e0, e1, r + 1.0));
+                    }
+                    for v in [t.a, t.b, t.c] {
+                        keep(sweep_point(p0, d, v, r + 2.0));
+                    }
+                }
             }
         }
-        c
+        best
     }
 }
 
-/// Real-Time Collision Detection (Ericson), 5.1.5.
-pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let (ab, ac, ap) = (b - a, c - a, p - a);
-    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-    let bp = p - b;
-    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        return a + ab * (d1 / (d1 - d3));
-    }
-    let cp = p - c;
-    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        return a + ac * (d2 / (d2 - d6));
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
-    }
-    let denom = 1.0 / (va + vb + vc);
-    a + ab * (vb * denom) + ac * (vc * denom)
+/// Is `q` (on the plane) inside triangle abc with normal n?
+fn inside(q: Vec3, a: Vec3, b: Vec3, c: Vec3, n: Vec3) -> bool {
+    let e = 1e-3;
+    let s0 = (b - a).cross(q - a).dot(n);
+    let s1 = (c - b).cross(q - b).dot(n);
+    let s2 = (a - c).cross(q - c).dot(n);
+    (s0 >= -e && s1 >= -e && s2 >= -e) || (s0 <= e && s1 <= e && s2 <= e)
 }
 
+/// Sphere centre moving p0 → p0+d against a point: returns the entry time.
+fn sweep_point(p0: Vec3, d: Vec3, v: Vec3, r: f32) -> Option<Hit> {
+    let m = p0 - v;
+    let a = d.dot(d);
+    let b = m.dot(d);
+    let c = m.dot(m) - r * r;
+    if a < 1e-9 || b >= 0.0 {
+        return None;
+    }
+    if c < 0.0 {
+        return None; // already inside: leave it to the faces
+    }
+    let disc = b * b - a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let t = (-b - disc.sqrt()) / a;
+    if !(0.0..=1.0).contains(&t) {
+        return None;
+    }
+    let normal = (p0 + d * t - v).normalize_or_zero();
+    Some(Hit { t, normal })
+}
+
+/// Sphere centre moving p0 → p0+d against segment e0–e1 (a cylinder of radius r).
+fn sweep_edge(p0: Vec3, d: Vec3, e0: Vec3, e1: Vec3, r: f32) -> Option<Hit> {
+    let ed = e1 - e0;
+    let len2 = ed.dot(ed);
+    if len2 < 1e-6 {
+        return None;
+    }
+    // Work perpendicular to the edge.
+    let perp = |v: Vec3| v - ed * (v.dot(ed) / len2);
+    let m = perp(p0 - e0);
+    let dp = perp(d);
+    let a = dp.dot(dp);
+    let b = m.dot(dp);
+    let c = m.dot(m) - r * r;
+    if a < 1e-9 || b >= 0.0 || c < 0.0 {
+        return None;
+    }
+    let disc = b * b - a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let t = (-b - disc.sqrt()) / a;
+    if !(0.0..=1.0).contains(&t) {
+        return None;
+    }
+    let pc = p0 + d * t;
+    let s = (pc - e0).dot(ed) / len2;
+    if !(0.0..=1.0).contains(&s) {
+        return None;
+    }
+    let normal = (pc - (e0 + ed * s)).normalize_or_zero();
+    Some(Hit { t, normal })
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Input {
@@ -356,6 +471,25 @@ impl Player {
         Some(b)
     }
 
+    /// On stopping: if the floor under Buzz's centre is a drop (he's standing on an edge),
+    /// teeter facing the drop (10) or with it behind him (11). Part of 0x4011D0.
+    fn teeter(&self, world: &World) -> Option<u16> {
+        let (x, y, z) = (self.pos.x, self.pos.y, self.pos.z);
+        let drop = |px: f32, pz: f32, from: f32| world.floor_below(px, pz, from).is_some_and(|f| f - y > TEETER_DROP);
+        // 0x4863A0 probes from 0x400 object units above the feet.
+        if !drop(x, z, y - 32.0) {
+            return None;
+        }
+        let (s, c) = (sin12(self.facing) as f32 / 4096.0, cos12(self.facing) as f32 / 4096.0);
+        if drop(x + s * TEETER_PROBE, z + c * TEETER_PROBE, y) {
+            Some(state::TEETER_FRONT)
+        } else if drop(x - s * TEETER_PROBE, z - c * TEETER_PROBE, y) {
+            Some(state::TEETER_BACK)
+        } else {
+            None
+        }
+    }
+
     /// While standing on the idle list's entry 14, one random byte a tick; 1 in 4 starts a
     /// fidget (0x1C or 0x1D, by a second byte). Part of 0x4011D0.
     fn roll_fidget(&mut self) {
@@ -464,7 +598,7 @@ impl Player {
         // Animation state, then the frame list. A list's 0xFE end code returns Buzz to state 0
         // and the original picks again straight away.
         for _ in 0..3 {
-            self.select_state(pushing);
+            self.select_state(world, pushing);
             let speed = (self.forward as f64).hypot(self.side as f64) as i32;
             let Player { anim, state, .. } = self;
             if !anim.as_mut().is_some_and(|a| a.tick(state, speed)) {
@@ -645,23 +779,54 @@ impl Player {
         self.vel[2] = (fwd * c - side * s) / 4096;
     }
 
+    /// Move and collide (0x434550 → 0x484380): sweep Buzz's sphere, slide along what it hits;
+    /// floor-like contacts (slopes up to 60°) set floor contact.
     fn move_and_collide(&mut self, world: &World) {
-        let mut p = self.pos + Vec3::new(obj(self.vel[0]), obj(self.vel[1]), obj(self.vel[2]));
-        let chest = world.push_out(p - Vec3::Y * CHEST, RADIUS);
-        p.x = chest.x;
-        p.z = chest.z;
-        // Land on the nearest floor no more than STEP_UP above the feet.
+        let lift = Vec3::Y * (BODY_LIFT + BODY_RADIUS);
+        let mut c = self.pos - lift;
+        let mut v = Vec3::new(self.vel[0] as f32, self.vel[1] as f32, self.vel[2] as f32);
+        let mut d = v / 32.0;
         let was = self.on_floor;
-        self.on_floor = false;
-        if self.vel[1] >= 0
-            && let Some(f) = world.floor_below(p.x, p.z, p.y - STEP_UP)
-            && (p.y >= f || (was && f - p.y <= SNAP_DOWN))
-        {
-            p.y = f;
-            self.vel[1] = 0;
-            self.on_floor = true;
+        let mut floor = false;
+        for _ in 0..PASSES {
+            if d.length_squared() < 1e-8 {
+                break;
+            }
+            let Some(h) = world.sweep(c, d, BODY_RADIUS) else {
+                c += d;
+                break;
+            };
+            let len = d.length();
+            let s = (h.t - SKIN / len).max(0.0);
+            c += d * s;
+            let n = h.normal;
+            let rest = d * (1.0 - s);
+            d = rest - n * rest.dot(n).min(0.0);
+            v -= n * v.dot(n).min(0.0);
+            if n.y < FLOOR_NY {
+                floor = true;
+            } else {
+                c += Vec3::new(n.x, 0.0, n.z) * WALL_PUSH;
+                v.x *= 15.0 / 16.0;
+                v.z *= 15.0 / 16.0;
+            }
         }
-        self.pos = p;
+        // Stay on the ground walking down slopes and steps.
+        if !floor && was && v.y >= 0.0 {
+            let down = Vec3::Y * STICK_DOWN;
+            if let Some(h) = world.sweep(c, down, BODY_RADIUS)
+                && h.normal.y < FLOOR_NY
+            {
+                c += down * (h.t - SKIN / STICK_DOWN).max(0.0);
+                floor = true;
+            }
+        }
+        if floor && v.y > 0.0 {
+            v.y = 0.0;
+        }
+        self.pos = c + lift;
+        self.on_floor = floor;
+        self.vel = [v.x.round() as i32, v.y.round() as i32, v.z.round() as i32];
     }
 
     /// Fall timer, after the move (end of 0x436220).
@@ -695,11 +860,13 @@ impl Player {
     }
 
     /// The part of 0x4011D0 that picks the animation state for the moves ported so far.
-    /// Not yet: teeter (10/11) and states set by other systems.
-    fn select_state(&mut self, pushing: bool) {
+    /// Not yet: states set by other systems.
+    fn select_state(&mut self, world: &World, pushing: bool) {
         if self.coyote == 0 {
             self.idle_sub = 0;
-            if self.state == state::JUMP {
+            if self.state == state::TEETER_FRONT || self.state == state::TEETER_BACK {
+                self.state = state::RUN;
+            } else if self.state == state::JUMP {
                 if self.vel[1] > 0 {
                     self.state = state::FALL;
                 }
@@ -717,10 +884,8 @@ impl Player {
                 if self.state == state::LAND {
                     self.idle_sub = 0;
                 } else {
-                    // Teeter (10/11) would be chosen here when Buzz's centre is over a drop;
-                    // our point floor ray never leaves him standing like that.
                     if self.idle_sub == 0 {
-                        self.idle_sub = state::IDLE;
+                        self.idle_sub = self.teeter(world).unwrap_or(state::IDLE);
                     } else if self.idle_sub == state::IDLE {
                         self.roll_fidget();
                     }
@@ -787,7 +952,8 @@ mod tests {
             p.update(&w, Input::default(), 1.0 / 60.0);
         }
         assert!(p.on_floor);
-        assert!(p.pos.y.abs() < 1e-3, "{:?}", p.pos);
+        // The sphere rests on the floor with its bottom 0xC0 above the feet, as in the original.
+        assert!((p.pos.y - BODY_LIFT).abs() < 2.0, "{:?}", p.pos);
     }
 
     #[test]
@@ -797,21 +963,21 @@ mod tests {
         for _ in 0..240 {
             p.update(&w, Input { move_xz: [1.0, 0.0], ..Default::default() }, 1.0 / 60.0);
         }
-        assert!(p.pos.x < 1000.0 - RADIUS + 5.0 && p.pos.x > 800.0, "{:?}", p.pos);
+        assert!(p.pos.x < 1000.0 - BODY_RADIUS + 5.0 && p.pos.x > 800.0, "{:?}", p.pos);
     }
 
     #[test]
     fn turns_gradually_and_runs_at_top_speed() {
         let w = room();
         let mut p = landed(&w);
-        // Stick 90° to the right: at most 0x300 / 8 per tick.
-        p.tick(&w, [1.0, 0.0], false, false);
-        assert_eq!(p.facing, 0x60);
-        for _ in 0..120 {
-            p.tick(&w, [1.0, 0.0], false, false);
+        // Stick 90° to the left: at most 0x300 / 8 per tick.
+        p.tick(&w, [-1.0, 0.0], false, false);
+        assert_eq!(p.facing, 0x1000 - 0x60);
+        for _ in 0..60 {
+            p.tick(&w, [-1.0, 0.0], false, false);
         }
         // Steps are diff / 8, so the last 7 units are never turned (as in the original).
-        assert!((0x400 - p.facing) < 8, "{:#x}", p.facing);
+        assert!((p.facing - 0xC00) < 8 && p.facing >= 0xC00, "{:#x}", p.facing);
         assert!(p.forward >= MAX_SPEED - FRICTION && p.forward <= MAX_SPEED + ACCEL + FRICTION, "{}", p.forward);
     }
 
@@ -831,10 +997,11 @@ mod tests {
     fn jump_peak(hold: usize) -> (f32, Player) {
         let w = room();
         let mut p = landed(&w);
+        let ground = p.pos.y;
         let mut peak: f32 = 0.0;
         for i in 0..180 {
             p.tick(&w, [0.0; 2], i <= hold, false);
-            peak = peak.min(p.pos.y);
+            peak = peak.min(p.pos.y - ground);
         }
         (peak, p)
     }
@@ -865,7 +1032,7 @@ mod tests {
         let mut peak: f32 = 0.0;
         for _ in 0..120 {
             p.tick(&w, [0.0; 2], true, false);
-            peak = peak.min(p.pos.y);
+            peak = peak.min(p.pos.y - BODY_LIFT);
         }
         assert!((peak + DOUBLE_JUMP_APEX as f32 / 32.0).abs() < 40.0, "double jump peak {peak}");
     }
@@ -949,6 +1116,53 @@ mod tests {
         // Entry 14 reads 4 (no), then 0 → fidget 0x1C (second byte 0); it ends back in idle.
         let first = seen.iter().position(|&s| s == state::FIDGET).expect("no fidget");
         assert!(seen[first..].contains(&state::IDLE), "{seen:?}");
+    }
+
+    fn quad(a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]) -> Vec<[Vec3; 3]> {
+        let [a, b, c, d] = [a, b, c, d].map(Vec3::from);
+        vec![[a, b, c], [a, c, d]]
+    }
+
+    /// Floor at y = 0 for x < 500, a step of height `h` (y = −h) beyond, 2000 wide in z.
+    fn step(h: f32) -> World {
+        let mut t = quad([-2000., 0., -1000.], [500., 0., -1000.], [500., 0., 1000.], [-2000., 0., 1000.]);
+        t.extend(quad([500., 0., -1000.], [500., -h, -1000.], [500., -h, 1000.], [500., 0., 1000.]));
+        t.extend(quad([500., -h, -1000.], [3000., -h, -1000.], [3000., -h, 1000.], [500., -h, 1000.]));
+        World::from_triangles(t)
+    }
+
+    fn run_at_step(h: f32) -> Player {
+        let w = step(h);
+        let mut p = landed(&w);
+        p.set_facing(0x400);
+        for _ in 0..70 {
+            p.tick(&w, [1.0, 0.0], false, false);
+        }
+        p
+    }
+
+    #[test]
+    fn low_steps_are_climbed_and_high_ones_block() {
+        let low = run_at_step(40.0);
+        assert!(low.pos.x > 600.0 && low.on_floor, "{:?}", low.pos);
+        let high = run_at_step(200.0);
+        assert!(high.pos.x < 500.0, "{:?}", high.pos);
+    }
+
+    #[test]
+    fn standing_over_an_edge_teeters() {
+        // A platform ending at x = 0 with a 400-unit drop.
+        let mut t = quad([-2000., 0., -1000.], [0., 0., -1000.], [0., 0., 1000.], [-2000., 0., 1000.]);
+        t.extend(quad([0., 400., -1000.], [2000., 400., -1000.], [2000., 400., 1000.], [0., 400., 1000.]));
+        let w = World::from_triangles(t);
+        // Centre 60 units past the edge: the sphere still rests on the corner.
+        let mut p = Player::new(Vec3::new(60.0, -20.0, 0.0));
+        p.set_facing(0x400); // facing +x, towards the drop
+        for _ in 0..20 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        assert!(p.on_floor, "{:?}", p.pos);
+        assert_eq!(p.state, state::TEETER_FRONT);
     }
 
     #[test]

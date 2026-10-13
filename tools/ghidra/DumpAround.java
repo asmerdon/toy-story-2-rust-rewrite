@@ -14,6 +14,9 @@ import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.DataIterator;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
+import ghidra.program.model.listing.Instruction;
+import ghidra.program.model.address.Address;
+import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Reference;
 
 import java.io.File;
@@ -26,6 +29,8 @@ public class DumpAround extends GhidraScript {
         String[] args = getScriptArgs();
         File out = new File(args.length > 0 ? args[0] : "re_out");
         out.mkdirs();
+        int made = createMissedFunctions();
+        println("Created " + made + " functions in unanalysed code");
 
         try (PrintWriter w = new PrintWriter(new File(out, "functions.tsv"), "UTF-8")) {
             FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
@@ -68,5 +73,44 @@ public class DumpAround extends GhidraScript {
             n++;
         }
         println("Decompiled " + n + " functions to " + cdir);
+    }
+
+    /**
+     * Code reached only through jump tables or pointer tables is often left undefined by
+     * auto-analysis. Walk .text: wherever bytes aren't inside a function, skip padding
+     * (0x90/0xCC), disassemble and create a function there; repeat until nothing changes.
+     */
+    private int createMissedFunctions() throws Exception {
+        MemoryBlock text = currentProgram.getMemory().getBlock(".text");
+        if (text == null) return 0;
+        int made = 0;
+        for (int pass = 0; pass < 8; pass++) {
+            int before = made;
+            Address a = text.getStart();
+            while (a.compareTo(text.getEnd()) < 0 && !monitor.isCancelled()) {
+                Function f = getFunctionContaining(a);
+                if (f != null) {
+                    a = f.getBody().getMaxAddress().add(1);
+                    continue;
+                }
+                int b = getByte(a) & 0xFF;
+                if (b == 0x90 || b == 0xCC || b == 0x00) {
+                    a = a.add(1);
+                    continue;
+                }
+                Instruction ins = getInstructionAt(a);
+                if (ins == null) {
+                    disassemble(a);
+                    ins = getInstructionAt(a);
+                }
+                if (ins != null && createFunction(a, null) != null) {
+                    made++;
+                    continue;
+                }
+                a = a.add(1);
+            }
+            if (made == before) break;
+        }
+        return made;
     }
 }

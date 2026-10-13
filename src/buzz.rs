@@ -11,6 +11,9 @@ pub mod state {
     pub const JUMP: u16 = 2;
     pub const FALL: u16 = 3;
     pub const LAND: u16 = 4;
+    /// Teetering on a ledge, facing the drop / with the drop behind (0x4011D0's probes).
+    pub const TEETER_FRONT: u16 = 10;
+    pub const TEETER_BACK: u16 = 11;
     /// Written directly by the airborne routine 0x4340D0. Overlay anim 22 spreads the wings
     /// (nodes 11/12 and 17/18), base anim 27 tucks the legs. Held until landing.
     pub const DOUBLE_JUMP: u16 = 8;
