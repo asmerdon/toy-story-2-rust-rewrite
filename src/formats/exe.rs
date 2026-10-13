@@ -110,13 +110,14 @@ impl Exe {
                 let mut va = w(0);
                 loop {
                     let b = self.at(va, 1)?[0];
-                    if b == 0xFF || frames.len() > 255 {
+                    if b == 0xFF || b == 0xFE || frames.len() > 255 {
                         break;
                     }
                     frames.push(b);
                     va += 1;
                 }
-                let end = self.at(va + 1, 1)?[0];
+                // 0xFE ends the list and returns Buzz to state 0 (0x401000); treat as "stop".
+                let end = if self.at(va, 1)?[0] == 0xFE { 0 } else { self.at(va + 1, 1)?[0] };
                 Ok(BuzzMove { frames, end, anim: w(1) as i32, base_anim: w(2) as i32, rate_raw: w(3) as i32 })
             })
             .collect()

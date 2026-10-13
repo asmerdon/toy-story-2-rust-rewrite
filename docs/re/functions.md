@@ -45,9 +45,16 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 
 | 0x4011D0 | `UpdateBuzzAnimState` ✔ | Picks Buzz's state (`0x52F390`) and plays its row of the move table into slots +0x12 (overlay) / +0x16 (base) |
 | `0x4DF3F0` (data) | `BuzzMoveTable` ✔ | 33 × 20 bytes: frame-list ptr, overlay anim, base anim, rate (16.16 per tick; negative = scaled by horizontal speed), flag. Uses all 35 animations (tests/player_start.rs) |
-| 0x401000 | `StepBuzzSeq` ~ | Frame-list step with event markers ≥ 0x80 |
+| 0x401000 | `StepBuzzSeq` ✔ | One entry per 0x10000 of rate. 0x81/0x82 footsteps (on ground), 0x83–0x86 sounds 0x30/0x10/0x17/0x43, 0xFE = done → state 0, 0xFF n = back n (n = 1 holds, fraction cleared) |
 | 0x434090 | `StartJump(vy, kind)` ✔ | Clears on-ground (`0x52F39C`), state 2, vy = arg; normal callers pass −0xC00 |
 | 0x4340D0 | `BuzzAirborne(obj, jumpVy, force)` ✔ | Jump start, variable height (release while rising: +0x180/k², then halve − 0x100/k²), double jump (−0x900/k after release+press, height-limited, clamp 0x22A–0x74C), gravity 0x100/k² per tick, terminal 0x800 (k = 2; k = 4 with flag 0x52F340&0x100). Jump phase at +0x8C: 1 held, 2 released, 5/6 double |
+| | (0x4340D0 details) ✔ | Double-jump speed above the start: `sqrt(2·(0x100/k²)·(0x6A80 − h))` (peak 0x6A80 above the first jump's start, `0x53C674`; valid flag `0x53C61C`), truncated, clamped 0x22A–0x74C. Writes state 8 (`+0x90`) and plays sound 0x10. `+0x8E` = floor contact from collision (0x484380); `+0x9C` = 6-tick coyote counter (set while on floor, 0x436220), so jumps start while it's non-zero and the double jump needs it at 0. Pressing while rising faster than 0x400 wastes the double jump (phase 2→3). Phase resets to 0 only on release while on the floor |
+| `0x53C838` (data) | `g_fallTimer` ✔ | Counts while falling (vy > 0x80); > 60 ticks → 0x50 (panic, state 0xC, sound 0x16; a press with phase 0 gets a rescue double jump); landing at 0x50 → −0x46 (70-tick recovery, state 0xD, sound 0x2F, velocity zeroed) |
+| 0x433ED0 | `ClearBuzzSpecials` ✔ | Zeroes fall/stomp/skid/etc. timers |
+| 0x49E660 | `PlaySound(id, obj)` ✔ | Sound table 0x502950 (16 bytes per id) |
+| 0x433F40 | `StickTarget` ✔ | Target facing `+0x48` = d-pad table 0x4F5AC8 + camera angle; returns magnitude (0x4000 = full) |
+| 0x43BA80 | `PoseBuzzAnim` ✔ | Buzz's own pose builder (buffer 0x53EEE0, 0x6C/node). Base first, then overlay; the base's root node (6) moves point (0,−200,0) and that offset is added to every overlay node's translation (upper body follows hips, up to ~100 units). −3 advances the output node, −1/−2 don't (no shipped animation has −1/−2 before an animated node) |
+| 0x43B0C0 / 0x43ACA0 | `LoadHierChars` ~ | Loads `chars\*.all` per creature into the pose system |
 | 0x4A4BB0 | `BuzzSwim` ✔ | Drifts towards a target depth; Cross raises it; vy clamped ±0x180 |
 | 0x490860 | `FrameTimer` ✔ | Ticks = elapsed ms × 60 / 1000 → **60 ticks per second**; alternative fixed mode is 2 ticks/frame |
 
@@ -55,9 +62,9 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | Address | Name | Notes |
 |---|---|---|
 | 0x436220 | `BuzzControl` ✔ | Fills a movement profile, runs the helpers below, scales velocity by ticks, calls move-and-collide |
-| 0x4346C0 | `BuzzTurn` ✔ | Turns facing towards the stick at the profile's turn rate |
-| 0x4343D0 | `BuzzGroundAccel` ✔ | World velocity → forward/sideways; accelerate/brake/clamp by profile; back to world |
-| 0x434D20 | `BuzzStomp` ✔ | Circle in the air: hang, then slam at 0x800 (states 0x17/0x18), dust + 40-tick recovery on impact |
+| 0x4346C0 | `BuzzTurn` ✔ | Per tick facing moves min(diff, 0x300)/8 towards `+0x48`; diff ≥ 0x5DD snaps and (on ground) starts a 26-tick skid (`0x53C5D4`, state 0x12, sound 0x12). Stick taps < 16 ticks from standing only turn tap/16 of the way (`0x53C678`/`0x53C5D0`) |
+| 0x4343D0 | `BuzzGroundAccel` ✔ | Velocity → forward/side (sin table 0x4FE788 = round(16384·sin), used >> 2). Side decays 0x80/tick, forward by friction (0x30; 0x10 in the air once coyote = 0; 4 during a skid), +accel+friction while pushing and below max 0x380·mag; clamp side ±0x380, forward ±0x400. Stores forward/side at +0x74/+0x78 |
+| 0x434D20 | `BuzzStomp` ✔ | Circle edge in the air with phase 1/2 or state 8: timer `0x53C64C` = 1, sound 0x17; 14 ticks frozen, then vy = 0x800 with no horizontal motion; on floor → −40 (dust, sound 0xF), first 26 ticks frozen (state 0x18), no jumping until 0. State 0x17 while > 0 |
 | 0x434550 | `BuzzMoveAndCollide` ~ | Applies velocity and resolves collision |
 | 0x4354E0 | `BuzzClimb` ✔ | Pole/ladder: up/down moves (cap 0x400, slide 0x800), jump off −0x400 + facing push, or −0x600 |
 | 0x4359D0 / 0x435100 / 0x435F30 | other movement modes ? | |
@@ -77,7 +84,7 @@ Default ground profile (object units per tick; ÷32 × 60 → level units per se
 
 Alternate profiles in 0x436220 use accel 0x10/0x08 and jumps of −0x640 / −0x3C0 / −0x300 (air control, special surfaces; not yet labelled). `StartJump(−0xC00)` is a special, bigger jump.
 
-Buzz states (`0x52F390`): 0 run (speed-scaled), 1 stand, 2 jump (rising), 3 fall, 4 land, 10/11 teeter on a ledge (front/behind probe), 0x1C/0x1D idle fidgets, 0x1F swim; others are set by flags from other systems (hurt, specials) and not yet labelled. `0x52F39C` = on ground. Velocity `0x52F368/36C/370`.
+Buzz states (`0x52F390`): 0 run (speed-scaled), 1 stand, 2 jump (rising), 3 fall, 4 land, 5 (from timer `+0x94` > 0x44, not the double jump), 8 double jump (wings), 0xC long-fall panic, 0xD fall recovery, 0x12 skid, 0x17/0x18 stomp, 10/11 teeter on a ledge (front/behind probe), 0x1C/0x1D idle fidgets, 0x1F swim; others are set by flags from other systems (hurt, specials) and not yet labelled. `0x52F39C` = on ground. Velocity `0x52F368/36C/370`.
 
 Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+10 (InitLevelPlay subtracts 10 and switches to the `level1` files).
 

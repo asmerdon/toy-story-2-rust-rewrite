@@ -12,8 +12,9 @@ pub mod state {
     pub const JUMP: usize = 2;
     pub const FALL: usize = 3;
     pub const LAND: usize = 4;
-    /// Double jump (anim 6); held until landing, then LAND.
-    pub const DOUBLE_JUMP: usize = 5;
+    /// Double jump: 0x4340D0 writes state 8 directly (overlay anim 22 spreads the wings,
+    /// nodes 11/12 and 17/18; base anim 27 tucks the legs). Held until landing.
+    pub const DOUBLE_JUMP: usize = 8;
 }
 
 pub struct BuzzAnimator {

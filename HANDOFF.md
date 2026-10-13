@@ -27,11 +27,12 @@ See the README table in PROJECT.md. In short:
   - Z shows the zone-0 meshes (the first-person helmet view), which are hidden by default
 
 ## Known issues / next steps (in priority order)
-1. **Jump feel is off.** The user says the double jump is too weak relative to the first. The likely cause is in `src/game.rs`: when Buzz is above the first jump's start height (almost always true at the apex), we use the *minimum* clamp 0x22A instead of the original's computed value. Decode the float expression in 0x4340D0, in the `__ftol` branch near the double jump. Also check how the jump phase interacts with the hold, release and second press.
-2. **Wings don't animate.** In the original, the double jump (and maybe falling) deploys Buzz's wings. Find how: probably a separate node, overlay animation or flag, set by an event (`FUN_0049e660(0x10, …)` fires on the double jump). Check move-table state 5 (anim 6) and which nodes it covers.
-3. **Stomp** (0x434D20: Circle in the air, hang, slam at 0x800, states 0x17/0x18) is decoded but not implemented.
-4. **Turning:** the original turns at a limited rate (0x4346C0, using the profile's turn-rate field). We currently snap to face the stick.
-5. **Real collision:** port the original (move-and-collide 0x434550, floor query 0x486280/0x4863A0, `level.dat` sections 2–3, parser 0x43E6E0) instead of the render-triangle collision in `src/game.rs`.
-6. **Remaining Buzz states:** teeter (10/11), idle fidgets (0x1C/0x1D), climb (0x4354E0), swim (0x4A4BB0), and the animation event markers (≥ 0x80 in frame lists).
-7. **Enemies:** behaviour per creature type (spawn records have 19 undecoded parameter bytes; per-creature frame-list tables set the speeds).
-8. **Deferred cosmetic items:** level instance rotation/scale fields (plant leaves, a floating lamp, car wheels look wrong), the `0x41` 26-byte material tail, and the `.ngn` chunks 0x102/0x103/0x105.
+Done this session: the double-jump formula (item 1), the wings (item 2: state 8, overlay anim 22), and the move-table 0xFE end code (landing played junk frames). Stomp, turning, coyote time, long fall and skid are fully decoded in `docs/re/functions.md` but **not yet implemented**.
+1. **Port Buzz's controller as a fixed 60 Hz integer tick** (object units, 12-bit facing): profile → stomp → airborne (exact phase machine, coyote counter, fall timer) → turn → accel → move → coyote/fall bookkeeping, then the 0x4011D0 state selection with the 0x401000 stepper (FE → state 0). This covers the old items 3 (stomp, key E since F is play mode) and 4 (turning).
+2. **Root-node offset in `scene::creature_batches_layered`**: add the base anim's root-node displacement of (0, −200, 0) to the overlay nodes (0x43BA80). The torso currently ignores the hips (up to ~100 units in the double jump).
+3. **Real collision:** port the original (move-and-collide 0x434550 → 0x4855F0/0x484380, floor query 0x486280/0x4863A0, `level.dat` sections 2–3, parser 0x43E6E0) instead of the render-triangle collision in `src/game.rs`.
+4. **Remaining Buzz states:** teeter (10/11), idle fidgets (0x1C/0x1D), climb (0x4354E0), swim (0x4A4BB0), sound/footstep markers.
+5. **Enemies:** behaviour per creature type (spawn records have 19 undecoded parameter bytes; per-creature frame-list tables set the speeds).
+6. **Deferred cosmetic items:** level instance rotation/scale fields, the `0x41` 26-byte material tail, and the `.ngn` chunks 0x102/0x103/0x105.
+
+Tools: `ts2-tool anim-info <file.ngn> <creature>` prints every animation's node table. Buzz: nodes 0–6 legs (base anims, root 6), 7–19 upper body incl. wings 11/12 (right) and 17/18 (left), 20–22 never animated.

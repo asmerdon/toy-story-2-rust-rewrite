@@ -111,6 +111,8 @@ pub struct Animation {
     pub node_offsets: Vec<Option<u16>>,
     /// Per node: whether its record carries scale.
     pub has_scale: Vec<bool>,
+    /// The node table as stored: record offsets, or -1/-2/-3 markers.
+    pub raw_table: Vec<i16>,
     pub root_node: i16,
     /// All frame words, `frame_count * stride` long.
     pub words: Vec<i16>,
@@ -130,9 +132,8 @@ pub fn parse(b: &[u8]) -> Result<Animation, Error> {
     let mask_len = h(6)? as usize;
     let root_node = h(7)? as i16;
 
-    let node_offsets = (0..table_len)
-        .map(|i| rd16(b, header + 2 * i).map(|v| (v as i16 >= 0).then_some(v)))
-        .collect::<Result<Vec<_>, _>>()?;
+    let raw_table = (0..table_len).map(|i| rd16(b, header + 2 * i).map(|v| v as i16)).collect::<Result<Vec<_>, _>>()?;
+    let node_offsets = raw_table.iter().map(|&v| (v >= 0).then_some(v as u16)).collect();
     let mask_start = header + 2 * table_len;
     let mask = b.get(mask_start..mask_start + mask_len).ok_or_else(|| Error("scale mask past end".into()))?;
     let has_scale: Vec<bool> = (0..table_len).map(|n| mask.get(n / 8).is_some_and(|m| m & (1 << (n % 8)) != 0)).collect();
@@ -152,7 +153,7 @@ pub fn parse(b: &[u8]) -> Result<Animation, Error> {
         let prev = words.len() - stride as usize;
         words.push(words[prev]);
     }
-    Ok(Animation { frame_count, stride, node_offsets, has_scale, root_node, words })
+    Ok(Animation { frame_count, stride, node_offsets, has_scale, raw_table, root_node, words })
 }
 
 impl Animation {

@@ -21,12 +21,14 @@ fn main() {
         Some("scan-ngn") if args.len() == 3 => scan_ngn(Path::new(&args[2])),
         Some("export-level") if args.len() == 4 => export_level(Path::new(&args[2]), Path::new(&args[3]), true),
         Some("export-level-raw") if args.len() == 4 => export_level(Path::new(&args[2]), Path::new(&args[3]), false),
+        Some("anim-info") if args.len() == 4 => anim_info(Path::new(&args[2]), &args[3]),
         Some("export-pose") if args.len() == 7 => export_pose(Path::new(&args[2]), &args[3], &args[4], &args[5], Path::new(&args[6])),
         _ => {
             eprintln!(
                 "usage:\n  ts2-tool scan-models <game_dir>\n  ts2-tool export-obj <file.all> <out.obj>\n  ts2-tool export-all <game_dir> <out_dir>\n  \
                  ts2-tool scan-ngn <game_dir>\n  ts2-tool export-level <file.ngn> <out_dir>\n  ts2-tool export-level-raw <file.ngn> <out_dir>   (meshes untransformed)\n  \
-                 ts2-tool export-pose <file.ngn> <creature> <anim|all> <frame|all> <out_dir>"
+                 ts2-tool export-pose <file.ngn> <creature> <anim|all> <frame|all> <out_dir>
+  ts2-tool anim-info <file.ngn> <creature>"
             );
             process::exit(2);
         }
@@ -188,6 +190,24 @@ fn export_pose(input: &Path, creature: &str, anim_sel: &str, frame_sel: &str, ou
         }
     }
     println!("wrote {written} posed OBJ(s) to {} (textures/MTL come from export-level of the same file)", out_dir.display());
+    Ok(())
+}
+
+/// Prints each animation's header and node table (record offset, `-1/-2/-3` markers, `s` = scale).
+fn anim_info(input: &Path, creature: &str) -> Res {
+    let n = ngn::parse(&fs::read(input)?)?;
+    let c = n.creatures.iter().find(|c| c.name.eq_ignore_ascii_case(creature)).ok_or_else(|| format!("no creature {creature}"))?;
+    println!("{}: {} nodes, {} animations", c.name, c.nodes.len(), c.animations.len());
+    for (i, raw) in c.animations.iter().enumerate() {
+        let a = anim::parse(raw)?;
+        let table: Vec<String> = a
+            .raw_table
+            .iter()
+            .zip(&a.has_scale)
+            .map(|(&v, &s)| if v < 0 { v.to_string() } else { format!("{v}{}", if s { "s" } else { "" }) })
+            .collect();
+        println!("a{i:02} frames {:3} stride {:3} root {:3} [{}]", a.frame_count, a.stride, a.root_node, table.join(" "));
+    }
     Ok(())
 }
 

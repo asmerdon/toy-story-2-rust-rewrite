@@ -43,9 +43,15 @@ const JUMP_CUT_SUB: f32 = per_s(0x40 as f32);
 /// Double jump: vy = -0x900 / k, allowed while not rising faster than 0x400.
 const DOUBLE_JUMP_SPEED: f32 = per_s(0x480 as f32);
 const DOUBLE_JUMP_MAX_RISE: f32 = per_s(0x400 as f32);
-/// When already above the first jump's start, the original computes a reduced boost (a float
-/// expression not yet decoded) clamped to [0x22A, 0x74C]; we use the lower bound.
-const DOUBLE_JUMP_SPEED_HIGH: f32 = per_s(0x22A as f32);
+/// Above the first jump's start (h object units higher), 0x4340D0 launches at the speed that
+/// peaks 0x6A80 above that start: v = sqrt(2 · g · (0x6A80 − h)), g = 0x100 / k², truncated and
+/// clamped to [0x22A, 0x74C]. A negative radicand gives the x87 "indefinite" integer, which the
+/// clamp turns into the maximum 0x74C.
+fn double_jump_speed_high(h_obj: i32) -> f32 {
+    let r = 2 * (0x100 / 4) * (0x6A80 - h_obj);
+    let v = if r < 0 { 0x74C } else { ((r as f64).sqrt() as i32).clamp(0x22A, 0x74C) };
+    per_s(v as f32)
+}
 const CELL: f32 = 1024.0;
 /// |normal.y| above this is floor/ceiling, below is wall.
 const FLOOR_NY: f32 = 0.6;
@@ -285,7 +291,8 @@ impl Player {
             }
         } else if input.jump && self.jump == JumpPhase::Released && self.vel.y > -DOUBLE_JUMP_MAX_RISE {
             let above_start = self.pos.y < self.jump_start_y;
-            self.vel.y = -if above_start { DOUBLE_JUMP_SPEED_HIGH } else { DOUBLE_JUMP_SPEED };
+            let h_obj = ((self.jump_start_y - self.pos.y) * 32.0) as i32;
+            self.vel.y = -if above_start { double_jump_speed_high(h_obj) } else { DOUBLE_JUMP_SPEED };
             self.jump = JumpPhase::Double;
         }
         self.vel.y = (self.vel.y + GRAVITY * dt).min(TERMINAL_FALL);
@@ -392,5 +399,14 @@ mod tests {
         p.update(&w, Input { jump: true, jump_held: true, ..Default::default() }, 1.0 / 60.0);
         assert_eq!(p.jump, JumpPhase::Double);
         assert!(p.vel.y < before, "double jump should push upward");
+    }
+
+    #[test]
+    fn double_jump_speed_matches_original_clamps() {
+        assert_eq!(double_jump_speed_high(0), per_s(0x74C as f32));
+        assert_eq!(double_jump_speed_high(0x6A00), per_s(0x22A as f32));
+        assert_eq!(double_jump_speed_high(0x7000), per_s(0x74C as f32));
+        // At a full first-jump apex (576 level units) the boost is about 0x427.
+        assert!((double_jump_speed_high(576 * 32) - per_s(1063.0)).abs() < per_s(2.0));
     }
 }
