@@ -128,6 +128,21 @@ Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+
 | 0x434090 | `StartJump(vy, phase)` ✔ | See Player |
 | 0x49F400 | `Near(a, b, r)` ✔ | (Δ >> 8)² < r² |
 
+## Creatures (ported: `src/creatures.rs`)
+| Address | Name | Notes |
+|---|---|---|
+| 0x407150 | `SetupCreatures` ✔ | 64 slots × 0x9C at 0x52C840, one per spawn record (+0x98 points at it) |
+| 0x406CD0 | `ResetCreature(c, first)` ✔ | Record bytes: +0xD behaviour (table 0x4E02C4), +0xE turn rate, +0xF facing × 16, +0x10 health (+0x7E), +0x11 respawn (+0x7A; 100 → 0x708), +0x12 flags (+0x40), +0x14/+0x16 zone half sizes (× 256), +0x18 zone angle (× 8), +0x1A state (bit 1: type-2 hits work, bit 2: Buzz's attacks work), +0x1C/+0x1D deceleration, +0x1E acceleration, +0x1F top speed. Sets the type routine +0x94 by id (4 ZURG3 0x406220, 5 Tin Man 0x416AB0, 6 sheep 0x416A60, 8 RC 0x406A60, …) |
+| 0x4086F0 | `UpdateCreatures` ✔ | Dead ones count +0x7A down and restart; live ones within reach of the camera ((d >> 8)² < 400², or flag 1) run 0x4076F0; +0x70 > 0 delayed death, < 0 dying, then removed (0x405D20 mode 2) |
+| 0x4076F0 | `CreatureThink` ✔ | Script ops: 1 wait, 2 random wait, 3 random target in radius, 5 random point in zone, 8 skip if, 0xC flags, 0xD animation, 0xE random test, 0xF top speed, 0x10/0x12 distance tests, 0x11 Buzz in zone, 0x14 accel, 0x16 animation rates, 0x17 sound, 0x18 jump at target, 0x19 face target / Buzz, 0x1A velocity, 0x1B target Buzz, 0x1C vy, 0x1D turn rate, 0x1E state, 0x1F/0x23 targets towards / away from Buzz, 0x21 timer, −1 back; anything else yields (6/7: jump until landing). Flags +0x40: 1 always active, 4 walk to target, 8 chase Buzz inside the zone, 0x10 hover, 0x20 fixed height, 0x80 touchable, 0x100 harmful, 0x400 airborne jump, 0x800 no coin. Movement: velocity in the creature's frame, deceleration, acceleration to top speed, turning, zone clamp (rotated rectangle), gravity 0x40/tick to 0x800 with floor following, or hovering towards the target height. Animation clock: rate × forward speed / 2 (rate < 0: fixed); then calls +0x94 with {flags, chase, side, forward} |
+| 0x405C80 / 0x405CF0 | animation step / set ✔ | Frame lists in the shared table 0x4E0588 |
+| 0x407440 | `CreatureContacts` ✔ (shape approximated) | Buzz's chest (y − 0x1CC0) against each touchable creature; reach 400 while spinning (0x53C650 > 0x14 or super spin 0x53C83C < −0x77) or just after a stomp lands, else 150. Attack kind 1 spin / 5 stomp (only from above) if the record's state has bit 2. Harmful creatures hurt Buzz (mode 3) when he isn't attacking; others push him (mode 1); sheep (health 102) nothing. The real shape is an ellipsoid per animation (+0x84 table) |
+| 0x408A60 | `HitCreature(c, angle, kind)` ✔ | Table 0x4E066C {type, knock-back ticks (+0x7C), damage}: 0 none, 1 spin (1, 30, 2), 2 (2, 4, 1), 3 (2, 4, 4), 4 (3, 4, 2), 5 stomp (1, 30, 2); type 2 needs state bit 1; health < 100 only; at 0: flags &= 0xFE63, health 999, death script (pointer 0x4E02CC), 0x405D20(1) |
+| 0x405D20 | `KillCreature(c, mode)` ✔ (no particles) | Mode 1: coin dropped (particle 0x3D) unless flag 0x800, death animation (ids 3/0xE: anim 2, 94 ticks; 4: 62; 0x14: 70), sound 10. Mode 2: removed; never back if no respawn time |
+| 0x434EB0 | `BuzzSpin` ✔ | Circle on the ground: 48-tick spin (sound 0x11), held: charge to 60 (sound 0x27), released charged: super spin (−300, sounds 0x26/0x18). Animation 9 on the upper body at (48 − t) / 2 |
+| 0x4071E0 | `HurtBuzz(angle, mode)` ✔ | Mode 1 knock-back (sin >> 4), 2 a battery (skipped while 0x52F394 > 0; the shield 0x52F398 turns it into a −60 flash), then vy −0x200, phase 5, 90 ticks invulnerable, voice 0x1A; below 0 batteries: dies (voice 0x15, 0x52B7DC = 2, 120 ticks). Mode 4 kills |
+| 0x434550 | `BuzzMove` ✔ | After the move: the floor's surface (terrain object flags low byte, copied by 0x482A00 / 0x483EF0): types 0–3 hurt, 16–19 kill and put him back, 13 slippery (0x53C818, not ported) |
+
 ## Cutscene scripts
 | Address | Name | Notes |
 |---|---|---|

@@ -14,7 +14,7 @@
 
 use crate::formats::exe::Exe;
 use crate::formats::packets::Spawn;
-use crate::game::World;
+use crate::game::{Player, World};
 
 /// Spawn record fields beyond position and id (`Spawn::params` holds record bytes 13–31).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -103,6 +103,24 @@ pub struct Creature {
     jump: u8,
     /// Updated this frame (near the camera).
     pub active: bool,
+    /// Running the shared death script (pointer 0x4E02CC) instead of its own.
+    dying_script: bool,
+}
+
+/// A creature's touch shape: a vertical cylinder around its position, from its model.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Shape {
+    /// Centre height above the feet and half height, level units.
+    pub up: f32,
+    pub half_height: f32,
+    pub radius: f32,
+}
+
+/// Something creatures did this tick that the game around them handles.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    /// A creature died here (0x405D20 mode 1 drops a coin unless its flags have 0x800).
+    Died { slot: usize, pos: [i32; 3], coin: bool },
 }
 
 /// What a creature's update reported, for its type routine (the struct 0x4076F0 passes).
@@ -125,7 +143,16 @@ pub struct Creatures {
     rpos: usize,
     /// Sounds requested since the caller last drained this: (id, position in object units).
     pub sounds: Vec<(u16, [i32; 3])>,
+    pub events: Vec<Event>,
+    /// Touch shapes by creature id.
+    pub shapes: std::collections::HashMap<u8, Shape>,
+    /// Hit kinds (0x4E066C): (type, knock-back ticks, damage).
+    hits: Vec<[i16; 3]>,
+    death_script: Option<Vec<i16>>,
 }
+
+const HITS: u32 = 0x4E066C;
+const DEATH_SCRIPT: u32 = 0x4E02CC;
 
 const BEHAVIOURS: u32 = 0x4E02C4;
 const SEQUENCES: u32 = 0x4E0588;
@@ -182,7 +209,26 @@ impl Creatures {
             })
             .collect();
         let seqs = exe.map(sequences).unwrap_or_default();
-        let mut c = Creatures { slots: Vec::new(), scripts, seqs, random, rpos: 0, sounds: Vec::new() };
+        let hits = exe
+            .and_then(|e| e.at(HITS, 36).ok())
+            .map(|b| (0..6).map(|k| [0, 1, 2].map(|j| i16::from_le_bytes([b[6 * k + 2 * j], b[6 * k + 2 * j + 1]]))).collect())
+            .unwrap_or_else(|| vec![[0, 0, 0], [1, 30, 2], [2, 4, 1], [2, 4, 4], [3, 4, 2], [1, 30, 2]]);
+        let death_script = exe.and_then(|e| {
+            let p = u32::from_le_bytes(e.at(DEATH_SCRIPT, 4).ok()?.try_into().ok()?);
+            Some((0..64u32).map_while(|k| e.at(p + 2 * k, 2).ok().map(|w| i16::from_le_bytes([w[0], w[1]]))).collect())
+        });
+        let mut c = Creatures {
+            slots: Vec::new(),
+            scripts,
+            seqs,
+            random,
+            rpos: 0,
+            sounds: Vec::new(),
+            events: Vec::new(),
+            shapes: Default::default(),
+            hits,
+            death_script,
+        };
         for s in spawns.iter().take(64) {
             let rec = Record::from_params(&s.params);
             let mut cr = Creature {
@@ -211,6 +257,7 @@ impl Creatures {
                 floor: 0,
                 jump: 0,
                 active: false,
+                dying_script: false,
             };
             c.reset(&mut cr, true);
             c.slots.push(cr);
@@ -250,6 +297,7 @@ impl Creatures {
         c.knock = 0;
         c.floor = c.pos[1];
         c.jump = 0;
+        c.dying_script = false;
         if c.id == 0x18 {
             c.health = 0;
             c.respawn = 10000;
@@ -313,8 +361,17 @@ impl Creatures {
             }
             c.active = true;
             let s = self.think(&mut c, world, buzz);
+            // 0x4086F0: > 0 a delayed death, < 0 dying (then removed).
             if c.hurt > 0 {
                 c.hurt -= 1;
+                if c.hurt == 0 {
+                    self.kill(i, &mut c);
+                }
+            } else if c.hurt < 0 {
+                c.hurt += 1;
+                if c.hurt == 0 {
+                    self.remove(&mut c);
+                }
             }
             self.slots[i] = c;
             steps.push((i, s));
@@ -516,7 +573,112 @@ impl Creatures {
     }
 
     fn script(&self, c: &Creature) -> Option<&Vec<i16>> {
+        if c.dying_script {
+            return self.death_script.as_ref();
+        }
         self.scripts.get(c.rec0.behaviour as usize).and_then(|s| s.as_ref())
+    }
+
+    /// 0x405D20 mode 1: the death animation (types 3 / 0xE / 0x18: animation 2 for 94 ticks,
+    /// type 4: 62 ticks; others go at once), a coin dropped.
+    fn kill(&mut self, slot: usize, c: &mut Creature) {
+        self.events.push(Event::Died { slot, pos: c.pos, coin: c.flags & 0x800 == 0 });
+        c.flags |= 0x800;
+        c.rates = [-32, -32];
+        c.vel = [0, -0x400, 0];
+        let (anim, seq, t) = match c.id {
+            3 | 0xE => (Some(2), 1, -0x5E),
+            0x18 => {
+                c.vel[1] = -0xB00;
+                c.respawn = 10000;
+                (Some(2), 1, -0x5E)
+            }
+            4 => (Some(2), 7, -0x3E),
+            0x14 => (Some(1), 20, -0x46),
+            _ => (None, 0, -1),
+        };
+        if let Some(a) = anim {
+            self.set_anim(c, a, seq);
+        }
+        c.hurt = t;
+        self.sounds.push((10, c.pos));
+    }
+
+    /// 0x405D20 mode 2: gone; back after its respawn time, or never if it has none.
+    fn remove(&mut self, c: &mut Creature) {
+        if c.respawn == 0 {
+            c.id = 0;
+        }
+        c.flags &= !3;
+        c.health = 0;
+    }
+
+    /// 0x408A60 `HitCreature(c, angle, kind)`: knock-back, then damage by the hit table; at 0
+    /// health it runs the death script and dies.
+    pub fn hit(&mut self, slot: usize, angle: i32, kind: usize) {
+        let mut c = self.slots[slot].clone();
+        let [typ, knock, damage] = self.hits.get(kind).copied().unwrap_or([0; 3]);
+        if typ == 2 && c.rec.state & 1 == 0 {
+            return;
+        }
+        if c.rec.decel[1] != 0xFF {
+            c.vel[0] = sin(angle) >> 5;
+            c.vel[2] = cos(angle) >> 5;
+            c.flags &= !4;
+        }
+        if c.knock == 0 {
+            c.knock = knock as i32;
+            if typ != 0 {
+                if c.health < 100 {
+                    c.health -= damage as i32;
+                    self.sounds.push((9, c.pos));
+                }
+                if c.health < 1 {
+                    c.flags &= 0xFE63;
+                    c.health = 999;
+                    c.wait = 0;
+                    c.pc = 0;
+                    c.dying_script = true;
+                    self.kill(slot, &mut c);
+                }
+            }
+        }
+        self.slots[slot] = c;
+    }
+
+    /// 0x407440: Buzz touching creatures. His attack (spin, stomp) hits them; harmful ones
+    /// (flag 0x100) hurt him when he isn't attacking; others just push him away.
+    pub fn contact(&mut self, player: &mut Player) {
+        let (kind, reach) = player.attack();
+        let b = player.pos.to_array();
+        let chest = b[1] - 230.0;
+        for i in 0..self.slots.len() {
+            let c = &self.slots[i];
+            if c.id == 0 || !c.active || c.health <= 0 || c.hurt < 0 || c.flags & 0x80 == 0 {
+                continue;
+            }
+            let sh = self.shapes.get(&c.id).copied().unwrap_or(Shape { up: 150.0, half_height: 150.0, radius: 120.0 });
+            let p = c.pos.map(|v| v as f32 / 32.0);
+            let centre = p[1] - sh.up;
+            let (dx, dz) = (b[0] - p[0], b[2] - p[2]);
+            let r = sh.radius + reach as f32 * 0.5;
+            if dx * dx + dz * dz >= r * r || (chest - centre).abs() >= sh.half_height + reach as f32 * 0.5 {
+                continue;
+            }
+            let angle = crate::boxes::angle12(dx, dz);
+            let below = centre >= chest;
+            let k = if kind != 0 && c.rec.state & 2 != 0 && !(kind == 5 && !below) { kind as usize } else { 0 };
+            let mode = if c.flags & 0x100 != 0 && kind == 0 {
+                3
+            } else if c.health == 0x66 || k != 0 {
+                0
+            } else {
+                1
+            };
+            self.slots[i].flags |= 0x200;
+            self.hit(i, (angle + 0x800) & 0xFFF, k);
+            player.hurt(angle, mode);
+        }
     }
 
     /// The interpreter part of 0x4076F0: runs until an opcode it doesn't handle (a yield).

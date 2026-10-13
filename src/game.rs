@@ -138,6 +138,9 @@ pub struct Hit {
     pub depth: f32,
     /// Mover id (link − 1) of what was hit, if it is a mover.
     pub mover: Option<i32>,
+    /// Surface type of what was hit: the low byte of its terrain object's flags, unless 0xFF
+    /// (0x482A00 / 0x483EF0 copy it for 0x434550).
+    pub surface: Option<u8>,
 }
 
 /// Overlap with a face that still counts as touching it from the front.
@@ -372,6 +375,7 @@ impl World {
         };
         for t in self.candidates(p0.min(p1) - reach, p0.max(p1) + reach) {
             let mover = self.mover_of(&t);
+            let surface = self.objects.get(t.obj as usize).map(|o| o.flags as u8).filter(|&f| f != 0xFF);
             let lo = t.a.min(t.b).min(t.c) - reach;
             let hi = t.a.max(t.b).max(t.c) + reach;
             if p0.max(p1).cmplt(lo).any() || p0.min(p1).cmpgt(hi).any() {
@@ -387,17 +391,17 @@ impl World {
                     let s = if d0 > 0.0 { d0 / (d0 - d1) } else { 0.0 };
                     let q = p0 + d * s - n * (r + d0.min(0.0));
                     if inside(q, t.a, t.b, t.c, n) {
-                        keep(Some(Hit { t: s, normal: n, depth: (-d0).max(0.0), mover }));
+                        keep(Some(Hit { t: s, normal: n, depth: (-d0).max(0.0), mover, surface }));
                     }
                 }
                 // Edges and corners only near the plane, as the original limits them.
                 let near = (d0 < 8.0 || d1 < 8.0) && (d0 >= -8.0 - r / 2.0 || d1 >= -8.0 - r / 2.0);
                 if near && d.dot(n) < 0.0 {
                     for (e0, e1) in [(t.a, t.b), (t.b, t.c), (t.c, t.a)] {
-                        keep(sweep_edge(p0, d, e0, e1, r + 1.0).map(|h| Hit { mover, ..h }));
+                        keep(sweep_edge(p0, d, e0, e1, r + 1.0).map(|h| Hit { mover, surface, ..h }));
                     }
                     for v in [t.a, t.b, t.c] {
-                        keep(sweep_point(p0, d, v, r + 2.0).map(|h| Hit { mover, ..h }));
+                        keep(sweep_point(p0, d, v, r + 2.0).map(|h| Hit { mover, surface, ..h }));
                     }
                 }
             }
@@ -452,7 +456,7 @@ fn sweep_point(p0: Vec3, d: Vec3, v: Vec3, r: f32) -> Option<Hit> {
         return None;
     }
     let normal = (p0 + d * t - v).normalize_or_zero();
-    Some(Hit { t, normal, depth: 0.0, mover: None })
+    Some(Hit { t, normal, depth: 0.0, mover: None, surface: None })
 }
 
 /// Sphere centre moving p0 → p0+d against segment e0–e1 (a cylinder of radius r).
@@ -486,7 +490,7 @@ fn sweep_edge(p0: Vec3, d: Vec3, e0: Vec3, e1: Vec3, r: f32) -> Option<Hit> {
         return None;
     }
     let normal = (pc - (e0 + ed * s)).normalize_or_zero();
-    Some(Hit { t, normal, depth: 0.0, mover: None })
+    Some(Hit { t, normal, depth: 0.0, mover: None, surface: None })
 }
 
 /// Code run inside a tick just before Buzz moves (see `Player::update_with`).
@@ -508,8 +512,11 @@ pub struct Input {
     pub jump: bool,
     /// Jump button currently held (Cross, pad bit 0x4000).
     pub jump_held: bool,
-    /// Stomp pressed since the last update (Circle, pad bit 0x2000).
+    /// Stomp pressed since the last update (Circle, pad bit 0x2000): a stomp in the air, a
+    /// spin attack on the ground.
     pub stomp: bool,
+    /// Circle held (charges the spin).
+    pub stomp_held: bool,
     /// The d-pad itself (pad bits 0x10 up, 0x20 right, 0x40 down, 0x80 left); climbing reads it
     /// directly rather than as a camera-relative direction.
     pub dpad: u8,
@@ -596,6 +603,22 @@ pub struct Player {
     pub stick_pushed: bool,
     /// 0x53C5DC.
     pub push_lock: i32,
+    /// Battery health 0..=14 (0x52F396; below 0 = dying) and lives (0x52F39A).
+    pub health: i32,
+    pub lives: i32,
+    /// 0x52F394: > 0 invulnerable after a hit, < 0 a shield flash.
+    pub hurt_timer: i32,
+    /// 0x52F398: > 0 the shield pickup's protection.
+    pub shield: i32,
+    /// 0x52F2DC while dying (0x52B7DC = 2): ticks until the respawn.
+    pub dying: i32,
+    /// 0x53C650: spin attack ticks left (48 from the start; hits while > 20).
+    pub spin: i32,
+    /// 0x53C83C: > 0 charging the spin (to 60), < 0 the super spin (from −300; hits below −119).
+    pub charge: i32,
+    /// Surface type of the floor under Buzz this tick.
+    pub surface: Option<u8>,
+    circle_held: bool,
     /// Ticks until Buzz may say an idle line again (0x50A0BC) and the last line (0x50A0B0).
     voice_timer: i32,
     last_voice: u16,
@@ -652,6 +675,15 @@ impl Player {
             floor_mover: None,
             stick_pushed: false,
             push_lock: 0,
+            health: 14,
+            lives: 5,
+            hurt_timer: 0,
+            shield: 0,
+            dying: 0,
+            spin: 0,
+            charge: 0,
+            surface: None,
+            circle_held: false,
             voice_timer: 0,
             last_voice: 0,
             poles: Vec::new(),
@@ -781,6 +813,7 @@ impl Player {
         let mut ticks = 0;
         self.jump_latch |= input.jump;
         self.stomp_latch |= input.stomp;
+        self.circle_held = input.stomp_held;
         self.accum = (self.accum + dt * TICKS).min(MAX_TICKS_PER_UPDATE);
         while self.accum >= 1.0 {
             self.accum -= 1.0;
@@ -826,6 +859,16 @@ impl Player {
 
         self.grab_lock = (self.grab_lock - 1).max(0);
         let stomp = self.stomp_tick(stomp_pressed);
+        self.spin_tick(stomp_pressed);
+        if self.hurt_timer > 0 {
+            self.hurt_timer -= 1;
+        } else if self.hurt_timer < 0 {
+            self.hurt_timer += 1;
+        }
+        self.shield = (self.shield - 1).max(0);
+        if self.dying > 0 {
+            self.dying -= 1;
+        }
         let climb = self.climb_tick(dpad, stick, jump_pressed);
         match if climb != 0 { 0 } else { stomp } {
             // On a pole: no gravity or ground movement this tick.
@@ -1036,7 +1079,7 @@ impl Player {
 
     /// 0x434D20. Returns 0 to carry on normally, 5 to stop horizontal motion, 7 to hang.
     fn stomp_tick(&mut self, pressed: bool) -> i32 {
-        let blocked = self.coyote != 0 || self.fall_timer < 0 || self.fall_timer == FALL_PANIC || self.stomp != 0;
+        let blocked = self.coyote != 0 || self.fall_timer < 0 || self.fall_timer == FALL_PANIC || self.stomp != 0 || self.charge != 0 || self.spin != 0;
         let can = matches!(self.jump, JumpPhase::Holding | JumpPhase::Released) || self.state == state::DOUBLE_JUMP;
         if pressed && !blocked && can {
             self.stomp = 1;
@@ -1213,6 +1256,8 @@ impl Player {
         let mut floor = false;
         self.wall_mover = None;
         self.floor_mover = None;
+        self.surface = None;
+        let start = self.pos;
         for _ in 0..PASSES {
             if d.length_squared() < 1e-8 {
                 break;
@@ -1234,6 +1279,7 @@ impl Player {
             v -= n * v.dot(n).min(0.0);
             if n.y < FLOOR_NY {
                 floor = true;
+                self.surface = h.surface.or(self.surface);
                 if let Some(m) = h.mover {
                     self.floor_mover = Some((m, n));
                 }
@@ -1255,6 +1301,7 @@ impl Player {
                 c += down * (h.t - SKIN / STICK_DOWN).max(0.0) + h.normal * h.depth;
                 floor = true;
                 self.floor_mover = h.mover.map(|m| (m, h.normal));
+                self.surface = h.surface;
             }
         }
         if floor && v.y > 0.0 {
@@ -1263,6 +1310,126 @@ impl Player {
         self.pos = c + lift;
         self.on_floor = floor;
         self.vel = [v.x.round() as i32, v.y.round() as i32, v.z.round() as i32];
+        // Surfaces (0x434550): types 0-3 hurt, 16-19 kill (Buzz is put back where he was).
+        if let Some(s) = self.surface
+            && self.dying == 0
+        {
+            match s >> 2 {
+                0 if self.hurt_timer == 0 => self.hurt(0, 2),
+                4 => {
+                    self.hurt(0, 4);
+                    self.pos = start;
+                    self.on_floor = false;
+                    self.coyote = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 0x434EB0: Circle on the ground starts a spin attack (48 ticks, sound 0x11); held, it
+    /// charges (to 60); released fully charged, a super spin (300 ticks).
+    fn spin_tick(&mut self, pressed: bool) {
+        if self.spin > 0 {
+            self.spin -= 1;
+        }
+        if pressed && self.coyote != 0 && !self.busy() && self.charge == 0 && self.spin == 0 && self.skid == 0 {
+            self.spin = 0x30;
+            self.charge = 1;
+            self.sound(0x11);
+        }
+        if self.circle_held && self.charge > 0 && self.coyote != 0 {
+            self.charge = (self.charge + 1).min(0x3C);
+            return;
+        }
+        if self.charge < 0 {
+            self.charge += 1;
+            if self.charge == -0x77 {
+                self.sound(0x18);
+            } else if self.charge < -0x77 && self.charge % 8 == 0 {
+                self.sound(0x26);
+            }
+            return;
+        }
+        // Released: a full charge becomes the super spin.
+        self.charge = if self.charge > 0x3B && self.coyote != 0 { -300 } else { 0 };
+    }
+
+    /// Attacking creatures this tick (0x407440): kind 1 spinning, 5 stomping, 0 not; and the
+    /// reach (400 while spinning or just after a stomp lands, else 150 level units).
+    pub fn attack(&self) -> (u8, i32) {
+        let spinning = self.spin > 0x14 || self.charge < -0x77;
+        let mut reach = if spinning { 400 } else { 150 };
+        let mut kind = if spinning { 1 } else { 0 };
+        if self.stomp > 0 {
+            kind = 5;
+        }
+        if self.stomp < -0x1E {
+            kind = 5;
+            reach = 400;
+        }
+        (kind, reach)
+    }
+
+    /// 0x4071E0 `HurtBuzz(angle, mode)`: mode 1 knocks him along `angle`, 2 costs a battery
+    /// (then 90 ticks of invulnerability; with none left he dies), 4 kills outright.
+    pub fn hurt(&mut self, angle: i32, mode: u32) {
+        if self.health < 0 || self.dying > 0 {
+            return;
+        }
+        let mut mode = mode;
+        if mode & 1 != 0 {
+            self.vel[0] = sin12(angle) >> 2;
+            self.vel[2] = cos12(angle) >> 2;
+        }
+        if mode & 2 != 0 && self.hurt_timer >= 1 {
+            mode &= !2;
+        } else if mode & 2 != 0 && self.shield != 0 {
+            self.hurt_timer = -0x3C;
+            mode &= !2;
+        }
+        if mode & 4 != 0 {
+            self.die();
+            return;
+        }
+        if mode & 2 != 0 {
+            self.health -= 1;
+            self.jump_start = None;
+            self.jump = JumpPhase::DoubleReleased;
+            self.vel[1] = -0x200;
+            self.on_floor = false;
+            self.coyote = 0;
+            self.stomp = 0;
+            self.spin = 0;
+            self.charge = 0;
+            self.skid = 0;
+            if self.health < 0 {
+                self.die();
+            } else {
+                self.hurt_timer = 0x5A;
+                self.sounds.push(Sound { id: 0x1A, voice: true });
+            }
+        }
+    }
+
+    fn die(&mut self) {
+        self.sounds.push(Sound { id: 0x15, voice: true });
+        self.dying = 0x78;
+        self.health = -1;
+    }
+
+    /// After the death countdown: one life fewer, full health, back at the respawn point.
+    pub fn respawn(&mut self, at: Vec3, facing: i32) {
+        self.lives -= 1;
+        self.health = 14;
+        self.dying = 0;
+        self.hurt_timer = 0x5A;
+        self.pos = at;
+        self.vel = [0; 3];
+        self.set_facing(facing);
+        self.stomp = 0;
+        self.spin = 0;
+        self.charge = 0;
     }
 
     /// Fall timer, after the move (end of 0x436220).

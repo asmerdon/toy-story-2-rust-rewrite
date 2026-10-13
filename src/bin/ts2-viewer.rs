@@ -614,6 +614,7 @@ impl Viewer {
                 jump: std::mem::take(&mut self.jump_pressed),
                 jump_held: self.keys.contains(&KeyCode::Space),
                 stomp: std::mem::take(&mut self.stomp_pressed),
+                stomp_held: self.keys.contains(&KeyCode::KeyE),
                 dpad: [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
                     .iter()
                     .filter(|(k, _)| self.keys.contains(k))
@@ -667,7 +668,28 @@ impl Viewer {
                 let cam_obj = cam_game.map(|v| (v * 32.0) as i32);
                 for _ in 0..ticks {
                     cr.tick(&self.world, cam_obj, player.pos_obj());
+                    cr.contact(player);
                 }
+                for ev in cr.events.drain(..) {
+                    let ts2::creatures::Event::Died { pos, coin, .. } = ev;
+                    if coin && let Some(pk) = self.pickups.as_mut() {
+                        let p = pos.map(|v| v / 32);
+                        let floor = self.world.floor_below(p[0] as f32, p[2] as f32, p[1] as f32 - 300.0).map(|f| f as i32);
+                        pk.drop_coin(p, floor);
+                    }
+                }
+            }
+            // Death (0x52B7DC = 2): after the countdown, back at the start with a life fewer.
+            if player.health < 0 && player.dying == 0 {
+                let (at, facing) = match self.start {
+                    Some(s) => {
+                        let g = Vec3::from(s.pos);
+                        (self.world.floor_below(g.x, g.z, g.y - 600.0).map_or(g, |y| Vec3::new(g.x, y, g.z)), s.angle as i32)
+                    }
+                    None => (player.spawn, 0),
+                };
+                player.respawn(at, facing);
+                println!("Buzz lost a life: {} left", player.lives);
             }
             // Pickups and jingles, one 60 Hz tick at a time (0x440F70 / 0x4A0F80 / 0x49E9D0).
             let to_game = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
@@ -682,7 +704,17 @@ impl Viewer {
             }
             for _ in 0..ticks {
                 if let Some(pk) = self.pickups.as_mut() {
-                    for ev in pk.tick(player.pos.to_array(), cam_game) {
+                    // Health, lives and the shield live on Buzz; pickups add to them.
+                    pk.health = player.health.max(0);
+                    pk.lives = player.lives;
+                    pk.shield = player.shield;
+                    let evs = pk.tick(player.pos.to_array(), cam_game);
+                    if player.dying == 0 {
+                        player.health = pk.health;
+                    }
+                    player.lives = pk.lives;
+                    player.shield = pk.shield;
+                    for ev in evs {
                         match ev {
                             ts2::pickups::Event::Collected { kind, pos, .. } => {
                                 println!("picked up {kind:?}: {}", pk.summary());
@@ -769,12 +801,16 @@ impl Viewer {
             let yaw = p.yaw() + self.player_yaw_offset;
             match (self.anim_preview, p.anim.as_ref().and_then(|a| a.pose())) {
                 // Real move table: base layer + overlay at the frame its frame list gives.
+                // Blinking while invulnerable after a hit.
+                (None, Some(_)) if p.hurt_timer > 0 && (p.hurt_timer >> 2) & 1 == 1 => {}
                 (None, Some(pose)) => {
                     let layer = |(ai, f): (usize, f32)| self.anims[ci].get(ai).map(|a| (a, f));
                     let c = &self.ngn.creatures[ci];
+                    // The spin attack plays animation 9 on the upper body (0x4011D0).
+                    let overlay = if p.spin > 0 && pose.base.0 != pose.overlay.0 { (9, (0x30 - p.spin) as f32 / 2.0) } else { pose.overlay };
                     scene::merge(
                         &mut batches,
-                        scene::creature_batches_layered(&self.ngn, c, p.pos.to_array(), yaw, layer(pose.base), layer(pose.overlay)),
+                        scene::creature_batches_layered(&self.ngn, c, p.pos.to_array(), yaw, layer(pose.base), layer(overlay)),
                     );
                 }
                 (preview, _) => placed.push((ci, p.pos.to_array(), yaw, preview.unwrap_or(0))),
@@ -1119,7 +1155,24 @@ fn main() {
     });
     let player_creature = ngn.creatures.iter().position(|c| c.id == 0);
     // Creatures run their behaviour scripts in play mode (exe tables needed).
-    let creatures = game_exe.as_ref().map(|e| ts2::creatures::Creatures::new(&all_spawns, Some(e), random_table.clone().unwrap_or_default()));
+    let mut creatures = game_exe.as_ref().map(|e| ts2::creatures::Creatures::new(&all_spawns, Some(e), random_table.clone().unwrap_or_default()));
+    // Touch shapes from each creature's model in its rest pose.
+    if let Some(cr) = creatures.as_mut() {
+        for c in &ngn.creatures {
+            let pts: Vec<[f32; 3]> = c.nodes.iter().filter_map(|n| n.mesh.as_ref()).flat_map(|m| m.vertices.iter().map(|v| v.pos)).collect();
+            if pts.is_empty() {
+                continue;
+            }
+            let lo = pts.iter().fold([f32::MAX; 3], |a, p| [0, 1, 2].map(|k| a[k].min(p[k])));
+            let hi = pts.iter().fold([f32::MIN; 3], |a, p| [0, 1, 2].map(|k| a[k].max(p[k])));
+            let shape = ts2::creatures::Shape {
+                up: -(lo[1] + hi[1]) / 2.0,
+                half_height: (hi[1] - lo[1]) / 2.0,
+                radius: (hi[0] - lo[0]).max(hi[2] - lo[2]) * 0.4,
+            };
+            cr.shapes.insert(c.id as u8, shape);
+        }
+    }
 
     // Pushable boxes and the level's own script (level 1 only so far).
     let mut specials = specials;

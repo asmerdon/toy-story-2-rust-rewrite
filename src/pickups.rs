@@ -92,6 +92,8 @@ pub struct Pickup {
     pub spin: [i32; 3],
     /// Within the draw distance this frame (byte +0xD bit 0x80); only these can be collected.
     pub visible: bool,
+    /// A coin dropped by a beaten enemy, still falling: its speed (level units per tick).
+    pub falling: Option<f32>,
 }
 
 impl Pickup {
@@ -218,6 +220,7 @@ impl Pickups {
                 scale: 1.0,
                 spin: [0; 3],
                 visible: false,
+                falling: None,
             }
         };
         let mut items: Vec<Pickup> = points.iter().map(|p| item(p.id, p.pos, 0x11)).collect();
@@ -311,9 +314,36 @@ impl Pickups {
         }
     }
 
+    /// A coin a beaten enemy drops (0x405D20 throws one up; it falls to the floor below).
+    pub fn drop_coin(&mut self, pos: [i32; 3], floor: Option<i32>) {
+        self.items.push(Pickup {
+            id: 16,
+            kind: Kind::Coin,
+            pos: [pos[0], pos[1] - 128, pos[2]],
+            radius: 0x11,
+            floor,
+            removed: false,
+            scale: 1.0,
+            spin: [0; 3],
+            visible: false,
+            falling: Some(-16.0),
+        });
+    }
+
     /// One 60 Hz tick. `buzz` is Buzz's feet and `camera` the camera position, level units.
     pub fn tick(&mut self, buzz: [f32; 3], camera: [f32; 3]) -> Vec<Event> {
         self.frame = (self.frame + 1) % 20;
+        for p in self.items.iter_mut() {
+            if let Some(v) = p.falling {
+                let rest = p.floor.map_or(i32::MAX, |f| f - 120);
+                p.pos[1] += v as i32;
+                p.falling = Some(v + 2.0);
+                if p.pos[1] >= rest {
+                    p.pos[1] = rest;
+                    p.falling = None;
+                }
+            }
+        }
         self.shield = (self.shield - 1).max(0);
         self.timer = (self.timer - 1).max(0);
         // 0x440F70: visibility by horizontal distance from the camera, and the tumble.
