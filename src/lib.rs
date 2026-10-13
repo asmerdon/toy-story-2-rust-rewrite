@@ -6,4 +6,5 @@
 pub mod bmp;
 pub mod export;
 pub mod formats;
+pub mod game;
 pub mod scene;

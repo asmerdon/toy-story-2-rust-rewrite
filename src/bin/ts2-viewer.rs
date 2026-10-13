@@ -8,6 +8,9 @@
 //!   Space / Ctrl         up / down     Shift         move faster
 //!   N                    show / hide creatures at their spawn points (from level*.raw)
 //!   P                    place creature in front of camera
+//!   F                    play as Buzz (drops him below the camera) / back to free camera
+//!     in play mode: WASD run, Space jump, right-drag orbit camera,
+//!     [ ] browse Buzz's animations, 1/2/3 assign to idle/run/jump, R turn model 90°
 //!   Tab                  next creature in this level
 //!   [ / ]                previous / next animation        , / .  slower / faster
 //!   C                    cycle vertex colour mode (white, bytes 1-3, bytes 3-1)
@@ -20,6 +23,7 @@ use std::time::Instant;
 use std::{env, fs, process};
 use ts2::bmp;
 use ts2::formats::{anim, ngn, packets};
+use ts2::game;
 use ts2::scene::{self, Batch, GpuVertex};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
@@ -81,6 +85,15 @@ struct Uniforms {
     params: [f32; 4],
 }
 
+/// Game space (units, +Y down, +Z forward) to viewer world space (scaled, +Y up).
+fn game_to_world(p: [f32; 3]) -> Vec3 {
+    Vec3::new(p[0], -p[1], -p[2]) * WORLD_SCALE
+}
+
+fn world_to_game(p: Vec3) -> [f32; 3] {
+    [p.x / WORLD_SCALE, -p.y / WORLD_SCALE, -p.z / WORLD_SCALE]
+}
+
 struct GpuBatch {
     texture: usize,
     buffer: wgpu::Buffer,
@@ -133,6 +146,16 @@ struct Viewer {
     show_spawns: bool,
     /// Current animation per creature (index into `anims[creature]`).
     creature_anim: Vec<usize>,
+    /// Level geometry, handed to the GPU on first resume.
+    level: Vec<Batch>,
+    world: game::World,
+    player: Option<game::Player>,
+    /// Index of BUZZ (id 0) in `ngn.creatures`, if present.
+    player_creature: Option<usize>,
+    /// Animation indices for idle, run and jump. Placeholders until the real ones are identified.
+    player_anims: [usize; 3],
+    player_yaw_offset: f32,
+    jump_pressed: bool,
     anim_idx: usize,
     anim_time: f32,
     speed: f32,
@@ -402,49 +425,101 @@ impl Viewer {
         );
     }
 
+    fn held(&self, k: KeyCode) -> bool {
+        self.keys.contains(&k)
+    }
+
     fn update(&mut self, dt: f32) {
-        let mut v = Vec3::ZERO;
         let fwd = self.cam.forward();
         let right = fwd.cross(Vec3::Y).normalize_or_zero();
-        for (k, d) in [
-            (KeyCode::KeyW, fwd),
-            (KeyCode::KeyS, -fwd),
-            (KeyCode::KeyD, right),
-            (KeyCode::KeyA, -right),
-            (KeyCode::Space, Vec3::Y),
-            (KeyCode::ControlLeft, -Vec3::Y),
-        ] {
-            if self.keys.contains(&k) {
-                v += d;
+        if let Some(player) = self.player.as_mut() {
+            // Camera-relative movement on the ground plane, converted to game space (x, -z).
+            let flat_fwd = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or_zero();
+            let mut m = Vec3::ZERO;
+            for (k, d) in [(KeyCode::KeyW, flat_fwd), (KeyCode::KeyS, -flat_fwd), (KeyCode::KeyD, right), (KeyCode::KeyA, -right)] {
+                if self.keys.contains(&k) {
+                    m += d;
+                }
             }
+            let m = m.normalize_or_zero();
+            let input = game::Input { move_xz: [m.x, -m.z], jump: std::mem::take(&mut self.jump_pressed) };
+            player.update(&self.world, input, dt);
+            // Follow camera: orbit behind the player at chest height.
+            let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
+            self.cam.pos = target - fwd * 4.5;
+        } else {
+            let mut v = Vec3::ZERO;
+            for (k, d) in [
+                (KeyCode::KeyW, fwd),
+                (KeyCode::KeyS, -fwd),
+                (KeyCode::KeyD, right),
+                (KeyCode::KeyA, -right),
+                (KeyCode::Space, Vec3::Y),
+                (KeyCode::ControlLeft, -Vec3::Y),
+            ] {
+                if self.keys.contains(&k) {
+                    v += d;
+                }
+            }
+            let speed = if self.held(KeyCode::ShiftLeft) { 40.0 } else { 8.0 };
+            self.cam.pos += v.normalize_or_zero() * speed * dt;
         }
-        let speed = if self.keys.contains(&KeyCode::ShiftLeft) { 40.0 } else { 8.0 };
-        self.cam.pos += v.normalize_or_zero() * speed * dt;
 
         self.anim_time += dt * ANIM_FPS * self.speed;
         if let Some(a) = self.creature_anim.get_mut(self.creature_idx) {
             *a = self.anim_idx;
         }
         let Some(gfx) = self.gfx.as_mut() else { return };
-        let mut placed: Vec<(usize, [f32; 3])> = self.creature_pos.map(|p| (self.creature_idx, p)).into_iter().collect();
+        // (creature index, position, yaw, animation)
+        let mut placed: Vec<(usize, [f32; 3], f32, usize)> =
+            self.creature_pos.map(|p| (self.creature_idx, p, 0.0, self.creature_anim[self.creature_idx])).into_iter().collect();
         if self.show_spawns {
-            placed.extend(self.spawns.iter().copied());
+            placed.extend(self.spawns.iter().map(|&(ci, p)| (ci, p, 0.0, self.creature_anim[ci])));
+        }
+        if let (Some(p), Some(ci)) = (&self.player, self.player_creature) {
+            let anim = match p.motion() {
+                game::Motion::Idle => self.player_anims[0],
+                game::Motion::Run => self.player_anims[1],
+                game::Motion::Air => self.player_anims[2],
+            };
+            placed.push((ci, p.pos.to_array(), p.yaw + self.player_yaw_offset, anim));
         }
         let mut batches = Vec::new();
-        for (ci, pos) in placed {
+        for (ci, pos, yaw, ai) in placed {
             let c = &self.ngn.creatures[ci];
-            let anim = self.anims[ci].get(self.creature_anim[ci]);
+            let anim = self.anims[ci].get(ai);
             let t = anim.map_or(0.0, |a| self.anim_time % (a.frame_count.max(2) - 1) as f32);
-            scene::merge(&mut batches, scene::creature_batches(&self.ngn, c, pos, anim.map(|a| (a, t))));
+            scene::merge(&mut batches, scene::creature_batches(&self.ngn, c, pos, yaw, anim.map(|a| (a, t))));
         }
         gfx.creature = upload(&gfx.device, &batches, gfx.texture_bgs.len() - 1);
     }
 
     fn place_creature(&mut self) {
         let p = self.cam.pos + self.cam.forward() * 4.0;
-        // Back to game units and axes (+Y down, +Z forward).
-        self.creature_pos = Some([p.x / WORLD_SCALE, -p.y / WORLD_SCALE, -p.z / WORLD_SCALE]);
+        self.creature_pos = Some(world_to_game(p));
         self.status();
+    }
+
+    /// F: drop Buzz onto the floor below the camera, or return to free camera.
+    fn toggle_play(&mut self) {
+        if self.player.take().is_some() {
+            println!("free camera");
+            return;
+        }
+        let Some(ci) = self.player_creature else {
+            println!("this level has no BUZZ creature to play");
+            return;
+        };
+        let g = Vec3::from(world_to_game(self.cam.pos + self.cam.forward() * 3.0));
+        let feet = self.world.floor_below(g.x, g.z, g.y).map_or(g, |y| Vec3::new(g.x, y, g.z));
+        self.player = Some(game::Player::new(feet));
+        self.creature_idx = ci;
+        self.anim_idx = self.player_anims[0];
+        println!(
+            "play mode: WASD run, Space jump, right-drag camera, F to exit. Animations idle/run/jump = {:?}; \
+             browse with [ ] and press 1/2/3 to assign, R turns the model 90 degrees",
+            self.player_anims
+        );
     }
 
     fn key(&mut self, code: KeyCode, el: &ActiveEventLoop) {
@@ -452,6 +527,21 @@ impl Viewer {
         match code {
             KeyCode::Escape => el.exit(),
             KeyCode::KeyP => self.place_creature(),
+            KeyCode::KeyF => self.toggle_play(),
+            KeyCode::Space if self.player.is_some() => self.jump_pressed = true,
+            KeyCode::Digit1 | KeyCode::Digit2 | KeyCode::Digit3 if self.player.is_some() => {
+                let slot = match code {
+                    KeyCode::Digit1 => 0,
+                    KeyCode::Digit2 => 1,
+                    _ => 2,
+                };
+                self.player_anims[slot] = self.anim_idx;
+                println!("player animations idle/run/jump = {:?}", self.player_anims);
+            }
+            KeyCode::KeyR if self.player.is_some() => {
+                self.player_yaw_offset = (self.player_yaw_offset + std::f32::consts::FRAC_PI_2) % std::f32::consts::TAU;
+                println!("player model turned to {:.0} degrees", self.player_yaw_offset.to_degrees());
+            }
             KeyCode::KeyN => {
                 self.show_spawns = !self.show_spawns;
                 println!("spawns {}", if self.show_spawns { "shown" } else { "hidden" });
@@ -495,7 +585,7 @@ impl ApplicationHandler for Viewer {
             el.create_window(Window::default_attributes().with_title("Toy Story 2 (Rust) - viewer").with_inner_size(winit::dpi::LogicalSize::new(1280, 720)))
                 .expect("create window"),
         );
-        let level = scene::level_batches(&self.ngn);
+        let level = std::mem::take(&mut self.level);
         if let Some(&(_, p)) = self.spawns.first() {
             // Start just behind and above the first spawn.
             self.cam.pos = Vec3::new(p[0], -p[1], -p[2]) * WORLD_SCALE + Vec3::new(0.0, 1.5, 5.0);
@@ -600,7 +690,17 @@ fn main() {
     println!("right-drag look, WASD move, N spawns, P place creature, Tab next creature, [ ] animation, C colour mode, T transparency");
 
     let n_creatures = ngn.creatures.len();
+    let level = scene::level_batches(&ngn);
+    let world = game::World::from_batches(&level);
+    let player_creature = ngn.creatures.iter().position(|c| c.id == 0);
     let mut viewer = Viewer {
+        level,
+        world,
+        player: None,
+        player_creature,
+        player_anims: [0, 1, 2],
+        player_yaw_offset: 0.0,
+        jump_pressed: false,
         ngn,
         anims,
         gfx: None,

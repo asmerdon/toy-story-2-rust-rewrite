@@ -44,14 +44,33 @@ fn transform(m: Option<&[[f32; 4]; 4]>, p: [f32; 3]) -> [f32; 3] {
     }
 }
 
-fn add_mesh(ngn: &Ngn, out: &mut Vec<Batch>, mesh: &Mesh, offset: [f32; 3], m: Option<&[[f32; 4]; 4]>) {
+/// Rotation about the vertical axis (game space), then translation.
+#[derive(Debug, Clone, Copy)]
+struct Place {
+    offset: [f32; 3],
+    sin: f32,
+    cos: f32,
+}
+
+impl Place {
+    fn new(offset: [f32; 3], yaw: f32) -> Place {
+        let (sin, cos) = yaw.sin_cos();
+        Place { offset, sin, cos }
+    }
+    fn apply(&self, p: [f32; 3]) -> [f32; 3] {
+        let x = p[0] * self.cos + p[2] * self.sin;
+        let z = -p[0] * self.sin + p[2] * self.cos;
+        [x + self.offset[0], p[1] + self.offset[1], z + self.offset[2]]
+    }
+}
+
+fn add_mesh(ngn: &Ngn, out: &mut Vec<Batch>, mesh: &Mesh, place: Place, m: Option<&[[f32; 4]; 4]>) {
     for g in &mesh.groups {
         let tex = mesh.group_texture(g).and_then(|n| texture_index(ngn, n));
         for t in g.triangles() {
             let tri = t.map(|i| {
                 let v = &mesh.vertices[i as usize];
-                let p = transform(m, v.pos);
-                gpu(v, [p[0] + offset[0], p[1] + offset[1], p[2] + offset[2]])
+                gpu(v, place.apply(transform(m, v.pos)))
             });
             push(out, tex, tri);
         }
@@ -64,21 +83,23 @@ pub fn level_batches(ngn: &Ngn) -> Vec<Batch> {
     for layer in &ngn.layers {
         for inst in &layer.instances {
             if let Some(mesh) = layer.meshes.get(inst.mesh as usize) {
-                add_mesh(ngn, &mut out, mesh, inst.pos, None);
+                add_mesh(ngn, &mut out, mesh, Place::new(inst.pos, 0.0), None);
             }
         }
     }
     out
 }
 
-/// A creature at `origin` (game units), optionally posed by `anim` at fractional frame `t`.
-pub fn creature_batches(ngn: &Ngn, c: &Creature, origin: [f32; 3], anim: Option<(&Animation, f32)>) -> Vec<Batch> {
+/// A creature at `origin` (game units) turned by `yaw` radians about the vertical axis,
+/// optionally posed by `anim` at fractional frame `t`.
+pub fn creature_batches(ngn: &Ngn, c: &Creature, origin: [f32; 3], yaw: f32, anim: Option<(&Animation, f32)>) -> Vec<Batch> {
     let mut out = Vec::new();
+    let place = Place::new(origin, yaw);
     let matrices: Vec<Option<[[f32; 4]; 4]>> =
         (0..c.nodes.len()).map(|n| anim.and_then(|(a, t)| a.matrix_at(n, t))).collect();
     for (n, node) in c.nodes.iter().enumerate() {
         if let Some(mesh) = &node.mesh {
-            add_mesh(ngn, &mut out, mesh, origin, matrices[n].as_ref());
+            add_mesh(ngn, &mut out, mesh, place, matrices[n].as_ref());
         }
     }
     for patch in &c.patches {
@@ -93,8 +114,7 @@ pub fn creature_batches(ngn: &Ngn, c: &Creature, origin: [f32; 3], anim: Option<
             .into_iter()
             .map(|(vi, ni)| {
                 let v = &c.shared_vertices[vi];
-                let p = transform(matrices.get(ni).and_then(|m| m.as_ref()), v.pos);
-                gpu(v, [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]])
+                gpu(v, place.apply(transform(matrices.get(ni).and_then(|m| m.as_ref()), v.pos)))
             })
             .collect();
         for t in patch.triangles() {

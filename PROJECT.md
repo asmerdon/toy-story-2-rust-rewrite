@@ -86,7 +86,11 @@ cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy
 ```
 The viewer now loads `level*.raw` next to the `.ngn` and shows every creature at its spawn point (N toggles).
 Notes: `level*.bin` is PS1 MIPS code (per-level overlays), not data. `level.dat` is loaded by the PC game, and its first section holds typed point lists, probably collision/terrain (parser 0x43E6E0).
-Next: player start, decoding `level.dat` for collision, then a controllable Buzz.
+**Play mode (prototype):** F drops Buzz below the camera; WASD/Space run and jump with a follow camera. `src/game.rs` does collision against the render triangles (floor ray + chest-height wall sphere, grid-accelerated) with placeholder movement constants. Buzz's idle/run/jump animation indices are unknown; play mode lets you assign them with 1/2/3.
+
+`level.dat` section 1 (decoded): 53 typed point lists. Types 0–40 are paths (0–8 are challenge routes), type 58 holds challenge reward positions (250 units above the floor, matched against pickup objects by 0x49FAB0), type 63 has 4 values per point, and type 65 is 22 five-point zones. Sections 2–3 (128-byte cells, 20-byte object records) are not decoded. Per-level sound lists: tables at 0x4FD140 / 0x4FD5E0, used by 0x47EC20.
+
+Open: the player start (not in the creature list, paths or type 58), the original collision data, Buzz's real move set and speeds.
 
 Target for the full engine:
 - `winit` + `wgpu` renderer reproducing PS1 look (vertex colour × texture, optional affine warp/no-filter toggles), widescreen and high resolution.
