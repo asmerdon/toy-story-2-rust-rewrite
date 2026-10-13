@@ -108,6 +108,22 @@ struct Tri {
     n: Vec3,
     /// Render-geometry fallback: winding unknown, so collide from both sides.
     two_sided: bool,
+    /// Terrain object it belongs to (`NO_OBJECT` for render-geometry worlds).
+    obj: u16,
+}
+
+const NO_OBJECT: u16 = u16::MAX;
+
+/// What the world keeps of a terrain object.
+#[derive(Debug, Clone)]
+struct ObjectInfo {
+    flags: u16,
+    /// Mover link id (record +0x1A); scripts address movers by link − 1.
+    link: i16,
+    /// Collides (the gatherer's type check: 0x4878A0 sets type 8, 0x4878D0 type 0).
+    enabled: bool,
+    /// Moved since load (0x488510), level units.
+    offset: Vec3,
 }
 
 /// What a sweep hit.
@@ -129,6 +145,13 @@ pub struct World {
     grid: HashMap<(i32, i32), Vec<u32>>,
     pub lo: Vec3,
     pub hi: Vec3,
+    objects: Vec<ObjectInfo>,
+    /// Triangles of moving objects (type 8): kept out of the grid, as 0x489C30 keeps them out of
+    /// its 5×5 grid.
+    always: Vec<Tri>,
+    /// The room map (objects flagged 0x400): floors at a quarter of the level's scale, each
+    /// object's flags low byte naming its room. Not collision.
+    rooms: Vec<Tri>,
 }
 
 fn cell(v: f32) -> i32 {
@@ -150,15 +173,94 @@ impl World {
     /// From the original collision data (`TERRAIN.ALL`, see `formats::terrain`), one-sided
     /// with the stored normals, as the original tests them.
     pub fn from_terrain(t: &crate::formats::terrain::Terrain) -> World {
-        let tris = t
-            .collision_triangles()
-            .into_iter()
-            .map(|(p, n)| {
+        let (mut tris, mut always, mut rooms, mut objects) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (i, o) in t.objects.iter().enumerate() {
+            // Objects flagged 0x100 start disabled (the gatherer 0x485940 skips them).
+            objects.push(ObjectInfo { flags: o.flags, link: o.linked, enabled: matches!(o.kind, 6..=8) && o.flags & 0x100 == 0, offset: Vec3::ZERO });
+            let to = if o.flags & 0x400 != 0 {
+                &mut rooms
+            } else if o.kind == 8 {
+                &mut always
+            } else {
+                &mut tris
+            };
+            for (p, n) in t.object_triangles(i) {
                 let [a, b, c] = p.map(Vec3::from);
-                Tri { a, b, c, n: Vec3::from(n).normalize_or_zero(), two_sided: false }
-            })
+                to.push(Tri { a, b, c, n: Vec3::from(n).normalize_or_zero(), two_sided: false, obj: i as u16 });
+            }
+        }
+        let mut w = World::build(tris);
+        w.objects = objects;
+        w.always = always;
+        w.rooms = rooms;
+        w
+    }
+
+    /// Terrain object of the mover scripts call `id` (link id − 1, as 0x4878A0 indexes the
+    /// link table 0x7286EC).
+    fn mover(&self, id: i32) -> Option<usize> {
+        self.objects.iter().position(|o| o.link as i32 == id + 1 && o.link != 0)
+    }
+
+    /// 0x4878A0 (`on`) / 0x4878D0: switch a mover's collision.
+    pub fn set_mover(&mut self, id: i32, on: bool) {
+        if let Some(i) = self.mover(id) {
+            self.objects[i].enabled = on;
+        }
+    }
+
+    pub fn mover_enabled(&self, id: i32) -> bool {
+        self.mover(id).is_some_and(|i| self.objects[i].enabled)
+    }
+
+    /// 0x488510: move a mover by `delta` level units.
+    pub fn move_mover(&mut self, id: i32, delta: Vec3) {
+        if let Some(i) = self.mover(id) {
+            self.objects[i].offset += delta;
+        }
+    }
+
+    /// The room under `p` (0x4885C0, which works at a quarter scale): the low byte of the
+    /// flags of the nearest room-map floor at or below `p` / 4, as the level script reads it
+    /// (`0x54DEA0`).
+    pub fn room_at(&self, p: Vec3) -> Option<u8> {
+        let q = p / 4.0;
+        let mut best: Option<(f32, u8)> = None;
+        for t in &self.rooms {
+            if t.n.y > FLOOR_NY {
+                continue;
+            }
+            if let Some(y) = height_on(t, q.x, q.z)
+                && y >= q.y
+                && best.is_none_or(|(b, _)| y < b)
+            {
+                best = Some((y, self.objects[t.obj as usize].flags as u8));
+            }
+        }
+        best.map(|(_, r)| r)
+    }
+
+    /// Enabled always-checked triangles at their current positions.
+    fn always_tris(&self) -> impl Iterator<Item = Tri> + '_ {
+        self.always.iter().filter_map(|t| {
+            let o = self.objects.get(t.obj as usize)?;
+            o.enabled.then(|| Tri { a: t.a + o.offset, b: t.b + o.offset, c: t.c + o.offset, ..*t })
+        })
+    }
+
+    /// Candidate triangles near the box `lo..hi`: grid cells plus enabled always-checked ones.
+    fn candidates(&self, lo: Vec3, hi: Vec3) -> Vec<Tri> {
+        let mut out: Vec<Tri> = self
+            .near_box(lo, hi)
+            .into_iter()
+            .map(|i| self.tris[i as usize])
+            .filter(|t| t.obj == NO_OBJECT || self.objects.get(t.obj as usize).is_none_or(|o| o.enabled))
             .collect();
-        World::build(tris)
+        out.extend(self.always_tris().filter(|t| {
+            let (tl, th) = (t.a.min(t.b).min(t.c), t.a.max(t.b).max(t.c));
+            !(th.cmplt(lo).any() || tl.cmpgt(hi).any())
+        }));
+        out
     }
 
     /// Plain triangles, two-sided, normals from the winding.
@@ -171,7 +273,7 @@ impl World {
                 if n.y > 0.0 {
                     n = -n;
                 }
-                Tri { a, b, c, n, two_sided: true }
+                Tri { a, b, c, n, two_sided: true, obj: NO_OBJECT }
             })
             .collect();
         World::build(tris)
@@ -191,7 +293,7 @@ impl World {
                 }
             }
         }
-        World { tris, grid, lo, hi }
+        World { tris, grid, lo, hi, objects: Vec::new(), always: Vec::new(), rooms: Vec::new() }
     }
 
     /// Triangles whose grid cells overlap the box around `lo..hi` (x/z).
@@ -211,30 +313,30 @@ impl World {
     /// Height (y, game space) of the nearest floor at or below `from_y` under (x, z): the
     /// point floor query (0x486280 / 0x486520).
     pub fn floor_below(&self, x: f32, z: f32, from_y: f32) -> Option<f32> {
-        let p = Vec3::new(x, 0.0, z);
-        let mut best: Option<f32> = None;
-        for i in self.near_box(p, p) {
-            let t = &self.tris[i as usize];
+        self.floor_below_obj(x, z, from_y).map(|(y, _)| y)
+    }
+
+    /// As `floor_below`, with the mover id (link − 1) of the floor, if it belongs to one.
+    pub fn floor_below_obj(&self, x: f32, z: f32, from_y: f32) -> Option<(f32, Option<i32>)> {
+        let p = Vec3::new(x, from_y, z);
+        let lo = Vec3::new(x, f32::MIN, z);
+        let hi = Vec3::new(x, f32::MAX, z);
+        let mut best: Option<(f32, u16)> = None;
+        for t in self.candidates(lo, hi) {
             if t.n.y > FLOOR_NY {
                 continue;
             }
-            let (a, b, c) = (t.a, t.b, t.c);
-            let d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
-            if d.abs() < 1e-6 {
-                continue;
-            }
-            let l1 = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (z - c.z)) / d;
-            let l2 = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / d;
-            let l3 = 1.0 - l1 - l2;
-            if l1 < -1e-4 || l2 < -1e-4 || l3 < -1e-4 {
-                continue;
-            }
-            let y = l1 * a.y + l2 * b.y + l3 * c.y;
-            if y >= from_y && best.is_none_or(|b| y < b) {
-                best = Some(y);
+            if let Some(y) = height_on(&t, p.x, p.z)
+                && y >= from_y
+                && best.is_none_or(|(b, _)| y < b)
+            {
+                best = Some((y, t.obj));
             }
         }
-        best
+        best.map(|(y, o)| {
+            let link = self.objects.get(o as usize).map(|o| o.link as i32).filter(|&l| l != 0).map(|l| l - 1);
+            (y, link)
+        })
     }
 
     /// Earliest contact of a sphere of radius `r` moving from `p0` by `d` (the sweep 0x481FB0
@@ -250,8 +352,7 @@ impl World {
                 best = Some(h);
             }
         };
-        for i in self.near_box(p0.min(p1) - reach, p0.max(p1) + reach) {
-            let t = &self.tris[i as usize];
+        for t in self.candidates(p0.min(p1) - reach, p0.max(p1) + reach) {
             let lo = t.a.min(t.b).min(t.c) - reach;
             let hi = t.a.max(t.b).max(t.c) + reach;
             if p0.max(p1).cmplt(lo).any() || p0.min(p1).cmpgt(hi).any() {
@@ -284,6 +385,22 @@ impl World {
         }
         best
     }
+}
+
+/// Height of triangle `t` at (x, z), if (x, z) is inside it seen from above.
+fn height_on(t: &Tri, x: f32, z: f32) -> Option<f32> {
+    let (a, b, c) = (t.a, t.b, t.c);
+    let d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
+    if d.abs() < 1e-6 {
+        return None;
+    }
+    let l1 = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (z - c.z)) / d;
+    let l2 = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / d;
+    let l3 = 1.0 - l1 - l2;
+    if l1 < -1e-4 || l2 < -1e-4 || l3 < -1e-4 {
+        return None;
+    }
+    Some(l1 * a.y + l2 * b.y + l3 * c.y)
 }
 
 /// Is `q` (on the plane) inside triangle abc with normal n?

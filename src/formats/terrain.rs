@@ -158,20 +158,26 @@ impl Terrain {
     /// Collision triangles in absolute level units: static objects (types 6/7), plus the
     /// moving ones (type 8) at their starting positions, since the level objects that move them
     /// aren't ported yet. Objects flagged 0x100 start disabled and are skipped, as the
-    /// gatherer 0x485940 does.
+    /// gatherer 0x485940 does; 0x400 marks the quarter-scale room map, not collision.
     pub fn static_triangles(&self) -> Vec<[[f32; 3]; 3]> {
         self.objects
             .iter()
-            .filter(|o| matches!(o.kind, 6..=8) && o.flags & 0x100 == 0)
+            .filter(|o| matches!(o.kind, 6..=8) && o.flags & 0x500 == 0)
             .flat_map(|o| self.shapes[o.shape].iter().flat_map(move |p| p.triangles(o.pos.map(|v| v as f32))))
             .collect()
+    }
+
+    /// Object `i`'s triangles with their unit normals, at its stored position.
+    pub fn object_triangles(&self, i: usize) -> Vec<([[f32; 3]; 3], [f32; 3])> {
+        let o = &self.objects[i];
+        self.shapes[o.shape].iter().flat_map(|p| p.triangles_with_normals(o.pos.map(|v| v as f32))).collect()
     }
 
     /// As `static_triangles`, with each triangle's stored unit normal (its solid side faces it).
     pub fn collision_triangles(&self) -> Vec<([[f32; 3]; 3], [f32; 3])> {
         self.objects
             .iter()
-            .filter(|o| matches!(o.kind, 6..=8) && o.flags & 0x100 == 0)
+            .filter(|o| matches!(o.kind, 6..=8) && o.flags & 0x500 == 0)
             .flat_map(|o| self.shapes[o.shape].iter().flat_map(move |p| p.triangles_with_normals(o.pos.map(|v| v as f32))))
             .collect()
     }

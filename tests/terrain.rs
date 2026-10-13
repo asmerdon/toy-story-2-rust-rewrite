@@ -40,6 +40,28 @@ fn every_terrain_file_parses_and_lies_under_the_start() {
     assert!(checked >= 10, "only {checked} levels checked");
 }
 
+/// Rooms (0x4885C0) come from the always-checked objects' flags, and level scripts switch
+/// movers by link id − 1: in level 1, mover 1 is the closed basement door (link 2, special 4)
+/// and mover 14 its open position (link 15), which starts switched off.
+#[test]
+fn level_1_rooms_and_movers() {
+    let Some(dir) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let exe = exe::Exe::parse(fs::read(dir.join("toy2.exe")).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(dir.join("data/level01/TERRAIN.ALL")).unwrap()).unwrap();
+    let mut w = game::World::from_terrain(&t);
+    let s = exe.player_start(1).unwrap();
+    let start = glam::Vec3::from(s.pos);
+    let room = w.room_at(start - glam::Vec3::Y * 200.0);
+    eprintln!("room at the start: {room:?}");
+    assert!(room.is_some_and(|r| (1..=8).contains(&r)), "{room:?}");
+    // The closed door's collision sits at special 4 (4152, 378, -8267).
+    let door = |w: &game::World| w.floor_below_obj(4152.0, -8150.0, -2000.0);
+    assert!(w.mover_enabled(1));
+    w.set_mover(1, false);
+    assert!(!w.mover_enabled(1));
+    assert_ne!(door(&w).and_then(|(_, m)| m), Some(1));
+}
+
 /// Level 1's instance 38 is a moving piece stored unrotated (rot = 270° about X); rotated, its
 /// mesh fills exactly the box of the collision object that moves with it (type 8, link 2).
 #[test]
