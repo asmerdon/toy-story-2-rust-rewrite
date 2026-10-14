@@ -880,6 +880,8 @@ impl Viewer {
                     laser: player.laser,
                     laser_charge: player.laser_charge,
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
+                    race: self.level1.as_ref().map_or(0, |l| l.race),
+                    laps: self.level1.as_ref().map_or(0, |l| l.laps),
                 });
             }
             // Creatures (0x4086F0) near the camera.
@@ -943,6 +945,12 @@ impl Viewer {
                         }
                     }
                     cr.sounds.append(&mut l.sounds);
+                    for k in l.reveals.drain(..) {
+                        if let Some(pk) = self.pickups.as_mut() {
+                            pk.reveal_token(k);
+                        }
+                        println!("a pizza planet token has appeared");
+                    }
                     let (voices, slots): (Vec<u16>, Vec<(u16, i32, [i32; 3])>) = (l.voices.drain(..).collect(), l.slots.drain(..).collect());
                     if let Some(a) = self.audio.as_mut() {
                         let listener = Vec3::from(world_to_game(self.cam.pos));
@@ -1227,6 +1235,8 @@ impl Viewer {
                     laser: p.laser,
                     laser_charge: p.laser_charge,
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
+                    race: self.level1.as_ref().map_or(0, |l| l.race),
+                    laps: self.level1.as_ref().map_or(0, |l| l.laps),
                 };
                 let ngn = &self.ngn;
                 let texture = |slot: i16| {

@@ -248,8 +248,11 @@ impl World {
     /// The room under `p` (0x4885C0, which works at a quarter scale): the low byte of the
     /// flags of the nearest room-map floor at or below `p` / 4, as the level script reads it
     /// (`0x54DEA0`).
+    /// Asked from 24 units above `p`: standing feet sit a few units below the floor's surface
+    /// (the body's bottom floats 0xC0 above them), and some room-map floors are drawn a little
+    /// above a quarter of the real floor (level 1's garden by about 10).
     pub fn room_at(&self, p: Vec3) -> Option<u8> {
-        let q = p / 4.0;
+        let q = (p - Vec3::Y * 24.0) / 4.0;
         let mut best: Option<(f32, u8)> = None;
         for t in &self.rooms {
             if t.n.y > FLOOR_NY {

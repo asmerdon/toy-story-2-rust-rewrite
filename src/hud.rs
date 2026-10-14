@@ -23,6 +23,7 @@ pub const COINS: usize = 2;
 pub const SPIN: usize = 3;
 pub const LASER: usize = 4;
 pub const SHEEP: usize = 5;
+pub const LAPS: usize = 6;
 const ELEMENTS: usize = 10;
 
 /// Ticks an element stays up when something shows it (0xB4).
@@ -40,6 +41,9 @@ pub struct Status {
     pub laser_charge: i32,
     /// 0x52B7D8: Bo Peep's sheep found (−1 when done).
     pub sheep: i32,
+    /// 0x52F2F8 and 0x52AD64: the race's state and Buzz's laps.
+    pub race: i32,
+    pub laps: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -111,6 +115,9 @@ impl Hud {
         if s.sheep > 0 {
             self.timer[SHEEP] = 5;
         }
+        if (1..3).contains(&s.race) {
+            self.timer[LAPS] = 5;
+        }
         for k in 0..ELEMENTS {
             if self.timer[k] == 0 {
                 self.slide[k] = (self.slide[k] - 0x20).max(0);
@@ -159,6 +166,19 @@ impl Hud {
         if let Some(off) = self.offset(LIVES) {
             put(NARROW, 0x10, off + 0x10, 10, 0, grey, 0x800, 0x800);
             put(WIDE, 0x3C, off + 0x20, 0x14, digit(s.lives), white, 0x1000, 0x1000);
+        }
+        // 6: laps to go (a big digit, sprite 3) beside the flag icon (sprite 0x1A), pulsing on
+        // the last one.
+        if let Some(off) = self.offset(LAPS) {
+            let left = (3 - s.laps).clamp(0, 3);
+            let c = if s.laps == 2 {
+                let u = self.counter(6) as i32;
+                ((if u > 0x1F { 0x3F - u } else { u }) * 4 + 0x14) as u8
+            } else {
+                0x80
+            };
+            put(WIDE, 0xFA, off + 0x18, 3, left as usize, [c; 3], 0x1000, 0x1000);
+            put(NARROW, 0x8C, off + 0x10, 0x1A, 0, [c; 3], 0x1000, 0x1000);
         }
         // 5: the sheep count beside its icon (sprite 0x32, the level's own), blinking at five,
         // left of the batteries' place by however far they are in.

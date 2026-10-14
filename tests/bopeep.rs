@@ -98,3 +98,51 @@ fn fifty_coins_for_hamm_give_a_token() {
     assert_eq!(talk(&mut cr, &mut level, 12), Some(None), "asks for coins");
     assert_eq!(talk(&mut cr, &mut level, 50), Some(Some(0)), "hands over token 0");
 }
+
+/// The RC race (room 2): touching the car starts the challenge; after the conversation it
+/// drives its waypoints, lapping. Buzz going round the finish line counts laps.
+#[test]
+fn rc_race_runs_and_counts_laps() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let dir = game.join("data/level01");
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let n = ngn::parse(&fs::read(dir.join("level.ngn")).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(dir.join("TERRAIN.ALL")).unwrap()).unwrap();
+    let lists = leveldat::parse(&fs::read(dir.join("level.dat")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let pk = packets::parse(&fs::read(dir.join("level.raw")).unwrap()).unwrap();
+    let spawns: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
+    let mut cr = ts2::creatures::Creatures::new(&spawns, Some(&e), fs::read(game.join("data/rand.dat")).unwrap());
+    cr.load_shapes(&game.join("data"));
+    let mut specials = ts2::specials::Specials::new(&n);
+    let mut level = ts2::level1::Level1::new(&world, &mut specials);
+    level.set_story(&e, &lists);
+    let rc = Vec3::from(cr.slots[0x1D].pos.map(|v| v as f32 / 32.0));
+    eprintln!("RC at {rc:?} room {:?}", world.room_at(rc));
+    assert_eq!(world.room_at(rc), Some(2), "the RC car in room 2");
+    let mut p = Player::new(rc);
+    for _ in 0..3 {
+        cr.tick(&world, p.pos_obj(), p.pos_obj());
+        p.pos = rc;
+        cr.contact(&mut p);
+        level.tick_characters(&world, &p, &mut cr, 0);
+    }
+    assert_eq!(level.race, 1);
+    level.cutscene = None;
+    // Buzz stands aside in room 2 while the car drives.
+    let start = cr.slots[0x1D].pos;
+    let mut moved = 0;
+    for _ in 0..6000 {
+        cr.tick(&world, p.pos_obj(), p.pos_obj());
+        level.tick_characters(&world, &p, &mut cr, 0);
+        let d = [0, 2].map(|k| ((cr.slots[0x1D].pos[k] - start[k]) >> 5).abs());
+        moved = moved.max(d[0].max(d[1]));
+        if level.race == 3 {
+            break;
+        }
+    }
+    eprintln!("race state {}, RC moved up to {moved} units, at {:?}", level.race, cr.slots[0x1D].pos.map(|v| v >> 5));
+    assert!(moved > 1000, "the RC car didn't drive");
+    assert_eq!(level.race, 3, "the car finishes (Buzz didn't race)");
+    assert!(!level.given[2]);
+}

@@ -67,6 +67,17 @@ pub struct Level1 {
     pub abilities: u8,
     /// Hamm's and Mr Potato Head's call timers (0x830C98 / 0x830D34).
     calls: [i32; 2],
+    /// The RC race (room 2): state 0x52F2F8 (1 talked, 2 racing, 3 over), the car's waypoint
+    /// and laps (0x52F528 / 0x52F4F8), Buzz's laps (0x52AD64) and his quarter of the room
+    /// with the finish-line latch (0x52F584 / 0x52F580).
+    pub race: i32,
+    waypoint: usize,
+    rc_laps: i32,
+    pub laps: i32,
+    quarter: u32,
+    armed: bool,
+    /// Tokens to show now (0x4A0DB0 outside a conversation).
+    pub reveals: Vec<usize>,
     story: Story,
 }
 
@@ -85,10 +96,15 @@ const HAMM_ASK: u32 = 0x5027E0;
 const POTATO_ASK: u32 = 0x4F0ADC;
 const POTATO_THANKS: u32 = 0x4F0B60;
 const POTATO_AFTER: u32 = 0x4F0C10;
+const RC_ASK: u32 = 0x4F042C;
 /// Characters' slots and their camera lists.
 const BO_PEEP: (usize, i16) = (1, 0x1C);
 const HAMM: (usize, i16) = (0x1E, 0x1D);
 const POTATO: (usize, i16) = (0x1F, 0x19);
+const RC: (usize, i16) = (0x1D, 0x1B);
+/// The RC car's waypoints (level.dat list 30) and how many it laps.
+const RC_TRACK: i16 = 0x1E;
+const RC_LAPS: i32 = 3;
 
 /// The crib bars' creature slots and the health that means "at rest".
 const BARS: [usize; 2] = [0, 2];
@@ -132,13 +148,20 @@ impl Level1 {
             item: 8,
             abilities: 0,
             calls: [0; 2],
+            race: 0,
+            waypoint: 0,
+            rc_laps: 0,
+            laps: 0,
+            quarter: 0,
+            armed: false,
+            reveals: Vec::new(),
             story: Story::default(),
         }
     }
 
     /// The conversations' texts (from the exe) and camera lists (from level.dat).
     pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
-        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER] {
+        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK] {
             let mut s = Vec::new();
             while let Ok(b) = exe.at(va + s.len() as u32, 1) {
                 if b[0] == 0 || s.len() > 400 {
@@ -148,7 +171,7 @@ impl Level1 {
             }
             self.story.texts.insert(va, String::from_utf8_lossy(&s).into_owned());
         }
-        for l in lists.iter().filter(|l| matches!(l.kind, 0x19 | 0x1A | 0x1C | 0x1D)) {
+        for l in lists.iter().filter(|l| matches!(l.kind, 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | RC_TRACK)) {
             self.story.lists.insert(l.kind, l.points.clone());
         }
     }
@@ -208,6 +231,7 @@ impl Level1 {
                 }
             }
         }
+        self.race(room, player, cr);
         if room == Some(6) && let Some(m) = cr.slots.get(POTATO.0).filter(|c| c.id == 9) {
             let pos = m.pos;
             if m.active && !talking {
@@ -234,6 +258,94 @@ impl Level1 {
                     }
                 }
             }
+        }
+    }
+
+    /// Room 2's RC race (0x417680). Touching the car (before its token) starts a challenge
+    /// conversation (list 0x1B); when it's over the car races 3 laps round its waypoints. Buzz's
+    /// laps count when he crosses the finish line one way (his quarter of the room going from
+    /// all four flags to three); three before the car finishes win token 2. Leaving the room
+    /// calls it off.
+    fn race(&mut self, room: Option<u8>, player: &Player, cr: &mut Creatures) {
+        let Some(rc) = cr.slots.get(RC.0).filter(|c| c.id == 8).map(|c| c.pos) else { return };
+        if room != Some(2) {
+            if self.race != 0 && !self.given[2] {
+                self.race = 0;
+                cr.racing = false;
+                cr.restart(RC.0);
+            }
+            return;
+        }
+        let touched = cr.slots[RC.0].flags & 0x200 != 0;
+        cr.slots[RC.0].flags &= !0x200;
+        if touched && !self.given[2] && self.race == 0 {
+            self.talk(RC.0, RC.1, RC_ASK, None, Some([0, 0]));
+            self.race = 1;
+            self.waypoint = 0;
+            self.rc_laps = 0;
+            self.laps = 0;
+            self.quarter = 0;
+            self.armed = true;
+            cr.slots[RC.0].health = 0xCA;
+        }
+        if self.race == 1 && self.cutscene.is_none() {
+            cr.slots[RC.0].flags |= 4;
+            cr.racing = true;
+            self.race = 2;
+        }
+        if self.race == 2 {
+            let [x, _, z] = player.pos_obj();
+            let mut q = (z < -0x1A000) as u32;
+            q |= if x > 0x2900 { 2 } else { 0 };
+            q |= if x < 0x21000 { 4 } else { 0 };
+            q |= if z > -0x1E000 { 8 } else { 0 };
+            if q == 0xE {
+                if self.quarter == 0xF {
+                    if !self.armed {
+                        self.laps += 1;
+                    }
+                    self.armed = false;
+                }
+            } else if q == 0xF && self.quarter == 0xE {
+                self.armed = true;
+            }
+            self.quarter = q;
+        }
+        if self.race == 0 {
+            return;
+        }
+        let track = self.story.lists.get(&RC_TRACK).cloned().unwrap_or_default();
+        if track.is_empty() {
+            return;
+        }
+        let wp = track[self.waypoint.min(track.len() - 1)];
+        let (dx, dz) = (wp[0] - (rc[0] >> 5), wp[2] - (rc[2] >> 5));
+        let c = &mut cr.slots[RC.0];
+        if dx * dx + dz * dz < 360_000 {
+            c.home[0] = wp[0] << 5;
+            c.home[2] = wp[2] << 5;
+            if self.rc_laps < RC_LAPS {
+                self.waypoint += 1;
+                if self.waypoint > 0x2C || self.waypoint >= track.len() {
+                    self.rc_laps += 1;
+                    self.waypoint = 0;
+                }
+            } else if rc[2] > -0x1A000 {
+                if self.race == 2 && self.laps < RC_LAPS {
+                    self.race = 3;
+                }
+                c.health = 1;
+                cr.racing = false;
+            }
+        }
+        let wp = track[self.waypoint.min(track.len() - 1)];
+        let c = &mut cr.slots[RC.0];
+        c.target[0] = wp[0] << 5;
+        c.target[2] = wp[2] << 5;
+        if self.laps == RC_LAPS && self.race == 2 {
+            self.reveals.push(2);
+            self.given[2] = true;
+            self.race = 3;
         }
     }
 

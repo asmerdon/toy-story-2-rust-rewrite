@@ -157,6 +157,8 @@ pub struct Creatures {
     pub spawns: Vec<([i32; 3], u8, usize, i32)>,
     /// Bo Peep's sheep found (0x52B7D8; −1 once she has them back).
     pub sheep: i32,
+    /// An RC race is on (0x52F2F8 > 1).
+    pub racing: bool,
     /// Hit shapes by creature id, from each character's `.all` file (slot +0x38 sphere and
     /// +0x84 ellipsoid table, set by 0x43B0C0); `default_shape` for the rest.
     pub shapes: std::collections::HashMap<u8, HitShapes>,
@@ -252,6 +254,7 @@ impl Creatures {
             particles: Vec::new(),
             spawns: Vec::new(),
             sheep: 0,
+            racing: false,
             shapes: Default::default(),
             default_shape: HitShapes {
                 sphere: [0, 500, 0, 500],
@@ -496,7 +499,8 @@ impl Creatures {
             let d = [0, 1, 2].map(|k| (camera[k] - c.pos[k]) >> 8);
             let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             let near = 400;
-            if c.flags & 1 == 0 && d2 >= near * near || c.flags & 0x2000 != 0 {
+            // Health 0xCA (racing) keeps it in play wherever the camera is (0x4086F0).
+            if (c.flags & 1 == 0 && d2 >= near * near && c.health != 0xCA) || c.flags & 0x2000 != 0 {
                 self.slots[i] = c;
                 continue;
             }
@@ -526,8 +530,50 @@ impl Creatures {
         match c.id {
             4 => self.zurg3(slot, c, s),
             6 => self.sheep(c),
+            8 => self.rc(slot, c, s),
             _ => {}
         }
+    }
+
+    /// 0x416F30, the RC car in level 1: the engine (sound 0x37, owned) while it goes; racing,
+    /// the animations for speeding up (1) and skidding round (2 / 3), with dust from the back
+    /// wheels and sound 0x36 then.
+    fn rc(&mut self, slot: usize, c: &mut Creature, s: &Step) {
+        if s.forward > 0 {
+            self.owned_sounds.push((0x37, c.pos, slot));
+        }
+        if !self.racing {
+            return;
+        }
+        let mut anim = 0u16;
+        let mut seq = 2usize;
+        if s.forward < c.rec.speed as i32 * 8 {
+            anim = 1;
+            seq = 0xB;
+        }
+        if s.forward < s.side.abs() {
+            anim = if s.side < 0 { 2 } else { 3 };
+            seq = 0xC;
+        }
+        if anim != c.anim && (anim != 0 || c.anim != 1 || c.time >> 16 > 0xD) {
+            self.set_anim(c, anim, seq);
+        }
+        if anim == 1 || s.side.abs() > 0x200 {
+            let f = c.angles[1];
+            for (a, b) in [(0x680, -0x580), (-0x680, -0x280)] {
+                let at = [c.pos[0] + (sin(f + a) >> 1), c.pos[1] - 0x800, c.pos[2] + (sin(f + b) >> 1)];
+                let spin = self.rand() as i32 - 0x80;
+                self.spawns.push((at, 0x2A, 10, spin));
+            }
+            self.sounds.push((0x36, c.pos));
+        }
+    }
+
+    /// Starts slot `i` again from its record (0x406CD0 with 0: keeps a dead one dead).
+    pub fn restart(&mut self, i: usize) {
+        let mut c = self.slots[i].clone();
+        self.reset(&mut c, false);
+        self.slots[i] = c;
     }
 
     /// 0x416A60, a sheep: touched, it's found (the count 0x52B7D8 +1, sparks 0x410410, sound

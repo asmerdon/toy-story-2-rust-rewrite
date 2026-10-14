@@ -37,10 +37,14 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 | `src/specials.rs` | Run-time special-object transforms (0x4CCxxx) |
 | `src/pickups.rs` | Coins, batteries, tokens, lives, power-ups; dropped coins |
 | `src/boxes.rs` | Pushable objects along level.dat paths (0x433700) |
-| `src/level1.rs` | Level 1's setup/script, the parts without creatures |
+| `src/level1.rs` | Level 1's setup/script (0x417680): doors, fan, plank, tops; crib bars; Bo Peep, Hamm, Mr Potato Head conversations; RC race |
 | `src/creatures.rs` | Creature slots, behaviour script interpreter, movement, animation, contacts (ellipsoids from .all), hits, death, laser ray test |
 | `src/laser.rs` | Laser beams: auto-aim, rays, bounce, ribbons |
-| `src/hud.rs` | HUD elements 0-4, sprite table |
+| `src/hud.rs` | HUD elements 0-6 (lives, health, coins, spin, laser, sheep, laps), sprite table |
+| `src/particles.rs` | Particle slots, spawn modes and types from the exe's tables, update, death actions, drawing, touches |
+| `src/look.rs` | First-person look mode (0x4038E0): targets, marker/aim dot, helmet and arms |
+| `src/dialog.rs` | Speech box (layout, typing, box) and the HUD font |
+| `src/cutscene.rs` | Talk cutscenes (0x4027F0 / 0x402A10): placing, camera glide, token at the end |
 | `src/formats/` | `ngn`, `terrain`, `leveldat` (lists, pickups, special-object records), `packets`, `anim`, `exe`, `all` |
 | `src/bin/ts2-viewer.rs` | Viewer and play mode (two-pass level draw, per-frame billboards/specials/creatures) |
 
@@ -48,6 +52,17 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 - Play mode (F) in level 1: movement, jumps, stomp, climbing, camera, sounds: feel matches the original.
 - Pickups: collections work, coins etc. look correct. Starting lives: 5.
 - Earlier round's flicker/banister fixes, level objects, creatures, combat: not reported as broken.
+
+## Round 5 (2026-10-14): done, not yet tested by the user
+The user asked for first-person mode (with the crib in level 1) and to carry on with the plan. Done and committed:
+- **First person** (`src/look.rs`): Q = L1 toggles, WASD looks, X = R1 cycles targets (hold to lock), mouse 1 fires. Helmet/arms model (specials 0x2D-0x2F) shown at the eyes, hidden otherwise (it used to sit on the living-room floor).
+- **Crib** (room 1): two COTBIT bars shootable only from inside the crib; both down -> the side goes and the crib parts drop. Test `tests/crib.rs`.
+- **Conversations**: speech box + talk cutscene camera; Buzz frozen, jump continues, Square skips. Bo Peep (find 5 sheep -> token 1, HUD sheep count), Hamm (50 coins -> token 0), Mr Potato Head (find his ear, the "Other" pickup -> cosmic shield ability bit; the shield's use isn't ported).
+- **RC race** (room 2): touch the car, talk, then race 3 laps round the room; win -> token 2, HUD laps counter; leaving the room resets it. Test `rc_race_runs_and_counts_laps` in `tests/bopeep.rs`.
+- `World::room_at` now asks 24 units above the point (feet sit below the floor surface; it returned None at floor height in room 2).
+- New examples: `kinds <levelNN dir> <level>` (pickups by kind), `room <levelNN dir> x y z` (room-map lookups).
+
+Ask the user to try: Q in the bedroom crib and shoot both bars; talk to Bo Peep / Hamm / Mr Potato Head; collect the sheep and the ear; race the RC car in room 2.
 
 ## User feedback, round 4 (2026-10-14), and what was done
 - Audio, HUD, laser look: user happy. Attic box works.
@@ -67,12 +82,13 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 6. **Laser thickness wrong.** Ribbon UVs were transposed: the sprite's 31-px axis runs along the beam, the 8-px axis across (0x4B9100). Fixed, with cell 2 at the muzzle end. Position was confirmed good.
 
 ## Next steps (in priority order)
-1. **Level 1 creatures' own routines** (+0x94, table above in functions.md): Tin Man boss 0x416AB0, sheep 0x416A60 (Bo Peep's challenge), RC race 0x406A60; Hamm (0x4A1CE0 coins -> token), Mr Potato Head (0x4A2480); then the creature parts of the level 1 script 0x417680 (falling toys, Bo Peep, RC race, lift, spring, room 5 tilt 0x49EC00, shield gift).
+1. **Where I stopped:** the RC race was finished and committed; next is the **Tin Man boss** (creature routine 0x416AB0; the room 5 part of 0x417680: talk with list 0x1A, "defeat the tin robot to get a token", boss states in 0x52F578). Then the rest of 0x417680: room 5 tilting platform 0x49EC00, room 1 falling toys, room 2 lift (special 6, pole 8), room 3 spring, Hamm's hints 0x4A1E60, cutscene pickups 0x402610, using the cosmic shield (0x52F2D8 bit 1, 0x52F398).
 2. Particles still to do: homing (flag 8, kinds 0x1D/0x26), 0x410850 explosions (death actions 1/2/4), lights 0x44F200, floor shadows (0x54F098), Buzz's footstep dust 0x4A2D80.
-3. Token sequence / menu (0x49FD40 with 0x830CC4 = 9), hover boots (0x4A4BB0), first-person look (L1, 0x50A13C).
+3. Token sequence / menu (0x49FD40 with 0x830CC4 = 9), rocket/hover boots (0x4A4D60 / 0x4A4F80 / 0x4A4EC0, 0x4A4BB0; level 1 has no boots pickup), grappling hook in first person (0x4A5370, list 59).
 4. Original collision resolver if gaps persist; slippery surface 13; riding movers 0x488E10.
 
 ## Useful facts
+- Level 1 slots: crib bars 0 / 2, Bo Peep 1, RC car 0x1D, Hamm 0x1E, Mr Potato Head 0x1F. Talk lists: 0x19 Potato, 0x1A Tin Man, 0x1B RC, 0x1C Bo Peep, 0x1D Hamm; RC waypoints list 30.
 - Units: object units = level units × 32; 12-bit angles in game code, 16-bit in `.ngn` instance rotations; +Y is down.
 - Buzz's object is at 0x52F300 (`docs/re/functions.md`). Creatures: 0x52C840 + 0x9C × slot.
 - `level.dat` list table: 0x559C70 + 4 × type (58 rewards/box spots, 61 poles, 63 pickups); special-object records after section 2.
