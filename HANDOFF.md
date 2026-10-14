@@ -13,9 +13,9 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
   C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC\support\analyzeHeadless.bat re\proj TS2 -process toy2.exe -noanalysis -scriptPath tools\ghidra -postScript DumpAround.java re\out
   ```
 - Disassembly: `re/out` hides call arguments, jump tables and some offsets. A scratch Python venv with `capstone` + `pefile` (scripts: disassemble a range, hex-dump exe data, scan the whole `.text` for operands mentioning an address) fills the gap. Recreate in the session scratchpad.
-- Tests: `set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`, then `cargo test --release` (15 test binaries, all passing). `cargo clippy --all-targets` fails only on an old `6.283` in `examples/wander.rs`.
+- Tests: `set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`, then `cargo test --release` (all passing). `cargo clippy --all-targets` fails only on an old `6.283` in `examples/wander.rs`.
 - Viewer: `cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"`
-- Diagnostics (`cargo run --release --example <name> -- <args>`): `rotfit`, `spikes`, `wander` (fall-through stress test), `pickups <levelNN dir>`, `overlap <level.ngn>` (coplanar overlaps by mesh set/zone), `sprites <level.ngn>` (billboard groups), `movers <levelNN dir>` (type-8 and room-map objects), `boxes` and `creatures [levelNN]` (need TS2_GAME_DIR).
+- Diagnostics (`cargo run --release --example <name> -- <args>`): `rotfit`, `spikes`, `wander` (fall-through stress test), `pickups <levelNN dir>`, `overlap <level.ngn>` (coplanar overlaps by mesh set/zone), `sprites <level.ngn>` (billboard groups), `movers <levelNN dir>` (type-8 and room-map objects), `boxes` and `creatures [levelNN]` (need TS2_GAME_DIR), `stress [runs] [ticks]` (level 1 played by random input with everything on; reports fall-throughs), `gaps <levelNN dir>` (visible floor without collision; noisy: counts ceilings too).
 - The user mentioned github.com/morluto/rea (an MCP wrapper over Ghidra/IDA). Not installed: our Ghidra dump + capstone cover it. If the user installs it, its tools appear in a new session.
 
 ## Rules
@@ -38,30 +38,31 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 | `src/pickups.rs` | Coins, batteries, tokens, lives, power-ups; dropped coins |
 | `src/boxes.rs` | Pushable objects along level.dat paths (0x433700) |
 | `src/level1.rs` | Level 1's setup/script, the parts without creatures |
-| `src/creatures.rs` | Creature slots, behaviour script interpreter, movement, animation, contacts, hits, death |
+| `src/creatures.rs` | Creature slots, behaviour script interpreter, movement, animation, contacts (ellipsoids from .all), hits, death, laser ray test |
+| `src/laser.rs` | Laser beams: auto-aim, rays, bounce, ribbons |
+| `src/hud.rs` | HUD elements 0-4, sprite table |
 | `src/formats/` | `ngn`, `terrain`, `leveldat` (lists, pickups, special-object records), `packets`, `anim`, `exe`, `all` |
 | `src/bin/ts2-viewer.rs` | Viewer and play mode (two-pass level draw, per-frame billboards/specials/creatures) |
 
 ## Status (what the user has confirmed)
 - Play mode (F) in level 1: movement, jumps, stomp, climbing, camera, sounds: feel matches the original.
-- Pickups: collections work, coins etc. look correct.
-- Starting lives: 5 (user).
+- Pickups: collections work, coins etc. look correct. Starting lives: 5.
+- Earlier round's flicker/banister fixes, level objects, creatures, combat: not reported as broken.
 
-## Done in the last run, not yet tested by the user
-- **Flicker**: the two mesh sets are a detailed and a low-detail copy; now drawn in the original's two passes (far set beyond 10000, depth cleared, near set within 12000).
-- **Banisters**: code 5/6 groups are billboards (code 6 upright, code 5 facing the camera), rebuilt each frame.
-- **Coin sound**: unchanged on purpose: the exe really plays PICKUP5 six times (0, 50, 100, 150, 330, 520 ms, fading). Ask the user to compare with the original if it still sounds wrong.
-- **Skid**: unchanged on purpose: 0x4346C0 snaps and re-skids (with sound) on every ≥ 0x5DD reversal on the ground; the port matches it call for call. Ask the user to compare with the original game.
-- **Level objects**: specials drawn from live transforms; boxes; level 1's basement door (push it over: it tips open and swaps collision), basement plank, room 2 tops and pop-up platforms, room 4 trampoline, fan.
-- **Creatures**: all spawns run their behaviour scripts (wander, hop, chase, animate) near the camera.
-- **Combat**: spin attack (E on the ground; hold to charge, release for the super spin), stomp hits, robots hurt Buzz on contact, batteries go down, death → respawn at the start with a life fewer, beaten robots drop a coin and come back after 30 s.
+## User feedback on the last round (2026-10-13) and what was done
+1. **Push audio wrong** -> the box scrape plays every tick; the original's DirectSound has six buffers per sample (0x47DE50: a free one plays, else the one furthest through restarts). The viewer now emulates that pool for all non-voice sounds. Ask the user whether pushing sounds right now.
+2. **Shooting is the main attack** -> the wrist laser is ported (Q = Square): 0x434990 (arm windup 11 ticks, refire, charge whine, charged shot after 64 ticks held), 0x4A5D30 (auto-aim, 4 beam slots), 0x4A5870 (ray vs creature ellipsoids; bounces off laser-proof ones), 0x4A5C40 / 0x44E1A0 (ribbon of sprite 9). Muzzle point is approximated (90 units ahead of his chest); the original uses node 15 of the posed model. Impact particles are not drawn yet (particle system still to do).
+3. **Spin should charge** -> 0x434EB0 re-ported exactly: whine 0x27 every tick from charge 13 while held, super spin (state 0x13, 181 ticks, sound 0x26 each tick) then dizzy (state 0x14, 119 ticks). The super spin was probably invisible before (no state).
+4. **No HUD** -> `src/hud.rs` ports 0x49FD40 elements 0-4 (lives, batteries, coins, spin meter, laser meter) with their slide timers, drawn in a screen-space pass from the sprite table (0x557500). Not yet: token menu, pause menu, ammo counters, elements 5-9.
+5. **Collision gaps** -> no repro found (examples `wander`, `stress` and `gaps` all clean or inconclusive). Added a vertical floor probe after each move (Buzz can't end a tick below a floor his body passed through). If it still happens, ask the user exactly where (room, what Buzz was doing). The real fix is porting the original resolver (0x484380 / 0x482A00 / 0x483EF0 / 0x486520, ~2000 decompiled lines) and mover riding 0x488E10.
+- Creature contacts now use the real hit shapes: each character's `.all` file's type-9 directory entry (sphere + per-animation ellipsoid table), see docs/formats/all.md.
 
 ## Next steps (in priority order)
-1. **Level 1 creatures' own routines** (+0x94): ZURG3 shooting (needs particles: laser 0x26 shots that hurt Buzz via 0x4100F0), Tin Man boss 0x416AB0, sheep 0x416A60 (Bo Peep's challenge), RC race 0x406A60, Hamm (0x4A1CE0 coins → token), Mr Potato Head (0x4A2480), Rex; then the creature parts of 0x417680 (room 1 falling toys, Bo Peep, RC race, lift, spring, room 5 tilt 0x49EC00, shield gift).
-2. **Particles** (0x40FAE0/0x40FDF0/0x410F40, type table 0x4EC160, 64 slots): shots, hit sparks, dust, sparkles; 0x4100F0 checks them against Buzz (coins kind 0x10, hurt kinds 1/2).
-3. **Token sequence** and HUD (0x49FD40, sprites 0x493F40), hover boots (0x4A4BB0), the laser (0x434990).
-4. Creature contact ellipsoids (+0x84 per-animation table) instead of model-bounds cylinders.
-5. Remaining polish: slippery surface 13, riding movers (0x488E10), particles for footsteps, camera extras.
+1. **Particles** (0x40FAE0 / 0x40FDF0 / 0x410F40, type table 0x4EC160, 64 slots): laser impacts and sparks, spin trails (0x14-0x17), dust; then 0x4100F0 (particles vs Buzz: coins kind 0x10, hurt kinds 1/2) for ZURG3 shots.
+2. **Level 1 creatures' own routines** (+0x94): ZURG3 shooting, Tin Man boss 0x416AB0, sheep 0x416A60 (Bo Peep), RC race 0x406A60, Hamm (0x4A1CE0), Mr Potato Head (0x4A2480); then the creature parts of 0x417680.
+3. Token sequence / menu (0x49FD40 with 0x830CC4 = 9), hover boots (0x4A4BB0), first-person look (L1, 0x50A13C).
+4. Buzz's hurt (state 5) and death (state 7) animations (0x4011D0), laser muzzle from node 15.
+5. Original collision resolver port if gaps persist; slippery surface 13; riding movers.
 
 ## Useful facts
 - Units: object units = level units × 32; 12-bit angles in game code, 16-bit in `.ngn` instance rotations; +Y is down.

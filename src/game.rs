@@ -29,6 +29,8 @@ const SKIN: f32 = 0.5;
 const WALL_PUSH: f32 = 3.0;
 /// While on the ground, follow it down slopes and steps by up to this much per tick.
 const STICK_DOWN: f32 = 64.0;
+/// How far above the body's bottom a floor still counts as one it was standing on.
+const FLOOR_PROBE_UP: f32 = 16.0;
 /// Teeter (0x4011D0): a drop counts when the floor is more than 0x1000 object units below; the
 /// probes are 0x1000 object units ahead and behind (sine table >> 2).
 const TEETER_DROP: f32 = 128.0;
@@ -1343,6 +1345,20 @@ impl Player {
                 floor = true;
                 self.floor_mover = h.mover.map(|m| (m, h.normal));
                 self.surface = h.surface;
+            }
+        }
+        // Never end a tick below a floor the body passed through on the way down: a vertical
+        // probe at the centre (as the original backs its sweep with the floor query 0x486520)
+        // catches starts too deep inside a face, seams, and floors that moved up into Buzz.
+        let (old_bottom, new_bottom) = (start.y - BODY_LIFT, c.y + BODY_RADIUS);
+        if new_bottom > old_bottom
+            && let Some((fy, m)) = world.floor_below_obj(c.x, c.z, old_bottom - FLOOR_PROBE_UP)
+            && fy < new_bottom - 1.0
+        {
+            c.y = fy - BODY_RADIUS - SKIN;
+            floor = true;
+            if let Some(m) = m {
+                self.floor_mover = Some((m, Vec3::NEG_Y));
             }
         }
         if floor && v.y > 0.0 {

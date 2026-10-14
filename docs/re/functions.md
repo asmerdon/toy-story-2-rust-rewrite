@@ -191,9 +191,6 @@ Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when dra
 | 0x43B0C0 | `LoadCreatureModels(list)` ✔ | For each creature id used by the level: `chars*\<name>` (a switch of paths) through 0x43ACA0; then copies each slot's type sphere to +0x38 and ellipsoid table to +0x84 |
 | 0x43ACA0 | `LoadCharacter(path, …)` ✔ | Loads `<path>.anm` (0x4A6940) and `<path>.all` (0x43D820); a last directory entry of type 9 (stored as 12) is the hit-shape entry: its data block is the ellipsoid table, its +0x2C words the sphere |
 | 0x43D820 | `LoadAllModel(path, first, buf)` ✔ (hit shapes only) | `.all`: word 0 × 2 = directory offset; u32 count, 0x4C-byte entries (u32 size in words, …, u32 type at +0x10; types ≥ 0x100 are shared blocks chained through 0x12345678 markers); data blocks follow each other from offset 4 |
-
-| Address | Name | Notes |
-|---|---|---|
 | 0x4CA420 | `LoadCreature` ✔ | `.ngn` chunk 0x106 tags 0x200–0x208 (hobjload.c) |
 | 0x4CA040 | `StoreAnimation` ✔ | Raw 0x204 blobs, up to 100 per creature |
 | 0x4CA1D0 | `LoadPatches` ✔ | Tag 0x208 |
