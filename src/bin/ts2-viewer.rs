@@ -1015,7 +1015,7 @@ impl Viewer {
         self.creature_idx = ci;
         self.anim_preview = None;
         println!(
-            "play mode: WASD run, Space jump (again in the air: double jump), E stomp, right-drag camera, F to exit. Animations come from the original \
+            "play mode: WASD run, Space jump (again in the air: double jump), Q laser (hold to charge), E spin on the ground (hold to charge) or stomp in the air, right-drag camera, F to exit. Animations come from the original \
              move table{}; [ ] previews any animation, 0 returns to the move table",
             if self.buzz.is_some() { "" } else { " (not available: toy2.exe not found)" }
         );
