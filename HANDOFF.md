@@ -62,6 +62,8 @@ The user asked for first-person mode (with the crib in level 1) and to carry on 
 - `World::room_at` now asks 24 units above the point (feet sit below the floor surface; it returned None at floor height in room 2).
 - New examples: `kinds <levelNN dir> <level>` (pickups by kind), `room <levelNN dir> x y z` (room-map lookups).
 
+- **Tin Man boss** (room 5, after the round-5 handoff): walk up to his platform -> challenge conversation -> fight. Hit him with the laser while he's open (animations 3 / 5); he flashes, flinches; below 10 health he dies and token 4 appears. Boss health bar (HUD element 7), camera turns towards him, engine hum. Test `tin_man_fight_ends_with_a_token`. Room 5's tilting platform (0x49EC00) is still not ported: it needs rotating movers in `World`.
+
 Ask the user to try: Q in the bedroom crib and shoot both bars; talk to Bo Peep / Hamm / Mr Potato Head; collect the sheep and the ear; race the RC car in room 2.
 
 ## User feedback, round 4 (2026-10-14), and what was done
@@ -82,7 +84,7 @@ Ask the user to try: Q in the bedroom crib and shoot both bars; talk to Bo Peep 
 6. **Laser thickness wrong.** Ribbon UVs were transposed: the sprite's 31-px axis runs along the beam, the 8-px axis across (0x4B9100). Fixed, with cell 2 at the muzzle end. Position was confirmed good.
 
 ## Next steps (in priority order)
-1. **Where I stopped:** the RC race was finished and committed; next is the **Tin Man boss** (creature routine 0x416AB0; the room 5 part of 0x417680: talk with list 0x1A, "defeat the tin robot to get a token", boss states in 0x52F578). Then the rest of 0x417680: room 5 tilting platform 0x49EC00, room 1 falling toys, room 2 lift (special 6, pole 8), room 3 spring, Hamm's hints 0x4A1E60, cutscene pickups 0x402610, using the cosmic shield (0x52F2D8 bit 1, 0x52F398).
+1. **Where I stopped:** the Tin Man boss is done. Next, the rest of 0x417680: room 5 tilting platform 0x49EC00, room 1 falling toys, room 2 lift (special 6, pole 8), room 3 spring, Hamm's hints 0x4A1E60, cutscene pickups 0x402610, using the cosmic shield (0x52F2D8 bit 1, 0x52F398).
 2. Particles still to do: homing (flag 8, kinds 0x1D/0x26), 0x410850 explosions (death actions 1/2/4), lights 0x44F200, floor shadows (0x54F098), Buzz's footstep dust 0x4A2D80.
 3. Token sequence / menu (0x49FD40 with 0x830CC4 = 9), rocket/hover boots (0x4A4D60 / 0x4A4F80 / 0x4A4EC0, 0x4A4BB0; level 1 has no boots pickup), grappling hook in first person (0x4A5370, list 59).
 4. Original collision resolver if gaps persist; slippery surface 13; riding movers 0x488E10.

@@ -24,6 +24,7 @@ pub const SPIN: usize = 3;
 pub const LASER: usize = 4;
 pub const SHEEP: usize = 5;
 pub const LAPS: usize = 6;
+pub const BOSS: usize = 7;
 const ELEMENTS: usize = 10;
 
 /// Ticks an element stays up when something shows it (0xB4).
@@ -44,6 +45,9 @@ pub struct Status {
     /// 0x52F2F8 and 0x52AD64: the race's state and Buzz's laps.
     pub race: i32,
     pub laps: i32,
+    /// 0x52B7E0: a boss's health bar (0..54), shown while `boss_on`.
+    pub boss: i32,
+    pub boss_on: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -117,6 +121,9 @@ impl Hud {
         }
         if (1..3).contains(&s.race) {
             self.timer[LAPS] = 5;
+        }
+        if s.boss_on {
+            self.timer[BOSS] = 0x5A;
         }
         for k in 0..ELEMENTS {
             if self.timer[k] == 0 {
@@ -230,6 +237,15 @@ impl Hud {
             let color = if blink { [0, (c * 2 - 0x80) as u8, 0] } else { [0x80, (c * 2) as u8, 0] };
             put(WIDE, 0x1B6 - (shift << 9) / 0x140, 0xDA - off, 6, 0, color, c * 0x1644 / 2, 0x3000);
             put(NARROW, 0x110 - shift, 0xD8 - off, 0xD, 0, grey, 0x1000, 0x1000);
+        }
+        // 7: a boss's health bar at the top (sprite 6 stretched, red to yellow) in its frame
+        // (sprite 0xD); blinking when nearly empty.
+        if let Some(off) = self.offset(BOSS) {
+            let v = s.boss.clamp(0, 0x36);
+            if v >= 0xB || self.counter(4) < 8 {
+                put(WIDE, 0xE4, off + 0x14, 6, 0, [0x80, (v * 2) as u8, 0], v << 12, 0x4000);
+            }
+            put(WIDE, 0xE0, off + 0x10, 0xD, 0, grey, 0x2000, 0x2000);
         }
         // 0x4B8DD0 puts each normal-mode sprite at the front of the list it draws from, so the
         // last one queued is drawn first: meter bars end up over their frames.

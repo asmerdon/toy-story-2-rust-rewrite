@@ -49,6 +49,8 @@ pub struct Camera {
     /// Ticks Buzz has stood still (0x50A534) and the swing rate it set (0x50A4E4).
     idle: i32,
     swing: i32,
+    /// 0x50A118: a point (object units) to turn towards this tick (a boss), then cleared.
+    pub focus: Option<[i32; 3]>,
 }
 
 impl Camera {
@@ -57,7 +59,7 @@ impl Camera {
         let b = obj_pos(buzz);
         let f = buzz.facing;
         let pos = [b[0] + ((sin12(f - 0x800) * 4) * DISTANCE >> 9), b[1] - 0x3200, b[2] + ((sin12(f - 0x400) * 4) * DISTANCE >> 9)];
-        Camera { pos, height_target: b[1], height: b[1], yaw: f, pitch: REST_PITCH, distance: DISTANCE, look_yaw: f, look_pitch: 0, idle: 0, swing: 0 }
+        Camera { pos, height_target: b[1], height: b[1], yaw: f, pitch: REST_PITCH, distance: DISTANCE, look_yaw: f, look_pitch: 0, idle: 0, swing: 0, focus: None }
     }
 
     /// One game tick.
@@ -109,6 +111,11 @@ impl Camera {
             let rate = if buzz.skid != 0 { FOLLOW_SKID } else { FOLLOW };
             self.yaw = (self.yaw - d / (rate * 2)) & 0xFFF;
             self.ease_pitch();
+        }
+        // A boss fight: the orbit turns an eighth of the way towards facing it each tick.
+        if let Some(f) = self.focus.take() {
+            let a = crate::boxes::angle12((f[0] - b[0]) as f32, (f[2] - b[2]) as f32);
+            self.yaw = (self.yaw - diff12(self.yaw, a) / 8) & 0xFFF;
         }
         // Shorten the distance when something is between Buzz and where the camera wants to be.
         let head = Vec3::new(b[0] as f32, (b[1] - 0x1000) as f32, b[2] as f32) / 32.0;

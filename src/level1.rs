@@ -78,6 +78,8 @@ pub struct Level1 {
     armed: bool,
     /// Tokens to show now (0x4A0DB0 outside a conversation).
     pub reveals: Vec<usize>,
+    /// The boss's health bar is up (HUD element 7 kept at 0x5A ticks).
+    pub boss_hud: bool,
     story: Story,
 }
 
@@ -97,11 +99,13 @@ const POTATO_ASK: u32 = 0x4F0ADC;
 const POTATO_THANKS: u32 = 0x4F0B60;
 const POTATO_AFTER: u32 = 0x4F0C10;
 const RC_ASK: u32 = 0x4F042C;
+const TIN_MAN_TEXT: u32 = 0x4F0330;
 /// Characters' slots and their camera lists.
 const BO_PEEP: (usize, i16) = (1, 0x1C);
 const HAMM: (usize, i16) = (0x1E, 0x1D);
 const POTATO: (usize, i16) = (0x1F, 0x19);
 const RC: (usize, i16) = (0x1D, 0x1B);
+const TIN_MAN: (usize, i16) = (8, 0x1A);
 /// The RC car's waypoints (level.dat list 30) and how many it laps.
 const RC_TRACK: i16 = 0x1E;
 const RC_LAPS: i32 = 3;
@@ -155,13 +159,14 @@ impl Level1 {
             quarter: 0,
             armed: false,
             reveals: Vec::new(),
+            boss_hud: false,
             story: Story::default(),
         }
     }
 
     /// The conversations' texts (from the exe) and camera lists (from level.dat).
     pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
-        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK] {
+        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK, TIN_MAN_TEXT] {
             let mut s = Vec::new();
             while let Ok(b) = exe.at(va + s.len() as u32, 1) {
                 if b[0] == 0 || s.len() > 400 {
@@ -232,6 +237,7 @@ impl Level1 {
             }
         }
         self.race(room, player, cr);
+        self.tin_man(room, player, cr);
         if room == Some(6) && let Some(m) = cr.slots.get(POTATO.0).filter(|c| c.id == 9) {
             let pos = m.pos;
             if m.active && !talking {
@@ -347,6 +353,37 @@ impl Level1 {
             self.given[2] = true;
             self.race = 3;
         }
+    }
+
+    /// Room 5's Tin Man (0x417680 with the boss's routine). Coming up to his level in his zone
+    /// (standing) starts the challenge (list 0x1A, "ha ha ha ha…"); when it's over the fight
+    /// script runs and he chases Buzz. He's kept up at his platform's height. His bar shows
+    /// while Buzz is in the arena; his death gives token 4.
+    fn tin_man(&mut self, room: Option<u8>, player: &Player, cr: &mut Creatures) {
+        if cr.slots.get(TIN_MAN.0).is_none_or(|c| c.id != 5) {
+            return;
+        }
+        let b = &mut cr.boss;
+        if std::mem::take(&mut b.challenge) && b.state == 0 && player.on_floor && self.cutscene.is_none() {
+            self.talk(TIN_MAN.0, TIN_MAN.1, TIN_MAN_TEXT, None, Some([0xE23, 0x700]));
+            cr.boss.state = 1;
+        }
+        if cr.boss.token && !self.given[4] {
+            self.given[4] = true;
+            self.reveals.push(4);
+        }
+        if room == Some(5) {
+            if cr.boss.state == 1 && self.cutscene.is_none() {
+                cr.boss.state = 2;
+                let c = &mut cr.slots[TIN_MAN.0];
+                c.set_script(crate::creatures::TIN_MAN_FIGHT);
+                c.flags |= 8;
+            }
+            let c = &mut cr.slots[TIN_MAN.0];
+            c.pos[1] = c.pos[1].min(-0x2DE11);
+        }
+        let [_, y, z] = player.pos_obj();
+        self.boss_hud = y > -0x436DC && z > -0x4725B && y < -0x21A16 && cr.boss.state == 2;
     }
 
     /// The creature parts of 0x417680, after the creatures' update.

@@ -760,6 +760,7 @@ impl Viewer {
             if player.first_person == 0
                 && let Some(c) = self.orig_cam.as_mut()
             {
+                c.focus = self.creatures.as_mut().and_then(|cr| cr.boss.focus.take());
                 for _ in 0..ticks {
                     c.tick(player, &self.world);
                 }
@@ -882,6 +883,8 @@ impl Viewer {
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                     race: self.level1.as_ref().map_or(0, |l| l.race),
                     laps: self.level1.as_ref().map_or(0, |l| l.laps),
+                    boss: self.creatures.as_ref().map_or(0, |c| c.boss.bar),
+                    boss_on: self.level1.as_ref().is_some_and(|l| l.boss_hud),
                 });
             }
             // Creatures (0x4086F0) near the camera.
@@ -1016,6 +1019,12 @@ impl Viewer {
                     a.play(id, false, OWNER_CREATURES + 1 + slot as u32, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);
                 }
             }
+            if let (Some(cr), Some(a)) = (self.creatures.as_mut(), self.audio.as_ref()) {
+                for (id, at) in cr.boss.jingles.drain(..) {
+                    let pos = Vec3::from(at.map(|v| v as f32 / 32.0));
+                    self.jingles.push(Jingle { steps: a.bank.jingle(id).to_vec(), next: 0, timer: 0, pos });
+                }
+            }
             for ev in self.particles.events.drain(..) {
                 match ev {
                     ts2::particles::Event::Sound(id, at) => creature_sounds.push((id, at)),
@@ -1144,7 +1153,16 @@ impl Viewer {
                         let t = anim.map_or(0.0, |a| (c.time as f32 / 65536.0).min((a.frame_count.max(1) - 1) as f32));
                         let r = |a: i32| a as f32 / 4096.0 * std::f32::consts::TAU;
                         let angles = [r(c.angles[0]), r(c.angles[1]) + self.player_yaw_offset, r(c.angles[2])];
-                        scene::merge(&mut batches, scene::creature_batches_turned(&self.ngn, &self.ngn.creatures[ci], pos, angles, anim.map(|a| (a, t))));
+                        let mut cb = scene::creature_batches_turned(&self.ngn, &self.ngn.creatures[ci], pos, angles, anim.map(|a| (a, t)));
+                        // +0x34: lit up (a hurt boss's flash), colours at double strength.
+                        if c.lit {
+                            for v in cb.iter_mut().flat_map(|b| b.vertices.iter_mut()) {
+                                for k in 0..3 {
+                                    v.color[k] = v.color[k].saturating_mul(2);
+                                }
+                            }
+                        }
+                        scene::merge(&mut batches, cb);
                     }
                 }
                 _ => placed.extend(self.spawns.iter().map(|&(ci, p)| (ci, p, 0.0, self.creature_anim[ci]))),
@@ -1237,6 +1255,8 @@ impl Viewer {
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                     race: self.level1.as_ref().map_or(0, |l| l.race),
                     laps: self.level1.as_ref().map_or(0, |l| l.laps),
+                    boss: self.creatures.as_ref().map_or(0, |c| c.boss.bar),
+                    boss_on: self.level1.as_ref().is_some_and(|l| l.boss_hud),
                 };
                 let ngn = &self.ngn;
                 let texture = |slot: i16| {

@@ -146,3 +146,63 @@ fn rc_race_runs_and_counts_laps() {
     assert_eq!(level.race, 3, "the car finishes (Buzz didn't race)");
     assert!(!level.given[2]);
 }
+
+/// The Tin Man (room 5): coming up to his platform challenges Buzz; after the conversation he
+/// fights. Laser hits land while he's open (animations 3 and 5); below 10 health he dies, and
+/// his death gives token 4.
+#[test]
+fn tin_man_fight_ends_with_a_token() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let dir = game.join("data/level01");
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let n = ngn::parse(&fs::read(dir.join("level.ngn")).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(dir.join("TERRAIN.ALL")).unwrap()).unwrap();
+    let lists = leveldat::parse(&fs::read(dir.join("level.dat")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let pk = packets::parse(&fs::read(dir.join("level.raw")).unwrap()).unwrap();
+    let spawns: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
+    let mut cr = ts2::creatures::Creatures::new(&spawns, Some(&e), fs::read(game.join("data/rand.dat")).unwrap());
+    cr.load_shapes(&game.join("data"));
+    let mut specials = ts2::specials::Specials::new(&n);
+    let mut level = ts2::level1::Level1::new(&world, &mut specials);
+    level.set_story(&e, &lists);
+    assert_eq!(cr.slots[8].id, 5, "the Tin Man in slot 8");
+    let tin = Vec3::from(cr.slots[8].pos.map(|v| v as f32 / 32.0));
+    // Buzz on the platform a little way off.
+    let mut at = tin + Vec3::new(600.0, 0.0, 0.0);
+    at.y = world.floor_below(at.x, at.z, at.y - 400.0).unwrap_or(at.y);
+    eprintln!("Tin Man at {tin:?}, Buzz at {at:?} room {:?}", world.room_at(at));
+    assert_eq!(world.room_at(at), Some(5));
+    let mut p = Player::new(at);
+    p.on_floor = true;
+    for _ in 0..3 {
+        cr.tick(&world, p.pos_obj(), p.pos_obj());
+        level.tick_characters(&world, &p, &mut cr, 0);
+    }
+    assert_eq!(cr.boss.state, 1, "challenged");
+    assert!(level.cutscene.is_some());
+    level.cutscene = None;
+    let mut hits = 0;
+    let mut opened = 0;
+    for _ in 0..20000 {
+        cr.tick(&world, p.pos_obj(), p.pos_obj());
+        p.pos = at;
+        level.tick_characters(&world, &p, &mut cr, 0);
+        let c = &cr.slots[8];
+        if (c.anim == 3 || c.anim == 5) && c.knock == 0 && cr.boss.state == 2 {
+            opened += 1;
+            if opened % 20 == 0 {
+                cr.hit(8, 0, 3);
+                hits += 1;
+            }
+        }
+        if level.given[4] {
+            break;
+        }
+    }
+    let c = &cr.slots[8];
+    eprintln!("boss state {}, health {}, anim {}, {hits} hits, bar {}, hud {}", cr.boss.state, c.health, c.anim, cr.boss.bar, level.boss_hud);
+    assert_eq!(cr.boss.state, 3, "beaten");
+    assert_eq!(c.anim, 7, "dying");
+    assert!(level.given[4] && level.reveals.contains(&4), "token 4");
+}

@@ -106,6 +106,60 @@ pub struct Creature {
     pub active: bool,
     /// Running the shared death script (pointer 0x4E02CC) instead of its own.
     dying_script: bool,
+    /// +0x34: drawn lit up (the Tin Man's flash when hurt).
+    pub lit: bool,
+}
+
+/// The Tin Man fight (level 1, room 5): the boss's routine 0x416AB0 and the room script's
+/// part of it.
+#[derive(Debug, Clone, Default)]
+pub struct Boss {
+    /// 0x52F578: 0 waiting, 1 talking, 2 fighting, 3 beaten.
+    pub state: i32,
+    /// 0x52F5A8: its health when last hurt.
+    pub last: i32,
+    /// 0x52F590: flash ticks; 0x52F5C8 the blink.
+    flash: i32,
+    blink: bool,
+    /// 0x52B7E0: the HUD bar, 0..54.
+    pub bar: i32,
+    /// 0x830E3E: the engine's level.
+    hum: i32,
+    /// Buzz is close enough to be challenged (the routine's call of 0x4027F0).
+    pub challenge: bool,
+    /// 0x50A118: the camera turns towards here this tick.
+    pub focus: Option<[i32; 3]>,
+    /// Its death animation is far enough on to give token 4.
+    pub token: bool,
+    /// Jingles to play (id, where).
+    pub jingles: Vec<(i32, [i32; 3])>,
+}
+
+/// The Tin Man's script entry points (word offsets into behaviour 5: the pointer
+/// 0x4E02D8 + 0x14 / 0xB4 / 0xCA bytes).
+pub const TIN_MAN_FIGHT: usize = 0x0A;
+const TIN_MAN_HURT: usize = 0x5A;
+const TIN_MAN_DIES: usize = 0x65;
+
+/// Whether `p` (object units) is inside creature `c`'s zone (the rotated rectangle about its
+/// home, as script op 0x11 and the chase test).
+pub fn in_zone(c: &Creature, p: [i32; 3]) -> bool {
+    let r = c.rec;
+    let (zx, zz) = (r.zone[0] as i32, r.zone[1] as i32);
+    let (zs, zc) = (sin(r.zone_angle as i32 * 8) >> 2, cos(r.zone_angle as i32 * 8) >> 2);
+    let (dx, dz) = ((p[0] - c.home[0]) >> 5, (p[2] - c.home[2]) >> 5);
+    let u = ((dx * zc - dz * zs) >> 7) + zx * 0x100;
+    let v = ((dz * zc + dx * zs) >> 7) + zz * 0x100;
+    (u as u32) < (zx << 9) as u32 && (v as u32) < (zz << 9) as u32
+}
+
+impl Creature {
+    /// Points its script at word `pc` of its own behaviour script, starting there now.
+    pub fn set_script(&mut self, pc: usize) {
+        self.pc = pc;
+        self.wait = 0;
+        self.dying_script = false;
+    }
 }
 
 /// Something creatures did this tick that the game around them handles.
@@ -159,6 +213,10 @@ pub struct Creatures {
     pub sheep: i32,
     /// An RC race is on (0x52F2F8 > 1).
     pub racing: bool,
+    /// The Tin Man fight.
+    pub boss: Boss,
+    /// Buzz this tick (object units), for the type routines.
+    buzz: [i32; 3],
     /// Hit shapes by creature id, from each character's `.all` file (slot +0x38 sphere and
     /// +0x84 ellipsoid table, set by 0x43B0C0); `default_shape` for the rest.
     pub shapes: std::collections::HashMap<u8, HitShapes>,
@@ -255,6 +313,8 @@ impl Creatures {
             spawns: Vec::new(),
             sheep: 0,
             racing: false,
+            boss: Boss::default(),
+            buzz: [0; 3],
             shapes: Default::default(),
             default_shape: HitShapes {
                 sphere: [0, 500, 0, 500],
@@ -296,6 +356,7 @@ impl Creatures {
                 jump: 0,
                 active: false,
                 dying_script: false,
+                lit: false,
             };
             c.reset(&mut cr, true);
             c.slots.push(cr);
@@ -480,6 +541,7 @@ impl Creatures {
     /// 0x4086F0 + 0x4076F0 for one tick. `camera` and `buzz` in object units.
     pub fn tick(&mut self, world: &World, camera: [i32; 3], buzz: [i32; 3]) -> Vec<(usize, Step)> {
         let mut steps = Vec::new();
+        self.buzz = buzz;
         for i in 0..self.slots.len() {
             let mut c = self.slots[i].clone();
             c.active = false;
@@ -529,6 +591,7 @@ impl Creatures {
     fn routine(&mut self, slot: usize, c: &mut Creature, s: &Step) {
         match c.id {
             4 => self.zurg3(slot, c, s),
+            5 => self.tin_man(slot, c, s),
             6 => self.sheep(c),
             8 => self.rc(slot, c, s),
             _ => {}
@@ -566,6 +629,92 @@ impl Creatures {
                 self.spawns.push((at, 0x2A, 10, spin));
             }
             self.sounds.push((0x36, c.pos));
+        }
+    }
+
+    /// 0x416AB0, the Tin Man. It flashes for 60 ticks when hurt; its acceleration grows as
+    /// its health falls ((health + 14) × 12, as a byte). In its open animations (3, 5) the
+    /// laser can hurt it (record state 7, else 4); a hit sends its script to the flinch, or
+    /// below 10 health to its death (harmless, fireballs, jingle −2, fight over). Its death
+    /// animation (7) smokes and, from frame 13, gives token 4. Buzz in its zone and on the
+    /// arena's level: challenged (fight not started) or the camera turns to it (fighting);
+    /// out of it during the charge (animation 2), the fight script starts again. The HUD bar is
+    /// (health − 9) × 54 / 11; the engine (sound 0x35) hums while it moves.
+    fn tin_man(&mut self, slot: usize, c: &mut Creature, s: &Step) {
+        let b = &mut self.boss;
+        b.blink = !b.blink;
+        b.flash -= 1;
+        if b.flash < 0 {
+            b.flash = 0;
+            c.lit = false;
+        } else {
+            c.lit = b.blink;
+        }
+        c.rec.accel = ((c.health + 14) * 12) as u8;
+        if c.anim == 3 || c.anim == 5 {
+            c.rec.state = 7;
+            if c.health != self.boss.last {
+                self.boss.flash = 0x3C;
+                if c.health < 10 {
+                    c.pc = TIN_MAN_DIES;
+                    c.rec.state = 4;
+                    c.flags &= !0x100;
+                    let e = self.shape(c.id).ellipsoid(0);
+                    let at = [0, 1, 2].map(|k| c.pos[k] + e.offset[k] as i32);
+                    for _ in 0..5 {
+                        let spin = self.rand() as i32 - 0x80;
+                        self.spawns.push((at, 0x23, 0xE, spin));
+                    }
+                    self.boss.jingles.push((-2, c.pos));
+                    self.boss.state = 3;
+                } else {
+                    c.pc = TIN_MAN_HURT;
+                }
+                self.boss.last = c.health;
+                c.wait = 0;
+            }
+        } else {
+            c.rec.state = 4;
+        }
+        let buzz = self.buzz;
+        let inside = s.chase & 1 != 0 || in_zone(c, buzz);
+        if c.anim == 7 {
+            if c.time >> 16 > 0xC {
+                self.boss.token = true;
+            }
+            let f = c.angles[1];
+            let at = [c.pos[0] + sin(f) * 2 / 3, c.pos[1] - 0x5000, c.pos[2] + cos(f) * 2 / 3];
+            if self.boss.blink {
+                let spin = self.rand() as i32 - 0x80;
+                self.spawns.push((at, 0x11, 10, spin));
+            }
+            if self.rand() & 3 != 0 && c.time >> 16 == 0xE {
+                self.spawns.push((at, 4, 4, 0));
+            }
+        }
+        if inside && c.anim != 7 {
+            // On the arena's level (below the shelf above it).
+            if buzz[1] > -0x3213A && buzz[1] < 0 {
+                match self.boss.state {
+                    0 => self.boss.challenge = buzz[1] < -0x2BD6E,
+                    2 => self.boss.focus = Some(c.pos),
+                    _ => {}
+                }
+            }
+        } else if c.anim == 2 {
+            c.wait = 0;
+            c.pc = TIN_MAN_FIGHT;
+        }
+        self.boss.bar = (c.health - 9) * 0x36 / 0xB;
+        if s.forward < 1 {
+            if self.boss.hum > 0x200 {
+                self.boss.hum -= 0x20;
+            }
+        } else {
+            self.boss.hum = s.forward * 2 + 0x800;
+        }
+        if c.health > 9 && self.boss.hum > 0x200 {
+            self.owned_sounds.push((0x35, c.pos, slot));
         }
     }
 
