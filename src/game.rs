@@ -553,6 +553,9 @@ pub struct Input {
     /// (charges it).
     pub fire: bool,
     pub fire_held: bool,
+    /// L1 pressed since the last update: first-person look (entering; `look::FirstPerson`
+    /// handles leaving).
+    pub look: bool,
     /// The d-pad itself (pad bits 0x10 up, 0x20 right, 0x40 down, 0x80 left); climbing reads it
     /// directly rather than as a camera-relative direction.
     pub dpad: u8,
@@ -583,6 +586,8 @@ pub struct Shot {
     pub yaw: i32,
     pub pitch: i32,
     pub origin: [i32; 3],
+    /// Fired in first person: along the view, no auto-aim.
+    pub first_person: bool,
 }
 
 /// Jump phase, as the original keeps it at player +0x8C.
@@ -682,6 +687,11 @@ pub struct Player {
     fire_held: bool,
     /// Shots fired since the caller last drained this.
     pub shots: Vec<Shot>,
+    /// 0x50A13C: first-person look (3 entering, 4 on, 5 leaving), and the view's pitch and yaw
+    /// there (0x52F3C0 / 0x52F3C2), which the laser fires along.
+    pub first_person: u8,
+    pub look: [i32; 2],
+    look_latch: bool,
     /// Particles to make (position in object units, type, spawn mode, angle), drained by the
     /// caller: the spin's rings (0x434EB0).
     pub effects: Vec<([i32; 3], u8, usize, i32)>,
@@ -780,6 +790,9 @@ impl Player {
             fire_held: false,
             shots: Vec::new(),
             effects: Vec::new(),
+            first_person: 0,
+            look: [0; 2],
+            look_latch: false,
             voice_timer: 0,
             last_voice: 0,
             poles: Vec::new(),
@@ -934,6 +947,7 @@ impl Player {
         self.circle_held = input.stomp_held;
         self.fire_latch |= input.fire;
         self.fire_held = input.fire_held;
+        self.look_latch |= input.look;
         self.accum = (self.accum + dt * TICKS).min(MAX_TICKS_PER_UPDATE);
         while self.accum >= 1.0 {
             self.accum -= 1.0;
@@ -978,6 +992,12 @@ impl Player {
         }
 
         self.grab_lock = (self.grab_lock - 1).max(0);
+        // L1 on the ground with nothing else going on: first person (0x436220).
+        if std::mem::take(&mut self.look_latch) && self.first_person == 0 && self.state_bits() & 0xF_FF7F == 1 {
+            self.first_person = 3;
+            self.vel = [0; 3];
+            self.charge = 0;
+        }
         let fire = std::mem::take(&mut self.fire_latch);
         self.laser_tick(fire, self.fire_held || fire);
         let stomp = self.stomp_tick(stomp_pressed);
@@ -1004,6 +1024,11 @@ impl Player {
         match if climb != 0 { 0 } else { stomp } {
             // On a pole, a ledge or a zip line: no gravity or ground movement this tick.
             _ if climb == 2 => {}
+            // First person (code 8 of 0x436220): gravity and slowing down only.
+            0 if self.first_person != 0 => {
+                self.airborne(jump_held);
+                self.accelerate(side_decel, friction, MAX_SPEED, false);
+            }
             // Off a ledge or a zip line: steer with the stick, accelerate, no gravity.
             _ if climb == 1 && steer => {
                 let mut max = MAX_SPEED;
@@ -1550,6 +1575,7 @@ impl Player {
         f |= if self.fall_timer < 0 || self.fall_timer == FALL_PANIC { 0x20 } else { 0 };
         f |= if self.stomp != 0 { 0x40 } else { 0 };
         f |= if self.laser != 0 { 0x80 } else { 0 };
+        f |= if self.first_person != 0 { 0x100 } else { 0 };
         f |= if self.pushing { 0x200 } else { 0 };
         f |= if self.ledge > 0xF { 0x400 } else { 0 };
         f
@@ -1619,7 +1645,9 @@ impl Player {
         self.laser = 0xC;
         self.sound(if fire == 1 { 2 } else { 6 });
         let p = self.pos_obj();
-        self.shots.push(Shot { kind: fire, yaw: self.facing, pitch: 0, origin: [p[0], p[1] - 0x2C00, p[2]] });
+        let fp = self.first_person == 4;
+        let (yaw, pitch) = if fp { (self.look[1], -self.look[0]) } else { (self.facing, 0) };
+        self.shots.push(Shot { kind: fire, yaw, pitch, origin: [p[0], p[1] - 0x2C00, p[2]], first_person: fp });
     }
 
     /// The laser's arm pose (0x4011D0): animation 0x1A on the upper body, at frame

@@ -39,7 +39,7 @@ pub enum Event {
     Sound(u16, [i32; 3]),
     /// Where a beam of `kind` (0 normal, 1 charged) stopped against something, object units;
     /// `wall` when it was the level.
-    Impact { at: [i32; 3], kind: u8, wall: bool },
+    Impact { at: [i32; 3], kind: u8, wall: bool, first_person: bool },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -86,7 +86,8 @@ impl Lasers {
     pub fn fire(&mut self, shot: Shot, muzzle: [i32; 3], player: &mut Player, world: &World, creatures: &mut Creatures, visible: &dyn Fn(usize) -> bool) -> Vec<Event> {
         let mut events = Vec::new();
         let off = [0, 1, 2].map(|k| muzzle[k] - shot.origin[k]);
-        if let Some(end) = self.beam(shot.kind - 1, shot.yaw, shot.pitch, shot.origin, off, Some((player, &*visible)), world, creatures, &mut events) {
+        let aim = (!shot.first_person).then_some((player, &*visible));
+        if let Some(end) = self.beam(shot.kind - 1, shot.yaw, shot.pitch, shot.origin, off, aim, world, creatures, &mut events) {
             let r = self.rand() as i32;
             self.rand();
             self.beam(shot.kind - 1, shot.yaw + 0x600 + r * 4, r * 4 - 0x200, end, [0; 3], None, world, creatures, &mut events);
@@ -110,6 +111,7 @@ impl Lasers {
         events: &mut Vec<Event>,
     ) -> Option<[i32; 3]> {
         let facing = aim.as_ref().map_or(yaw, |(p, _)| p.facing);
+        let aim_fp = aim.is_none() && off != [0; 3];
         if let Some((player, visible)) = aim {
             // The candidate nearest the facing.
             let best = creatures
@@ -155,7 +157,7 @@ impl Lasers {
         bits |= creatures.laser_ray(origin, &mut delta, kind + 1, facing);
         let end = [0, 1, 2].map(|k| origin[k] + delta[k]);
         if bits != 0 {
-            events.push(Event::Impact { at: end, kind, wall: bits == 1 });
+            events.push(Event::Impact { at: end, kind, wall: bits == 1, first_person: aim_fp });
             if bits == 1 {
                 events.push(Event::Sound(8, end));
             }

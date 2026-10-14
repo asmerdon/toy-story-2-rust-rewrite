@@ -348,6 +348,10 @@ struct Viewer {
     hud_sprites: Vec<Option<ts2::pickups::SpriteDef>>,
     hud_last: [i32; 3],
     particles: ts2::particles::Particles,
+    /// First-person look (Q = L1, X = R1).
+    look: ts2::look::FirstPerson,
+    look_pressed: bool,
+    r1_pressed: bool,
 }
 
 fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -706,6 +710,7 @@ impl Viewer {
                 stomp_held: self.keys.contains(&KeyCode::KeyE),
                 fire: std::mem::take(&mut self.fire_pressed),
                 fire_held: self.fire_held,
+                look: player.first_person == 0 && self.look_pressed,
                 dpad: [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
                     .iter()
                     .filter(|(k, _)| self.keys.contains(k))
@@ -722,7 +727,35 @@ impl Viewer {
                     }
                 }
             });
-            if let Some(c) = self.orig_cam.as_mut() {
+            // First person (0x4038E0) runs in place of the follow camera.
+            let leaving_l1 = std::mem::take(&mut self.look_pressed) && player.first_person == 4;
+            let r1_pressed = std::mem::take(&mut self.r1_pressed);
+            let was_fp = player.first_person != 0;
+            if let Some(cr) = self.creatures.as_mut() {
+                for t in 0..ticks {
+                    let pad = ts2::look::Pad {
+                        dpad: input.dpad,
+                        r1: self.keys.contains(&KeyCode::KeyX),
+                        r1_pressed: r1_pressed && t == 0,
+                        l1_pressed: leaving_l1 && t == 0,
+                    };
+                    if player.first_person != 0 {
+                        self.look.tick(player, cr, &mut self.particles, &mut self.specials, &self.world, pad);
+                    }
+                }
+            }
+            if was_fp && player.first_person == 0 {
+                // Back behind him (state 5 resets the follow camera).
+                self.orig_cam = Some(ts2::camera::Camera::new(player));
+            }
+            if let Some(a) = self.audio.as_mut() {
+                for id in self.look.sounds.drain(..) {
+                    a.play_flat(id);
+                }
+            }
+            if player.first_person == 0
+                && let Some(c) = self.orig_cam.as_mut()
+            {
                 for _ in 0..ticks {
                     c.tick(player, &self.world);
                 }
@@ -744,7 +777,15 @@ impl Viewer {
             }
             // Follow camera: orbit behind the player at chest height.
             let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
-            match self.orig_cam.as_ref().filter(|_| self.use_orig_cam) {
+            match self.orig_cam.as_ref().filter(|_| self.use_orig_cam && player.first_person == 0) {
+                _ if player.first_person != 0 => {
+                    let e = ts2::look::FirstPerson::eye(player);
+                    self.cam.pos = game_to_world(e.map(|v| v as f32 / 32.0));
+                    let g = self.look.forward();
+                    let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
+                    self.cam.yaw = w.x.atan2(-w.z);
+                    self.cam.pitch = w.y.clamp(-1.0, 1.0).asin();
+                }
                 Some(c) => {
                     self.cam.pos = game_to_world(c.position().to_array());
                     let g = c.forward();
@@ -776,8 +817,9 @@ impl Viewer {
                         match ev {
                             ts2::laser::Event::Sound(id, at) => sounds.push((id, at)),
                             // 0x4A5D30's impact: a flash by kind, smoke off walls, five sparks.
-                            ts2::laser::Event::Impact { at, kind, wall } => {
+                            ts2::laser::Event::Impact { at, kind, wall, first_person } => {
                                 let (t, m) = match kind {
+                                    0 if first_person => (0xB, 5),
                                     0 => (1, 2),
                                     1 => (10, 5),
                                     _ => (0x49, 2),
@@ -834,6 +876,12 @@ impl Viewer {
                 }
                 for r in cr.particles.drain(..) {
                     self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);
+                }
+                if let Some(l) = self.level1.as_mut() {
+                    for _ in 0..ticks {
+                        l.tick_creatures(&self.world, &mut self.specials, player, cr);
+                    }
+                    cr.sounds.append(&mut l.sounds);
                 }
                 for ev in cr.events.drain(..) {
                     let ts2::creatures::Event::Died { pos, coin, centre, burst, .. } = ev;
@@ -1005,14 +1053,15 @@ impl Viewer {
                         }
                         let anim = self.anims[ci].get(c.anim as usize);
                         let t = anim.map_or(0.0, |a| (c.time as f32 / 65536.0).min((a.frame_count.max(1) - 1) as f32));
-                        let yaw = c.angles[1] as f32 / 4096.0 * std::f32::consts::TAU + self.player_yaw_offset;
-                        scene::merge(&mut batches, scene::creature_batches(&self.ngn, &self.ngn.creatures[ci], pos, yaw, anim.map(|a| (a, t))));
+                        let r = |a: i32| a as f32 / 4096.0 * std::f32::consts::TAU;
+                        let angles = [r(c.angles[0]), r(c.angles[1]) + self.player_yaw_offset, r(c.angles[2])];
+                        scene::merge(&mut batches, scene::creature_batches_turned(&self.ngn, &self.ngn.creatures[ci], pos, angles, anim.map(|a| (a, t))));
                     }
                 }
                 _ => placed.extend(self.spawns.iter().map(|&(ci, p)| (ci, p, 0.0, self.creature_anim[ci]))),
             }
         }
-        if let (Some(p), Some(ci)) = (&self.player, self.player_creature) {
+        if let (Some(p), Some(ci)) = (self.player.as_ref().filter(|p| p.first_person < 3 || p.first_person == 5), self.player_creature) {
             let yaw = p.yaw() + self.player_yaw_offset;
             match (self.anim_preview, p.anim.as_ref().and_then(|a| a.pose())) {
                 // Real move table: base layer + overlay at the frame its frame list gives.
@@ -1161,7 +1210,7 @@ impl Viewer {
         self.creature_idx = ci;
         self.anim_preview = None;
         println!(
-            "play mode: WASD run, Space jump (again in the air: double jump), left mouse laser (hold to charge), E spin on the ground (hold to charge) or stomp in the air, right-drag camera, F to exit. Animations come from the original \
+            "play mode: WASD run, Space jump (again in the air: double jump), left mouse laser (hold to charge), E spin on the ground (hold to charge) or stomp in the air, Q first person (WASD look, X target, Q back), right-drag camera, F to exit. Animations come from the original \
              move table{}; [ ] previews any animation, 0 returns to the move table",
             if self.buzz.is_some() { "" } else { " (not available: toy2.exe not found)" }
         );
@@ -1176,6 +1225,8 @@ impl Viewer {
             KeyCode::Space if self.player.is_some() => self.jump_pressed = true,
             // Circle (stomp). The original's keyboard default is F, which toggles play mode here.
             KeyCode::KeyE if self.player.is_some() => self.stomp_pressed = true,
+            KeyCode::KeyQ if self.player.is_some() => self.look_pressed = true,
+            KeyCode::KeyX if self.player.is_some() => self.r1_pressed = true,
             KeyCode::Digit0 if self.player.is_some() => {
                 self.anim_preview = None;
                 println!("Buzz animations from the original move table");
@@ -1544,7 +1595,14 @@ fn main() {
         hud_sprites,
         hud_last: [0; 3],
         particles,
+        look: Default::default(),
+        look_pressed: false,
+        r1_pressed: false,
     };
+    // The first-person helmet and arms only show in first person.
+    for id in ts2::look::MODEL {
+        viewer.specials.set_scale(id, [0; 3]);
+    }
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut viewer).expect("run");
 }

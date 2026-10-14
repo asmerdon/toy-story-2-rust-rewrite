@@ -50,19 +50,30 @@ fn transform(m: Option<&[[f32; 4]; 4]>, p: [f32; 3]) -> [f32; 3] {
 #[derive(Debug, Clone, Copy)]
 struct Place {
     offset: [f32; 3],
-    sin: f32,
-    cos: f32,
+    /// Rows of the rotation, applied as a row vector times it.
+    m: [[f32; 3]; 3],
 }
 
 impl Place {
     fn new(offset: [f32; 3], yaw: f32) -> Place {
-        let (sin, cos) = yaw.sin_cos();
-        Place { offset, sin, cos }
+        Place::turned(offset, [0.0, yaw, 0.0])
     }
+
+    /// Turned about X, then the vertical, then Z (the root matrix of 0x4CD880), radians.
+    fn turned(offset: [f32; 3], [ax, ay, az]: [f32; 3]) -> Place {
+        let (sx, cx) = ax.sin_cos();
+        let (sy, cy) = ay.sin_cos();
+        let (sz, cz) = az.sin_cos();
+        let rx = [[1.0, 0.0, 0.0], [0.0, cx, sx], [0.0, -sx, cx]];
+        let ry = [[cy, 0.0, -sy], [0.0, 1.0, 0.0], [sy, 0.0, cy]];
+        let rz = [[cz, sz, 0.0], [-sz, cz, 0.0], [0.0, 0.0, 1.0]];
+        let mul = |a: [[f32; 3]; 3], b: [[f32; 3]; 3]| std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()));
+        Place { offset, m: mul(mul(rx, ry), rz) }
+    }
+
     fn apply(&self, p: [f32; 3]) -> [f32; 3] {
-        let x = p[0] * self.cos + p[2] * self.sin;
-        let z = -p[0] * self.sin + p[2] * self.cos;
-        [x + self.offset[0], p[1] + self.offset[1], z + self.offset[2]]
+        let m = &self.m;
+        std::array::from_fn(|j| p[0] * m[0][j] + p[1] * m[1][j] + p[2] * m[2][j] + self.offset[j])
     }
 }
 
@@ -239,6 +250,12 @@ pub fn creature_batches(ngn: &Ngn, c: &Creature, origin: [f32; 3], yaw: f32, ani
     creature_batches_layered(ngn, c, origin, yaw, anim, None)
 }
 
+/// As `creature_batches`, turned by all three of its angles (tilt X, facing Y, lean Z;
+/// radians, applied in that order).
+pub fn creature_batches_turned(ngn: &Ngn, c: &Creature, origin: [f32; 3], angles: [f32; 3], anim: Option<(&Animation, f32)>) -> Vec<Batch> {
+    creature_batches_placed(ngn, c, Place::turned(origin, angles), anim, None)
+}
+
 /// Point on the base layer's root node that the overlay follows (0x43BA80).
 const ROOT_ANCHOR: [f32; 3] = [0.0, -200.0, 0.0];
 
@@ -265,8 +282,11 @@ pub fn creature_batches_layered(
     base: Option<(&Animation, f32)>,
     overlay: Option<(&Animation, f32)>,
 ) -> Vec<Batch> {
+    creature_batches_placed(ngn, c, Place::new(origin, yaw), base, overlay)
+}
+
+fn creature_batches_placed(ngn: &Ngn, c: &Creature, place: Place, base: Option<(&Animation, f32)>, overlay: Option<(&Animation, f32)>) -> Vec<Batch> {
     let mut out = Vec::new();
-    let place = Place::new(origin, yaw);
     let offset = root_offset(base, overlay).unwrap_or([0.0; 3]);
     let matrices: Vec<Option<[[f32; 4]; 4]>> = (0..c.nodes.len())
         .map(|n| {

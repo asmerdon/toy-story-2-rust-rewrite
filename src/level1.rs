@@ -13,11 +13,18 @@
 //!   collision while down.
 //! - Room 4: mover 3 is a trampoline: landing on it bounces Buzz (−0x980, −0xC00 from a stomp).
 //!
-//! Not ported yet: the creature parts (Bo Peep and her sheep, the RC race, Hamm's coins, the
-//! falling toys of room 1), the lift of room 2 (special 6 and pole 8), the spring of room 3,
-//! the tilting platform of room 5 and Mr. Potato Head's shield in room 6.
+//! - Room 1 (`tick_creatures`): the crib. Its two bars (COTBIT creatures in slots 0 and 2)
+//!   can be shot only from the far side (Buzz past x 0x4C274: record state 5 instead of 4).
+//!   A hit swings a bar down about Z with bounces (sound 0x32), and it can't be targeted any
+//!   more; with both down, the crib's barrier (mover 9) goes and specials 0x13, 0x14 and 0x1A
+//!   drop. Until then mover 9 holds, except under Buzz standing on surface 0xE.
+//!
+//! Not ported yet: the other creature parts (Bo Peep and her sheep, the RC race, Hamm's coins),
+//! the lift of room 2 (special 6 and pole 8), the spring of room 3, the tilting platform of
+//! room 5 and Mr. Potato Head's shield in room 6.
 
 use crate::boxes::Boxes;
+use crate::creatures::Creatures;
 use crate::game::{JumpPhase, Player, Sound, World};
 use crate::specials::Specials;
 use glam::Vec3;
@@ -34,7 +41,18 @@ pub struct Level1 {
     pops: (i32, i32),
     /// Rest positions (object units) of the tops and pop-ups, read at start-up.
     home: Vec<(i32, [i32; 3])>,
+    /// The crib bars' swing speeds (0x52F574 / 0x52F570), the crib's drop timer (0x52F56C)
+    /// and speed (0x52F57C).
+    bars: [i32; 2],
+    crib: i32,
+    crib_v: i32,
+    /// Sounds at positions (object units) from the creature parts.
+    pub sounds: Vec<(u16, [i32; 3])>,
 }
+
+/// The crib bars' creature slots and the health that means "at rest".
+const BARS: [usize; 2] = [0, 2];
+const BAR_REST: i32 = 0x50;
 
 /// Sine table value (round(16384 · sin)) of a 12-bit angle, as 0x4FE788 holds it.
 fn sin_table(a: i32) -> i32 {
@@ -55,7 +73,85 @@ impl Level1 {
         specials.scale_about(0x16, 0x15);
         world.set_mover(8, false);
         world.set_mover(14, false);
-        Level1 { door: 0, plank: 0, fan: 0, tops: (0, 0), pops: (0, 0), home }
+        Level1 { door: 0, plank: 0, fan: 0, tops: (0, 0), pops: (0, 0), home, bars: [0; 2], crib: 0, crib_v: 0, sounds: Vec::new() }
+    }
+
+    /// Both crib bars are down and the crib has opened (0x52F56C set).
+    pub fn crib_open(&self) -> bool {
+        self.crib != 0
+    }
+
+    /// The creature parts of 0x417680, after the creatures' update.
+    pub fn tick_creatures(&mut self, world: &World, specials: &mut Specials, player: &Player, cr: &mut Creatures) {
+        let room = world.room_at(player.pos);
+        if room != Some(1) || BARS.iter().any(|&s| cr.slots.get(s).is_none_or(|c| c.id != 11)) {
+            return;
+        }
+        // A bar that was hit swings down and settles.
+        for (k, &slot) in BARS.iter().enumerate() {
+            let c = &mut cr.slots[slot];
+            if c.health == BAR_REST {
+                continue;
+            }
+            c.rec.state = 0;
+            self.bars[k] += 4;
+            if k == 0 {
+                c.angles[2] += self.bars[k];
+                if c.angles[2] > 0x700 {
+                    self.bars[k] = -(self.bars[k] / 2);
+                    c.angles[2] = 0x700;
+                    self.sounds.push((0x32, c.pos));
+                    if self.bars[k] > -8 {
+                        c.health = BAR_REST;
+                    }
+                }
+            } else {
+                c.angles[2] = (c.angles[2] - self.bars[k]) & 0xFFF;
+                if c.angles[2] < 0x900 {
+                    self.bars[k] = -(self.bars[k] / 2);
+                    c.angles[2] = 0x900;
+                    self.sounds.push((0x32, c.pos));
+                    if self.bars[k] > -8 {
+                        c.health = BAR_REST;
+                    }
+                }
+            }
+        }
+        let down = BARS.map(|s| cr.slots[s].rec.state == 0);
+        if down[0] && down[1] {
+            if self.crib == 0 {
+                self.crib = 0x90;
+                world.set_mover(9, false);
+            }
+        } else {
+            // Shootable (bit 1) only from the far side.
+            let state = if player.pos_obj()[0] < 0x4C274 { 4 } else { 5 };
+            for (k, &s) in BARS.iter().enumerate() {
+                if !down[k] {
+                    cr.slots[s].rec.state = state;
+                }
+            }
+            world.set_mover(9, !(player.on_floor && player.surface == Some(0xE)));
+        }
+        if self.crib > 0 {
+            self.crib -= 1;
+            self.crib_v += 0x10;
+            if self.crib < 1 {
+                self.crib = -1;
+            }
+            if let Some(p) = specials.pos_obj(0x13) {
+                if p[1] > 0x11C00 && self.crib_v > 0 {
+                    self.crib_v = -(self.crib_v / 2);
+                }
+                specials.set_pos(0x13, [p[0] >> 5, (p[1] + self.crib_v) >> 5, p[2] >> 5]);
+            }
+            if let Some(p) = specials.pos_obj(0x14) {
+                specials.set_pos(0x14, [p[0] >> 5, (p[1] + self.crib_v) >> 5, p[2] >> 5]);
+            }
+            if let Some(p) = specials.pos_obj(0x1A) {
+                specials.set_pos(0x1A, [p[0] >> 5, (self.crib_v + p[1] * 4) >> 7, p[2] >> 5]);
+            }
+        }
     }
 
     fn home(&self, id: i32) -> Option<[i32; 3]> {
