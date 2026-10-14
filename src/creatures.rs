@@ -153,6 +153,10 @@ pub struct Creatures {
     pub owned_sounds: Vec<(u16, [i32; 3], usize)>,
     /// Particles the type routines made this tick.
     pub particles: Vec<ParticleRequest>,
+    /// Particles to spawn by type and mode (0x40FDF0), with a spin.
+    pub spawns: Vec<([i32; 3], u8, usize, i32)>,
+    /// Bo Peep's sheep found (0x52B7D8; −1 once she has them back).
+    pub sheep: i32,
     /// Hit shapes by creature id, from each character's `.all` file (slot +0x38 sphere and
     /// +0x84 ellipsoid table, set by 0x43B0C0); `default_shape` for the rest.
     pub shapes: std::collections::HashMap<u8, HitShapes>,
@@ -246,6 +250,8 @@ impl Creatures {
             events: Vec::new(),
             owned_sounds: Vec::new(),
             particles: Vec::new(),
+            spawns: Vec::new(),
+            sheep: 0,
             shapes: Default::default(),
             default_shape: HitShapes {
                 sphere: [0, 500, 0, 500],
@@ -517,9 +523,29 @@ impl Creatures {
 
     /// The creature's own routine (+0x94, set by 0x406CD0 from its type), after the shared update.
     fn routine(&mut self, slot: usize, c: &mut Creature, s: &Step) {
-        if c.id == 4 {
-            self.zurg3(slot, c, s);
+        match c.id {
+            4 => self.zurg3(slot, c, s),
+            6 => self.sheep(c),
+            _ => {}
         }
+    }
+
+    /// 0x416A60, a sheep: touched, it's found (the count 0x52B7D8 +1, sparks 0x410410, sound
+    /// 0x20) and goes.
+    fn sheep(&mut self, c: &mut Creature) {
+        if c.flags & 0x200 == 0 {
+            return;
+        }
+        self.sheep += 1;
+        let at = [c.pos[0], c.pos[1] - 0x2000, c.pos[2]];
+        for _ in 0..5 {
+            let r = self.rand() as i32;
+            let o = ((r & 0x3F) - 0x20) * 0x32 * 2;
+            let spin = self.rand() as i32 - 0x80;
+            self.spawns.push(([at[0] + o, at[1] + o, at[2] + o], 0x29, 0xF, spin));
+        }
+        self.sounds.push((0x20, c.pos));
+        self.remove(c);
     }
 
     /// 0x406220, ZURG3 (the flying robot): leans into its sideways speed and hums (sound

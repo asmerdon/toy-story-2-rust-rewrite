@@ -22,6 +22,7 @@ pub const HEALTH: usize = 1;
 pub const COINS: usize = 2;
 pub const SPIN: usize = 3;
 pub const LASER: usize = 4;
+pub const SHEEP: usize = 5;
 const ELEMENTS: usize = 10;
 
 /// Ticks an element stays up when something shows it (0xB4).
@@ -37,6 +38,8 @@ pub struct Status {
     pub spin_charge: i32,
     pub laser: i32,
     pub laser_charge: i32,
+    /// 0x52B7D8: Bo Peep's sheep found (−1 when done).
+    pub sheep: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -105,6 +108,9 @@ impl Hud {
         if s.laser != 0 {
             self.timer[LASER] = 0x3C;
         }
+        if s.sheep > 0 {
+            self.timer[SHEEP] = 5;
+        }
         for k in 0..ELEMENTS {
             if self.timer[k] == 0 {
                 self.slide[k] = (self.slide[k] - 0x20).max(0);
@@ -153,6 +159,21 @@ impl Hud {
         if let Some(off) = self.offset(LIVES) {
             put(NARROW, 0x10, off + 0x10, 10, 0, grey, 0x800, 0x800);
             put(WIDE, 0x3C, off + 0x20, 0x14, digit(s.lives), white, 0x1000, 0x1000);
+        }
+        // 5: the sheep count beside its icon (sprite 0x32, the level's own), blinking at five,
+        // left of the batteries' place by however far they are in.
+        if let Some(off) = self.offset(SHEEP) {
+            let shift = (self.offset(HEALTH).unwrap_or(-0x40) + 0x40) / 2;
+            let pulse = if s.sheep == 5 {
+                let u = (self.counter(5) as i32 - 0x10) & 0x1F;
+                (if u > 0xF { 0x1F - u } else { u }) * 4 + 0x50
+            } else {
+                0x80
+            };
+            if s.sheep != 5 || self.counter(5) < 0x10 {
+                put(WIDE, 0x1DA - (shift << 9) / 0x140, off + 0x20, 0x14, digit(s.sheep), white, 0x1000, 0x1000);
+            }
+            put(NARROW, 0x110 - shift, off + 0x10, 0x32, 0, [pulse as u8; 3], 0x1000, 0x1000);
         }
         if let Some(off) = self.offset(HEALTH) {
             put(NARROW, 0x110, off + 0x10, 0xB, 0, grey, 0x800, 0x800);

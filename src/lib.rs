@@ -8,6 +8,8 @@ pub mod bmp;
 pub mod boxes;
 pub mod buzz;
 pub mod creatures;
+pub mod cutscene;
+pub mod dialog;
 pub mod camera;
 pub mod export;
 pub mod formats;

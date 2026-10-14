@@ -25,6 +25,9 @@
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
+use crate::cutscene::Cutscene;
+use crate::formats::exe::Exe;
+use crate::formats::leveldat::PointList;
 use crate::game::{JumpPhase, Player, Sound, World};
 use crate::specials::Specials;
 use glam::Vec3;
@@ -48,7 +51,44 @@ pub struct Level1 {
     crib_v: i32,
     /// Sounds at positions (object units) from the creature parts.
     pub sounds: Vec<(u16, [i32; 3])>,
+    /// Voice lines on Buzz's channel (0x49EA60) and sample slots at a position (0x4A3C80:
+    /// slot, volume).
+    pub voices: Vec<u16>,
+    pub slots: Vec<(u16, i32, [i32; 3])>,
+    /// A conversation in progress.
+    pub cutscene: Option<Cutscene>,
+    /// Who stands where at its start: Buzz and the character's slot (positions, facings).
+    pub staging: Option<([[i32; 3]; 2], [i32; 2], usize)>,
+    /// Tokens handed over or shown (0x830CD0 per token).
+    pub given: [bool; 5],
+    /// 0x830D48: Mr Potato Head's missing part (8 = his ear; negative once Buzz has it, 0
+    /// once returned) and the abilities he gives (0x52F2D8).
+    pub item: i32,
+    pub abilities: u8,
+    /// Hamm's and Mr Potato Head's call timers (0x830C98 / 0x830D34).
+    calls: [i32; 2],
+    story: Story,
 }
+
+/// Texts and camera lists of the level's conversations (from toy2.exe and level.dat).
+#[derive(Debug, Clone, Default)]
+struct Story {
+    texts: std::collections::HashMap<u32, String>,
+    lists: std::collections::HashMap<i16, Vec<[i32; 3]>>,
+}
+
+/// Conversation texts (exe addresses).
+const BO_PEEP_THANKS: u32 = 0x4F03E0;
+const BO_PEEP_ASK: u32 = 0x4F036C;
+const HAMM_THANKS: u32 = 0x502834;
+const HAMM_ASK: u32 = 0x5027E0;
+const POTATO_ASK: u32 = 0x4F0ADC;
+const POTATO_THANKS: u32 = 0x4F0B60;
+const POTATO_AFTER: u32 = 0x4F0C10;
+/// Characters' slots and their camera lists.
+const BO_PEEP: (usize, i16) = (1, 0x1C);
+const HAMM: (usize, i16) = (0x1E, 0x1D);
+const POTATO: (usize, i16) = (0x1F, 0x19);
 
 /// The crib bars' creature slots and the health that means "at rest".
 const BARS: [usize; 2] = [0, 2];
@@ -73,12 +113,128 @@ impl Level1 {
         specials.scale_about(0x16, 0x15);
         world.set_mover(8, false);
         world.set_mover(14, false);
-        Level1 { door: 0, plank: 0, fan: 0, tops: (0, 0), pops: (0, 0), home, bars: [0; 2], crib: 0, crib_v: 0, sounds: Vec::new() }
+        Level1 {
+            door: 0,
+            plank: 0,
+            fan: 0,
+            tops: (0, 0),
+            pops: (0, 0),
+            home,
+            bars: [0; 2],
+            crib: 0,
+            crib_v: 0,
+            sounds: Vec::new(),
+            voices: Vec::new(),
+            slots: Vec::new(),
+            cutscene: None,
+            staging: None,
+            given: [false, false, false, true, false],
+            item: 8,
+            abilities: 0,
+            calls: [0; 2],
+            story: Story::default(),
+        }
+    }
+
+    /// The conversations' texts (from the exe) and camera lists (from level.dat).
+    pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
+        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER] {
+            let mut s = Vec::new();
+            while let Ok(b) = exe.at(va + s.len() as u32, 1) {
+                if b[0] == 0 || s.len() > 400 {
+                    break;
+                }
+                s.push(b[0]);
+            }
+            self.story.texts.insert(va, String::from_utf8_lossy(&s).into_owned());
+        }
+        for l in lists.iter().filter(|l| matches!(l.kind, 0x19 | 0x1A | 0x1C | 0x1D)) {
+            self.story.lists.insert(l.kind, l.points.clone());
+        }
+    }
+
+    /// Starts a conversation (0x4027F0) on camera list `list` with `text` (an exe address).
+    fn talk(&mut self, slot: usize, list: i16, text: u32, token: Option<usize>, facings: Option<[i32; 2]>) {
+        // Only one at a time (0x4027F0 does nothing while 0x50A1F8 is set).
+        if self.cutscene.is_some() {
+            return;
+        }
+        let points = self.story.lists.get(&list).cloned().unwrap_or_default();
+        let text = self.story.texts.get(&text).cloned().unwrap_or_default();
+        let (c, at, f) = Cutscene::new(&points, &text, token);
+        self.staging = Some((at, facings.unwrap_or(f), slot));
+        self.cutscene = Some(c);
     }
 
     /// Both crib bars are down and the crib has opened (0x52F56C set).
     pub fn crib_open(&self) -> bool {
         self.crib != 0
+    }
+
+    /// The characters of 0x417680 (Bo Peep in room 4, Hamm 0x4A1CE0 in room 3, Mr Potato
+    /// Head 0x4A2480 in room 6), after the creatures' update. `coins` is Buzz's count.
+    pub fn tick_characters(&mut self, world: &World, player: &Player, cr: &mut Creatures, coins: i32) {
+        let talking = self.cutscene.is_some();
+        let room = world.room_at(player.pos);
+        let touched = |cr: &mut Creatures, slot: usize, id: u8| {
+            cr.slots.get_mut(slot).filter(|c| c.id == id && c.flags & 0x200 != 0).map(|c| c.flags &= !0x200).is_some()
+        };
+        if room == Some(4) && touched(cr, BO_PEEP.0, 7) && cr.sheep >= 0 {
+            if cr.sheep == 5 {
+                self.voices.push(0xB4);
+                self.talk(BO_PEEP.0, BO_PEEP.1, BO_PEEP_THANKS, Some(1), None);
+                cr.sheep = -1;
+            } else {
+                self.voices.push(0xB3);
+                self.talk(BO_PEEP.0, BO_PEEP.1, BO_PEEP_ASK, None, None);
+            }
+        }
+        if room == Some(3) && let Some(h) = cr.slots.get(HAMM.0).filter(|c| c.id == 10) {
+            let pos = h.pos;
+            if !self.given[0] && h.active && !talking {
+                self.calls[0] -= 1;
+                if self.calls[0] < 0 {
+                    self.calls[0] = (pos[0] & 0xFF) * 2 + 0xF0;
+                    self.slots.push((72, 128, pos));
+                }
+            }
+            if touched(cr, HAMM.0, 10) && !self.given[0] {
+                if coins > 0x31 {
+                    self.slots.push((74, 128, pos));
+                    self.talk(HAMM.0, HAMM.1, HAMM_THANKS, Some(0), Some([0xE10 & 0xFFF, 0x6E0]));
+                } else {
+                    self.slots.push((73, 128, pos));
+                    self.talk(HAMM.0, HAMM.1, HAMM_ASK, None, Some([0xE10 & 0xFFF, 0x6E0]));
+                }
+            }
+        }
+        if room == Some(6) && let Some(m) = cr.slots.get(POTATO.0).filter(|c| c.id == 9) {
+            let pos = m.pos;
+            if m.active && !talking {
+                self.calls[1] -= 1;
+                if self.calls[1] < 0 {
+                    self.calls[1] = (pos[2] & 0xFF) * 2 + 0xF0;
+                    self.slots.push((75, 128, pos));
+                }
+            }
+            if touched(cr, POTATO.0, 9) {
+                let f = Some([0x200, 0xA00]);
+                match self.item.signum() {
+                    0 => self.talk(POTATO.0, POTATO.1, POTATO_AFTER, None, f),
+                    1 => {
+                        self.talk(POTATO.0, POTATO.1, POTATO_ASK, None, f);
+                        self.slots.push((76, 128, pos));
+                    }
+                    _ => {
+                        self.slots.push((77, 128, pos));
+                        self.talk(POTATO.0, POTATO.1, POTATO_THANKS, None, f);
+                        self.item = 0;
+                        // Level 1's gift (0x503A23): the cosmic shield.
+                        self.abilities |= 1;
+                    }
+                }
+            }
+        }
     }
 
     /// The creature parts of 0x417680, after the creatures' update.

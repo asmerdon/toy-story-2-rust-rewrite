@@ -702,6 +702,10 @@ impl Viewer {
                 let r = a as f32 / 4096.0 * std::f32::consts::TAU;
                 [r.sin(), r.cos()]
             });
+            // In a conversation Buzz stands still; jump and Square go to the speech box.
+            let talking = self.level1.as_ref().is_some_and(|l| l.cutscene.is_some());
+            let (talk_jump, talk_square) = if talking { (std::mem::take(&mut self.jump_pressed), std::mem::take(&mut self.fire_pressed)) } else { (false, false) };
+            let move_xz = if talking { [0.0; 2] } else { move_xz };
             let input = game::Input {
                 move_xz,
                 jump: std::mem::take(&mut self.jump_pressed),
@@ -778,6 +782,16 @@ impl Viewer {
             // Follow camera: orbit behind the player at chest height.
             let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
             match self.orig_cam.as_ref().filter(|_| self.use_orig_cam && player.first_person == 0) {
+                _ if self.level1.as_ref().is_some_and(|l| l.cutscene.is_some()) => {
+                    let (pos, look) = self.level1.as_ref().and_then(|l| l.cutscene.as_ref()).map(|c| c.camera()).unwrap();
+                    let p = Vec3::from(pos.map(|v| v as f32 / 32.0));
+                    let q = Vec3::from(look.map(|v| v as f32 / 32.0));
+                    self.cam.pos = game_to_world(p.to_array());
+                    let g = (q - p).normalize_or_zero();
+                    let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
+                    self.cam.yaw = w.x.atan2(-w.z);
+                    self.cam.pitch = w.y.clamp(-1.0, 1.0).asin();
+                }
                 _ if player.first_person != 0 => {
                     let e = ts2::look::FirstPerson::eye(player);
                     self.cam.pos = game_to_world(e.map(|v| v as f32 / 32.0));
@@ -865,6 +879,7 @@ impl Viewer {
                     spin_charge: player.charge,
                     laser: player.laser,
                     laser_charge: player.laser_charge,
+                    sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                 });
             }
             // Creatures (0x4086F0) near the camera.
@@ -877,11 +892,70 @@ impl Viewer {
                 for r in cr.particles.drain(..) {
                     self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);
                 }
+                for (at, t, m, spin) in cr.spawns.drain(..) {
+                    if let Some(k) = self.particles.spawn(at, t, m) {
+                        self.particles.slots[k].spin = spin;
+                    }
+                }
                 if let Some(l) = self.level1.as_mut() {
-                    for _ in 0..ticks {
+                    let coins = self.pickups.as_ref().map_or(0, |p| p.coins);
+                    for t in 0..ticks {
                         l.tick_creatures(&self.world, &mut self.specials, player, cr);
+                        l.tick_characters(&self.world, player, cr, coins);
+                        // A conversation starting: Buzz and the character take their places.
+                        if let Some((at, facing, slot)) = l.staging.take() {
+                            let g = Vec3::from(at[0].map(|v| v as f32 / 32.0));
+                            player.pos = self.world.floor_below(g.x, g.z, g.y - 600.0).map_or(g, |y| Vec3::new(g.x, y, g.z));
+                            player.vel = [0; 3];
+                            player.set_facing(facing[0]);
+                            if let Some(c) = cr.slots.get_mut(slot) {
+                                c.pos = at[1];
+                                c.angles[1] = facing[1];
+                                c.target_facing = facing[1];
+                            }
+                            if let Some(a) = self.audio.as_mut() {
+                                a.play_flat(0x1D);
+                            }
+                        }
+                        if let Some(cs) = l.cutscene.as_mut() {
+                            let evs = cs.tick(talk_jump && t == 0, talk_square && t == 0);
+                            for ev in evs {
+                                match ev {
+                                    ts2::cutscene::Event::Sound(id) => {
+                                        if let Some(a) = self.audio.as_mut() {
+                                            a.play_flat(id);
+                                        }
+                                    }
+                                    ts2::cutscene::Event::Ended(token) => {
+                                        l.cutscene = None;
+                                        if let Some(k) = token {
+                                            l.given[k] = true;
+                                            if let Some(pk) = self.pickups.as_mut() {
+                                                pk.reveal_token(k);
+                                            }
+                                        }
+                                        // The follow camera picks up behind him again.
+                                        self.orig_cam = Some(ts2::camera::Camera::new(player));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
                     cr.sounds.append(&mut l.sounds);
+                    let (voices, slots): (Vec<u16>, Vec<(u16, i32, [i32; 3])>) = (l.voices.drain(..).collect(), l.slots.drain(..).collect());
+                    if let Some(a) = self.audio.as_mut() {
+                        let listener = Vec3::from(world_to_game(self.cam.pos));
+                        let f = self.cam.forward();
+                        let g = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
+                        let (rg, fg) = (g(f.cross(Vec3::Y)).normalize_or_zero(), g(Vec3::new(f.x, 0.0, f.z)).normalize_or_zero());
+                        for id in voices {
+                            a.play(id, true, OWNER_BUZZ, Vec3::ZERO, rg, fg);
+                        }
+                        for (slot, vol, at) in slots {
+                            a.play_slot(slot, vol, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, rg, fg);
+                        }
+                    }
                 }
                 for ev in cr.events.drain(..) {
                     let ts2::creatures::Event::Died { pos, coin, centre, burst, .. } = ev;
@@ -986,6 +1060,13 @@ impl Viewer {
                                     // ignores); the running PC game is heard playing it once (user's
                                     // comparison), so only its first note plays here.
                                     self.jingles.push(Jingle { steps: a.bank.jingle(-1).iter().take(1).copied().collect(), next: 0, timer: 0, pos });
+                                }
+                                if kind == ts2::pickups::Kind::Other
+                                    && let Some(l) = self.level1.as_mut()
+                                    && l.item > 0
+                                {
+                                    l.item = -l.item;
+                                    println!("you found Mr Potato Head's missing part: take it back to him");
                                 }
                                 if kind == ts2::pickups::Kind::Token {
                                     println!("you have collected a token! (the original offers \"keep on playing / exit level\" here)");
@@ -1145,6 +1226,7 @@ impl Viewer {
                     spin_charge: p.charge,
                     laser: p.laser,
                     laser_charge: p.laser_charge,
+                    sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                 };
                 let ngn = &self.ngn;
                 let texture = |slot: i16| {
@@ -1153,7 +1235,11 @@ impl Viewer {
                     let (w, h, _) = ngn.textures[i].dimensions()?;
                     Some((i, [(w as f32).abs(), (h as f32).abs()]))
                 };
-                ts2::hud::batches(&self.hud_state.quads(&status, &self.hud_sprites), &self.hud_sprites, &texture)
+                let mut q = self.hud_state.quads(&status, &self.hud_sprites);
+                if let Some(c) = self.level1.as_ref().and_then(|l| l.cutscene.as_ref()) {
+                    q.extend(c.dialog.quads());
+                }
+                ts2::hud::batches(&q, &self.hud_sprites, &texture)
             }
             None => Vec::new(),
         };
@@ -1490,7 +1576,10 @@ fn main() {
     let level_lists = fs::read(level_path.with_extension("dat")).ok().and_then(|b| ts2::formats::leveldat::parse(&b).ok()).unwrap_or_default();
     let level_no = exe::level_number(level_path);
     let boxes = level_no.map(|lv| ts2::boxes::Boxes::new(lv, &level_lists, game_exe.as_ref(), &world, &mut specials));
-    let level1 = (level_no == Some(1)).then(|| ts2::level1::Level1::new(&world, &mut specials));
+    let mut level1 = (level_no == Some(1)).then(|| ts2::level1::Level1::new(&world, &mut specials));
+    if let (Some(l), Some(e)) = (level1.as_mut(), game_exe.as_ref()) {
+        l.set_story(e, &level_lists);
+    }
     if let Some(b) = &boxes {
         println!("{} pushable objects", b.boxes.len());
     }
