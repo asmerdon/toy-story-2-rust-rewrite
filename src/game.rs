@@ -135,6 +135,24 @@ struct ObjectInfo {
     enabled: std::cell::Cell<bool>,
     /// Moved since load (0x488510), level units.
     offset: std::cell::Cell<Vec3>,
+    /// Turned about its position (mover table +0x2C, 12-bit angles about X, Y, Z; 0x488AA0).
+    turn: std::cell::Cell<[i32; 3]>,
+}
+
+/// The rotation of 12-bit angles about X, then Y, then Z (the order `scene` draws specials
+/// with), as a row-vector matrix: p' = p · m.
+fn turn_matrix(a: [i32; 3]) -> [[f32; 3]; 3] {
+    let r = |v: i32| v as f32 / 4096.0 * std::f32::consts::TAU;
+    let ((sx, cx), (sy, cy), (sz, cz)) = (r(a[0]).sin_cos(), r(a[1]).sin_cos(), r(a[2]).sin_cos());
+    let rx = [[1.0, 0.0, 0.0], [0.0, cx, sx], [0.0, -sx, cx]];
+    let ry = [[cy, 0.0, -sy], [0.0, 1.0, 0.0], [sy, 0.0, cy]];
+    let rz = [[cz, sz, 0.0], [-sz, cz, 0.0], [0.0, 0.0, 1.0]];
+    let mul = |a: [[f32; 3]; 3], b: [[f32; 3]; 3]| std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()));
+    mul(mul(rx, ry), rz)
+}
+
+fn turn_by(m: &[[f32; 3]; 3], p: Vec3) -> Vec3 {
+    Vec3::new(p.x * m[0][0] + p.y * m[1][0] + p.z * m[2][0], p.x * m[0][1] + p.y * m[1][1] + p.z * m[2][1], p.x * m[0][2] + p.y * m[1][2] + p.z * m[2][2])
 }
 
 /// What a sweep hit.
@@ -193,12 +211,14 @@ impl World {
     pub fn from_terrain(t: &crate::formats::terrain::Terrain) -> World {
         let (mut tris, mut always, mut rooms, mut objects) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (i, o) in t.objects.iter().enumerate() {
-            // Objects flagged 0x100 start disabled (the gatherer 0x485940 skips them).
+            // Objects flagged 0x100 start disabled (the gatherer 0x485940 skips them), except
+            // movers: its loop over those only looks at the type.
             objects.push(ObjectInfo {
                 flags: o.flags,
                 link: o.linked,
-                enabled: std::cell::Cell::new(matches!(o.kind, 6..=8) && o.flags & 0x100 == 0),
+                enabled: std::cell::Cell::new(o.kind == 8 || (matches!(o.kind, 6 | 7) && o.flags & 0x100 == 0)),
                 offset: std::cell::Cell::new(Vec3::ZERO),
+                turn: std::cell::Cell::new([0; 3]),
             });
             let to = if o.flags & 0x400 != 0 {
                 &mut rooms
@@ -245,6 +265,29 @@ impl World {
         }
     }
 
+    /// 0x488AA0 / 0x487970: turn a mover to `a` (12-bit angles about X, Y, Z) about where it
+    /// was loaded; its collision turns with it.
+    pub fn turn_mover(&self, id: i32, a: [i32; 3]) {
+        if let Some(i) = self.mover(id) {
+            self.objects[i].turn.set(a);
+        }
+    }
+
+    /// Where a mover turns about (its loaded position plus any move), level units.
+    pub fn mover_pivot(&self, id: i32) -> Option<Vec3> {
+        self.mover(id).map(|i| self.mover_home[i] + self.objects[i].offset.get())
+    }
+
+    /// `p` carried by a mover turning from `from` to `to` (as 0x4896A0 moves Buzz standing on
+    /// a turning mover).
+    pub fn ride_turn(&self, id: i32, from: [i32; 3], to: [i32; 3], p: Vec3) -> Vec3 {
+        let Some(pivot) = self.mover_pivot(id) else { return p };
+        let (m0, m1) = (turn_matrix(from), turn_matrix(to));
+        // Back to the mover's own frame (the transpose undoes a rotation), then out again.
+        let t = [[m0[0][0], m0[1][0], m0[2][0]], [m0[0][1], m0[1][1], m0[2][1]], [m0[0][2], m0[1][2], m0[2][2]]];
+        pivot + turn_by(&m1, turn_by(&t, p - pivot))
+    }
+
     /// The room under `p` (0x4885C0, which works at a quarter scale): the low byte of the
     /// flags of the nearest room-map floor at or below `p` / 4, as the level script reads it
     /// (`0x54DEA0`).
@@ -278,7 +321,17 @@ impl World {
         self.always.iter().filter_map(|t| {
             let o = self.objects.get(t.obj as usize)?;
             let off = o.offset.get();
-            o.enabled.get().then(|| Tri { a: t.a + off, b: t.b + off, c: t.c + off, ..*t })
+            if !o.enabled.get() {
+                return None;
+            }
+            let a = o.turn.get();
+            if a == [0; 3] {
+                return Some(Tri { a: t.a + off, b: t.b + off, c: t.c + off, ..*t });
+            }
+            let m = turn_matrix(a);
+            let home = self.mover_home[t.obj as usize];
+            let p = |v: Vec3| home + turn_by(&m, v - home) + off;
+            Some(Tri { a: p(t.a), b: p(t.b), c: p(t.c), n: turn_by(&m, t.n), ..*t })
         })
     }
 
@@ -733,6 +786,8 @@ pub struct Player {
     last_pos: Vec3,
     /// Pushing a box (0x53C648 ≠ 0), set by the box code.
     pub pushing: bool,
+    /// 0x53C810: his vertical speed going into this tick's move (how hard he lands).
+    pub fall_speed: i32,
 }
 
 /// Idle voice lines alternate between these two sound ids, at most every 0x708 ticks (30 s).
@@ -817,6 +872,7 @@ impl Player {
             zip_lock: 0,
             last_pos: pos,
             pushing: false,
+            fall_speed: 0,
         }
     }
 
@@ -978,6 +1034,7 @@ impl Player {
     #[allow(clippy::too_many_arguments)]
     fn tick_pad_with(&mut self, world: &World, stick: [f32; 2], dpad: u8, jump_held: bool, jump_pressed: bool, stomp_pressed: bool, pre_move: &mut PreMove<'_>) {
         self.stick_pushed = stick != [0.0, 0.0];
+        self.fall_speed = self.vel[1];
         let magnitude = stick[0].hypot(stick[1]).min(1.0);
         let pushing = magnitude > 0.0;
         // Movement profile.

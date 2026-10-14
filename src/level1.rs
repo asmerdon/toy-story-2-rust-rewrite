@@ -19,9 +19,12 @@
 //!   more; with both down, the crib's barrier (mover 9) goes and specials 0x13, 0x14 and 0x1A
 //!   drop. Until then mover 9 holds, except under Buzz standing on surface 0xE.
 //!
-//! Not ported yet: the other creature parts (Bo Peep and her sheep, the RC race, Hamm's coins),
-//! the lift of room 2 (special 6 and pole 8), the spring of room 3, the tilting platform of
-//! room 5 and Mr. Potato Head's shield in room 6.
+//! - Characters (`tick_characters`): Bo Peep and her sheep (room 4), Hamm's coins (room 3),
+//!   Mr. Potato Head's ear (room 6), the RC race (room 2), the Tin Man (room 5).
+//! - Room 5: a see-saw (mover and special 0xF, 0x49EC00) tipped by where Buzz stands on it.
+//!
+//! Not ported yet: the lift of room 2 (special 6 and pole 8), the spring of room 3, Hamm's
+//! hints and the cosmic shield's use.
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
@@ -80,6 +83,10 @@ pub struct Level1 {
     pub reveals: Vec<usize>,
     /// The boss's health bar is up (HUD element 7 kept at 0x5A ticks).
     pub boss_hud: bool,
+    /// Room 5's see-saw (mover / special 0xF): its swing speed (0x52F58C) and tilt about Z
+    /// (mover table units, 0x4000 a turn).
+    tilt: i32,
+    tilt_z: i32,
     story: Story,
 }
 
@@ -160,6 +167,8 @@ impl Level1 {
             armed: false,
             reveals: Vec::new(),
             boss_hud: false,
+            tilt: 0,
+            tilt_z: 0,
             story: Story::default(),
         }
     }
@@ -355,6 +364,51 @@ impl Level1 {
         }
     }
 
+    /// 0x49EC00 (mover 0xF, special 0xF, mode 1, limits ±0x1C0, divisor 8): room 5's see-saw.
+    /// Buzz standing on it pushes the side he's on down, harder the further out he is and
+    /// the harder he lands; off it, it drifts towards its positive tilt. The swing slows by 2
+    /// a tick, the tilt changes by an eighth of it, and it bounces back at the limits with
+    /// three quarters of its speed. The special follows the mover.
+    fn see_saw(&mut self, world: &World, specials: &mut Specials, player: &mut Player) {
+        const SAW: i32 = 0xF;
+        let mut v = self.tilt;
+        let riding = player.on_floor && player.floor_mover.is_some_and(|(m, _)| m == SAW);
+        let before = [0, 0, self.tilt_z >> 2];
+        if riding {
+            let Some(p) = specials.pos_obj(SAW) else { return };
+            let b = player.pos_obj();
+            // Along the plank (its yaw is 0: x), and the distance from its pivot.
+            let along = ((b[0] - p[0]) >> 5) * 0x1000 / 0x1000;
+            let dy = (b[1] - p[1]) >> 5;
+            let d = (((dy * dy + along * along) as f64).sqrt() as i32) >> 5;
+            let push = ((player.fall_speed * d >> 9) + d) / 2;
+            v += if along > 0 { push } else { -push };
+        } else {
+            v += 4;
+        }
+        if v > 0 {
+            v = (v - 2).max(0);
+        } else if v < 0 {
+            v = (v + 2).min(0);
+        }
+        self.tilt_z += v / 8;
+        if self.tilt_z < -0x700 {
+            v = (v * 3 / 4).abs();
+            self.tilt_z = -0x700;
+        } else if self.tilt_z > 0x700 {
+            v = -(v * 3 / 4).abs();
+            self.tilt_z = 0x700;
+        }
+        self.tilt = v;
+        let a = [0, 0, self.tilt_z >> 2];
+        world.turn_mover(SAW, a);
+        specials.set_angles(SAW, a);
+        // Standing on it, Buzz turns with it.
+        if riding && a != before {
+            player.pos = world.ride_turn(SAW, before, a, player.pos);
+        }
+    }
+
     /// Room 5's Tin Man (0x417680 with the boss's routine). Coming up to his level in his zone
     /// (standing) starts the challenge (list 0x1A, "ha ha ha ha…"); when it's over the fight
     /// script runs and he chases Buzz. He's kept up at his platform's height. His bar shows
@@ -467,6 +521,10 @@ impl Level1 {
     pub fn tick(&mut self, world: &World, specials: &mut Specials, player: &mut Player, boxes: &Boxes) {
         let room = world.room_at(player.pos);
         let buzz = player.pos_obj();
+
+        if room == Some(5) {
+            self.see_saw(world, specials, player);
+        }
 
         // The basement door: box 3 going over its edge.
         if boxes.going_over(3) {
