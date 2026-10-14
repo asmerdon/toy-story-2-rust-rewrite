@@ -316,6 +316,7 @@ struct Viewer {
     collision_batch: Option<scene::Batch>,
     random_table: Option<Vec<u8>>,
     poles: Vec<ts2::formats::leveldat::Pole>,
+    ledges: (Vec<[[i32; 3]; 2]>, Vec<[[i32; 3]; 2]>),
     show_collision: bool,
     stomp_pressed: bool,
     /// Animation browsed with [ ] in play mode, shown on Buzz until 0 is pressed.
@@ -683,8 +684,15 @@ impl Viewer {
                 .iter()
                 .filter(|(k, _)| self.keys.contains(k))
                 .fold(0, |acc, (_, b)| acc | b);
-            let cam_g = Vec3::from(world_to_game(self.cam.pos));
-            let to_buzz = ts2::boxes::angle12(player.pos.x - cam_g.x, player.pos.z - cam_g.z);
+            // 0x52F3AC is the camera's ideal orbit position (+0xC), so the reference is its
+            // orbit yaw; the free camera uses its own position.
+            let to_buzz = match self.orig_cam.as_ref().filter(|_| self.use_orig_cam) {
+                Some(c) => c.yaw & 0xFFF,
+                None => {
+                    let cam_g = Vec3::from(world_to_game(self.cam.pos));
+                    ts2::boxes::angle12(player.pos.x - cam_g.x, player.pos.z - cam_g.z)
+                }
+            };
             let move_xz = game::dpad_heading(dpad, to_buzz).map_or([0.0; 2], |a| {
                 let r = a as f32 / 4096.0 * std::f32::consts::TAU;
                 [r.sin(), r.cos()]
@@ -932,7 +940,7 @@ impl Viewer {
             match (self.anim_preview, p.anim.as_ref().and_then(|a| a.pose())) {
                 // Real move table: base layer + overlay at the frame its frame list gives.
                 // Blinking while invulnerable after a hit.
-                (None, Some(_)) if p.hurt_timer > 0 && (p.hurt_timer >> 2) & 1 == 1 => {}
+                (None, Some(_)) if p.hurt_timer > 0 && p.hurt_timer < 0x44 && (p.hurt_timer >> 2) & 1 == 1 => {}
                 (None, Some(pose)) => {
                     let layer = |(ai, f): (usize, f32)| self.anims[ci].get(ai).map(|a| (a, f));
                     let c = &self.ngn.creatures[ci];
@@ -1053,6 +1061,7 @@ impl Viewer {
             player.set_random_table(r.clone());
         }
         player.set_poles(self.poles.clone());
+        player.set_ledges(self.ledges.0.clone(), self.ledges.1.clone());
         self.orig_cam = Some(ts2::camera::Camera::new(&player));
         self.hud_state.level_start();
         self.hud_last = [player.lives, player.health, self.pickups.as_ref().map_or(0, |p| p.coins)];
@@ -1310,11 +1319,11 @@ fn main() {
     // The game's random bytes (data/rand.dat, next to the levelNN folders): idle fidgets.
     let random_table = std::path::Path::new(path).parent().and_then(|d| d.parent()).and_then(|d| std::fs::read(d.join("rand.dat")).ok());
     // Poles and ropes from the level's .dat file (list 61).
-    let poles = std::fs::read(std::path::Path::new(path).with_extension("dat"))
-        .ok()
-        .and_then(|b| ts2::formats::leveldat::parse(&b).ok())
-        .map(|l| ts2::formats::leveldat::poles(&l))
-        .unwrap_or_default();
+    let dat_lists = std::fs::read(std::path::Path::new(path).with_extension("dat")).ok().and_then(|b| ts2::formats::leveldat::parse(&b).ok()).unwrap_or_default();
+    let poles = ts2::formats::leveldat::poles(&dat_lists);
+    // Ledges Buzz can grab (list 60) and zip lines (list 62).
+    let ledges = (ts2::formats::leveldat::segments(&dat_lists, ts2::formats::leveldat::LEDGES), ts2::formats::leveldat::segments(&dat_lists, ts2::formats::leveldat::ZIP_LINES));
+    println!("{} ledges, {} zip lines", ledges.0.len(), ledges.1.len());
     println!("{} poles/ropes to climb", poles.len());
     // Collision overlay (K): the terrain triangles, nudged up so they don't z-fight the floor.
     let collision_batch = terrain.as_ref().map(|t| scene::Batch {
@@ -1403,6 +1412,7 @@ fn main() {
         collision_batch,
         random_table,
         poles,
+        ledges,
         show_collision: false,
         stomp_pressed: false,
         ngn,

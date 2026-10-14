@@ -45,6 +45,7 @@ fn main() {
         let mut p = Player::new(Vec3::new(g.x, y, g.z));
         p.set_random_table(random.clone());
         p.set_poles(poles.clone());
+        p.set_ledges(leveldat::segments(&lists, leveldat::LEDGES), leveldat::segments(&lists, leveldat::ZIP_LINES));
         let mut dir = [0.0f32; 2];
         let mut air = 0;
         let mut last_floor: Option<(Vec3, f32)> = None;

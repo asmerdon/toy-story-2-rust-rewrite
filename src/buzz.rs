@@ -30,6 +30,17 @@ pub mod state {
     /// The super spin, and the dizzy spell after it (0x4011D0 from 0x53C83C).
     pub const SUPER_SPIN: u16 = 0x13;
     pub const DIZZY: u16 = 0x14;
+    /// Hurt (the first 22 ticks of a hit), dying.
+    pub const HURT: u16 = 5;
+    pub const DYING: u16 = 7;
+    /// Climbing onto a ledge after the mantle (0x435F30, 82 ticks).
+    pub const MANTLE: u16 = 9;
+    /// On a zip line (0x4359D0).
+    pub const ZIP: u16 = 0x11;
+    /// Pushing a box (0x433700).
+    pub const PUSH: u16 = 0x19;
+    /// Hanging from a grabbed ledge (0x435100).
+    pub const LEDGE: u16 = 0x1A;
     /// Stomp: hang and slam.
     pub const STOMP: u16 = 0x17;
     /// Stomp impact.
@@ -125,6 +136,12 @@ impl BuzzAnimator {
         }
         self.pos += inc as u32;
         self.settle(state)
+    }
+
+    /// Plays the current state's list again from its start (the original writes 0xFFFF to
+    /// 0x52F392, as a sharp turn's skid and a ledge grab do).
+    pub fn restart(&mut self) {
+        self.current = None;
     }
 
     /// The state whose list is playing and the current entry in it.

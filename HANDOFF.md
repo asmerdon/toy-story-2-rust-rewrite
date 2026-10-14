@@ -49,6 +49,14 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 - Pickups: collections work, coins etc. look correct. Starting lives: 5.
 - Earlier round's flicker/banister fixes, level objects, creatures, combat: not reported as broken.
 
+## User feedback, round 4 (2026-10-14), and what was done
+- Audio, HUD, laser look: user happy. Attic box works.
+- **No push animation** -> state 0x19 while pushing (Player.pushing, set by Boxes).
+- **Charging cut by the idle fidget** -> fidgets give way to idle while laser/spin/charge run (0x4011D0); the whole-body-state rule then no longer cancels them.
+- **W/S snap freezes** -> each snap restarts the skid's frame list (+0x92 = 0xFFFF), so the 26-tick skid plays in full each time. Keyboard headings are now relative to the camera's orbit yaw (0x52F3AC is its ideal position).
+- **Mantle missing** -> 0x435F30 ported (jump at a ledge whose top passes your head height: put on top, 82-tick climb animation, state 9). Also the ledge grab 0x435100 (level.dat list 60, 7 in level 1, on the basement walls 2750 up) and zip lines 0x4359D0 (list 62, 2 in level 1). Tests: `mantle_climbs_onto_a_high_ledge`, `level_1_ledge_is_grabbed_and_climbed`, `level_1_zip_line_is_ridden`.
+- Hurt (state 5) and dying (7) animations now play.
+
 ## User feedback, round 3 (2026-10-14), and what was done
 1. **Pickup sound plays several times; push scrape awful.** Scrape: sounds with bit 15 in their slot word are owned loops (0x4A3980): now one looping buffer per (slot, owner), stopped 16 ticks after the owner last played it. Pickup: the exe's jingle −1 plays PICKUP5 six times (PS1 pitches unused on PC) yet the user hears it once in the running game; now only its first note plays (deviation, noted in the viewer). Ask again.
 2. **Stuck pushing the attic box (box 6, path with a 90° corner).** The original lets go when the stick points more than 90° from the push (tail of 0x4346C0); ported, plus the grab compares the facing, and facing is held to the push angle. Test `attic_box_goes_round_its_corner`.

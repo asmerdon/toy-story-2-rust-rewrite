@@ -233,6 +233,16 @@ pub const POLES: i16 = 61;
 
 /// Pairs of points (bottom, top). A point whose |x| = |y| = |z| = v before a pair is a marker
 /// setting the kind (v / 50) for the following poles.
+/// Point pairs of list `kind` in object units: ledges Buzz can grab (list 60, 0x435100) and zip
+/// lines (list 62, 0x4359D0).
+pub fn segments(lists: &[PointList], kind: i16) -> Vec<[[i32; 3]; 2]> {
+    let Some(list) = lists.iter().find(|l| l.kind == kind) else { return Vec::new() };
+    list.points.chunks_exact(2).map(|p| [p[0].map(|v| v * 32), p[1].map(|v| v * 32)]).collect()
+}
+
+pub const LEDGES: i16 = 60;
+pub const ZIP_LINES: i16 = 62;
+
 pub fn poles(lists: &[PointList]) -> Vec<Pole> {
     let Some(list) = lists.iter().find(|l| l.kind == POLES) else { return Vec::new() };
     let p = &list.points;

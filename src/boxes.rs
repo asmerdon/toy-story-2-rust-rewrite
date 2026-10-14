@@ -129,6 +129,11 @@ impl Boxes {
     /// 0x433700, inside Buzz's tick just before he moves.
     pub fn tick(&mut self, player: &mut Player, world: &World, specials: &mut Specials) {
         self.voice_timer = (self.voice_timer - 1).max(0);
+        self.tick_inner(player, world, specials);
+        player.pushing = self.pushing != 0;
+    }
+
+    fn tick_inner(&mut self, player: &mut Player, world: &World, specials: &mut Specials) {
         // Pick a box to push: on the floor, pushing the stick, touching a box's side.
         if !player.stick_pushed || player.busy() {
             self.pushing = 0;

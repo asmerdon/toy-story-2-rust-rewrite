@@ -76,6 +76,11 @@ const STOMP_HANG: i32 = 0xE;
 const STOMP_RECOVERY: i32 = -0x28;
 
 /// The original's sine table (0x4FE788 holds round(16384 · sin)), as used: shifted down to 4.12.
+/// The sine table at full scale (0x4FE788: round(16384 · sin)).
+fn sin14(a: i32) -> i32 {
+    ((a & 0xFFF) as f64 / 4096.0 * std::f64::consts::TAU).sin().mul_add(16384.0, 0.0).round() as i32
+}
+
 fn sin12(a: i32) -> i32 {
     let t = (a & 0xFFF) as f64 * std::f64::consts::TAU / 4096.0;
     ((16384.0 * t.sin()).round() as i32) >> 2
@@ -340,6 +345,28 @@ impl World {
     /// point floor query (0x486280 / 0x486520).
     pub fn floor_below(&self, x: f32, z: f32, from_y: f32) -> Option<f32> {
         self.floor_below_obj(x, z, from_y).map(|(y, _)| y)
+    }
+
+    /// 0x486280 / 0x486520: the nearest floor above (x, y, z) within 2048 units, else the
+    /// nearest at or below it; with the floor's normal y (−1 flat).
+    pub fn floor_near(&self, x: f32, z: f32, y: f32) -> Option<(f32, f32)> {
+        let lo = Vec3::new(x, f32::MIN, z);
+        let hi = Vec3::new(x, f32::MAX, z);
+        let (mut above, mut below): (Option<(f32, f32)>, Option<(f32, f32)>) = (None, None);
+        for t in self.candidates(lo, hi) {
+            if t.n.y > FLOOR_NY {
+                continue;
+            }
+            let Some(h) = height_on(&t, x, z) else { continue };
+            if h < y && h > y - 2048.0 {
+                if above.is_none_or(|(b, _)| h > b) {
+                    above = Some((h, t.n.y));
+                }
+            } else if h >= y && below.is_none_or(|(b, _)| h < b) {
+                below = Some((h, t.n.y));
+            }
+        }
+        above.or(below)
     }
 
     /// As `floor_below`, with the mover id (link − 1) of the floor, if it belongs to one.
@@ -666,6 +693,30 @@ pub struct Player {
     pole: usize,
     /// Ticks before a jump can take Buzz off a pole he just grabbed (0x53C658).
     grab_lock: i32,
+    /// Ledges (level.dat list 60) and zip lines (list 62), object units.
+    ledges: Vec<[[i32; 3]; 2]>,
+    zips: Vec<[[i32; 3]; 2]>,
+    /// 0x53C66C: ledge grab timer (0x45 down; above 0xF hanging, at 0xF the climb), the point
+    /// he hangs from (0x53C5F0) and the facing he turns to (0x53C654).
+    pub ledge: i32,
+    ledge_at: [i32; 3],
+    ledge_facing: i32,
+    /// 0x53C660: climbing onto a ledge after the mantle (0x52 down).
+    pub mantle: i32,
+    /// 0x53C618: zip line state (1 dropping onto it, 2 riding), its index (0x53C610), speed or
+    /// height (0x53C604), direction (0x53C638, 4096 = 1), length and position along it
+    /// (0x53C5D8 / 0x53C614), and the re-grab lock (0x53C600).
+    pub zip: i32,
+    zip_idx: usize,
+    zip_v: i32,
+    zip_dir: [i32; 3],
+    zip_len: i32,
+    zip_at: i32,
+    zip_lock: i32,
+    /// Feet before the last move (+0x5C).
+    last_pos: Vec3,
+    /// Pushing a box (0x53C648 ≠ 0), set by the box code.
+    pub pushing: bool,
 }
 
 /// Idle voice lines alternate between these two sound ids, at most every 0x708 ticks (30 s).
@@ -731,7 +782,28 @@ impl Player {
             climb: 0,
             pole: 0,
             grab_lock: 0,
+            ledges: Vec::new(),
+            zips: Vec::new(),
+            ledge: 0,
+            ledge_at: [0; 3],
+            ledge_facing: 0,
+            mantle: 0,
+            zip: 0,
+            zip_idx: 0,
+            zip_v: 0,
+            zip_dir: [0; 3],
+            zip_len: 0,
+            zip_at: 0,
+            zip_lock: 0,
+            last_pos: pos,
+            pushing: false,
         }
+    }
+
+    /// Gives the player the level's ledges and zip lines (`leveldat::segments`, lists 60 / 62).
+    pub fn set_ledges(&mut self, ledges: Vec<[[i32; 3]; 2]>, zips: Vec<[[i32; 3]; 2]>) {
+        self.ledges = ledges;
+        self.zips = zips;
     }
 
     /// Gives the player the level's poles and ropes (`leveldat::poles`).
@@ -915,11 +987,32 @@ impl Player {
         if self.dying > 0 {
             self.dying -= 1;
         }
-        let climb = self.climb_tick(dpad, stick, jump_pressed);
+        // Movement modes in the original's order (0x436220): zip line, ledge, pole; each
+        // returns 2 (it moved Buzz itself) or 1 (steer and accelerate, no gravity this tick).
+        let mut mode = self.zip_tick(world, jump_pressed, jump_held);
+        let mut steer = mode == 1;
+        if mode == 0 {
+            mode = self.ledge_tick(jump_held);
+            steer = mode == 1;
+        }
+        let climb = if mode == 0 { self.climb_tick(dpad, stick, jump_pressed) } else { mode };
+        let stomp = if climb == 0 { stomp | self.mantle_tick(world) } else { stomp };
         match if climb != 0 { 0 } else { stomp } {
-            // On a pole: no gravity or ground movement this tick.
+            // On a pole, a ledge or a zip line: no gravity or ground movement this tick.
             _ if climb == 2 => {}
-            // Just let go: steer and accelerate, no airborne step this tick.
+            // Off a ledge or a zip line: steer with the stick, accelerate, no gravity.
+            _ if climb == 1 && steer => {
+                let mut max = MAX_SPEED;
+                if pushing {
+                    let angle = (stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32;
+                    max = (max * (magnitude * 16384.0) as i32) >> 14;
+                    self.turn(Some(angle & 0xFFF));
+                } else {
+                    self.turn(None);
+                }
+                self.accelerate(side_decel, friction, max, pushing);
+            }
+            // Just let go of a pole: steer and accelerate, no airborne step this tick.
             _ if climb == 1 => {
                 let max = MAX_SPEED;
                 self.turn(None);
@@ -958,6 +1051,7 @@ impl Player {
             self.vel[2] = 0;
         }
         pre_move(self, world);
+        self.last_pos = self.pos;
         self.move_and_collide(world);
 
         if self.on_floor {
@@ -1274,6 +1368,10 @@ impl Player {
             self.tap_start = self.target;
             if self.state_bits() & 0xF_F481 == 1 {
                 self.skid = SKID_TICKS;
+                // +0x92 = 0xFFFF: the skid plays again from its first frame.
+                if let Some(a) = self.anim.as_mut() {
+                    a.restart();
+                }
                 self.sound(0x12);
             }
         }
@@ -1429,15 +1527,19 @@ impl Player {
     }
 
     /// The state bits 0x436220 gathers at 0x53C828 each tick, as far as they are ported: 1 on
-    /// the ground, 2 super spin, 0x10 climbing, 0x20 long fall or its landing, 0x40 stomping,
-    /// 0x80 the laser.
+    /// the ground, 2 super spin, 4 mantle, 8 zip line, 0x10 climbing, 0x20 long fall or its
+    /// landing, 0x40 stomping, 0x80 the laser, 0x200 pushing, 0x400 hanging from a ledge.
     pub fn state_bits(&self) -> u32 {
         let mut f = (self.coyote != 0) as u32;
         f |= if self.charge < 0 { 2 } else { 0 };
+        f |= if self.mantle != 0 { 4 } else { 0 };
+        f |= if self.zip != 0 { 8 } else { 0 };
         f |= if self.climb > 0 { 0x10 } else { 0 };
         f |= if self.fall_timer < 0 || self.fall_timer == FALL_PANIC { 0x20 } else { 0 };
         f |= if self.stomp != 0 { 0x40 } else { 0 };
         f |= if self.laser != 0 { 0x80 } else { 0 };
+        f |= if self.pushing { 0x200 } else { 0 };
+        f |= if self.ledge > 0xF { 0x400 } else { 0 };
         f
     }
 
@@ -1663,6 +1765,10 @@ impl Player {
                     } else if self.idle_sub == state::IDLE {
                         self.roll_fidget();
                     }
+                    // No fidgeting while the laser, spin or charge is going (0x4011D0).
+                    if self.idle_sub >= state::FIDGET && (self.laser > 0 || self.charge != 0 || self.spin != 0) {
+                        self.idle_sub = state::IDLE;
+                    }
                     self.state = self.idle_sub;
                 }
             } else {
@@ -1673,14 +1779,15 @@ impl Player {
                 self.state = state::SKID;
             }
         }
-        if self.stomp > 0 {
-            self.state = state::STOMP;
+        // The overrides, in 0x4011D0's order.
+        if self.ledge != 0 && self.state != state::DOUBLE_JUMP {
+            self.state = state::LEDGE;
         }
-        if self.stomp < -STOMP_HANG {
-            self.state = state::STOMP_LAND;
+        if self.pushing {
+            self.state = state::PUSH;
         }
-        if self.fall_timer < 0 {
-            self.state = state::FALL_RECOVER;
+        if self.zip == 2 {
+            self.state = state::ZIP;
         }
         if self.charge < 0 {
             self.state = if self.super_spinning() { state::SUPER_SPIN } else { state::DIZZY };
@@ -1694,6 +1801,252 @@ impl Player {
                 state::CLIMB_HANG
             };
         }
+        if self.mantle != 0 {
+            self.state = state::MANTLE;
+        }
+        if self.stomp > 0 {
+            self.state = state::STOMP;
+        }
+        if self.stomp < -STOMP_HANG {
+            self.state = state::STOMP_LAND;
+        }
+        if self.fall_timer < 0 {
+            self.state = state::FALL_RECOVER;
+        }
+        if self.hurt_timer >= 0x44 {
+            self.state = state::HURT;
+        }
+        if self.dying > 0 {
+            self.state = state::DYING;
+        }
+    }
+
+    /// 0x435F30, the mantle: falling, with nothing else going on and the ground far below
+    /// (over 256 units), when the point 432 units above his feet and 171 ahead passes a flat
+    /// floor's height this tick, and there is head room above him and room on the ledge (sphere
+    /// sweeps), Buzz is put on the ledge (sound 0x17) and climbs up for 82 ticks (state 9),
+    /// turning to face the wall. Returns 7 (no motion) while climbing.
+    fn mantle_tick(&mut self, world: &World) -> i32 {
+        if self.vel[1] > 0 && self.state_bits() & 0xF_FF7F == 0 {
+            let feet = self.pos_obj();
+            let ground = world.floor_below(self.pos.x, self.pos.z, self.pos.y);
+            if ground.is_some_and(|g| (g * 32.0) as i32 - feet[1] > 0x2000) {
+                let (ax, az) = (sin14(self.facing) / 3, sin14(self.facing + 0x400) / 3);
+                let p = Vec3::new((feet[0] + ax) as f32 / 32.0, (feet[1] - 0x3600) as f32 / 32.0, (feet[2] + az) as f32 / 32.0);
+                if let Some((f, ny)) = world.floor_near(p.x, p.z, p.y) {
+                    let top = (f * 32.0) as i32 - 200;
+                    let last = (self.last_pos.y * 32.0).round() as i32;
+                    if ny < -15000.0 / 16384.0 && top < feet[1] - 0x3600 && last - 0x3600 <= top {
+                        let base = Vec3::new((feet[0] - ax / 4) as f32 / 32.0, 0.0, (feet[2] - az / 4) as f32 / 32.0);
+                        let up = world.sweep(Vec3::new(base.x, self.pos.y, base.z), Vec3::new(0.0, (top - feet[1]) as f32 / 32.0, 0.0), BODY_RADIUS);
+                        let across = Vec3::new((ax + ax / 3) as f32 / 32.0, 0.0, (az + az / 3) as f32 / 32.0);
+                        let room = world.sweep(Vec3::new(base.x, (f * 32.0 - 0x1838 as f32) / 32.0, base.z), across, BODY_RADIUS);
+                        if up.is_none() && room.is_none() {
+                            self.sound(0x17);
+                            self.pos = Vec3::new((feet[0] + ax) as f32 / 32.0, top as f32 / 32.0, (feet[2] + az) as f32 / 32.0);
+                            self.mantle = 0x52;
+                            if let Some(h) = world.sweep(Vec3::new(base.x, top as f32 / 32.0, base.z), across, BODY_RADIUS) {
+                                self.target = (crate::boxes::angle12(h.normal.x, h.normal.z) - 0x800) & 0xFFF;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if self.mantle != 0 {
+            let mut d = (self.facing - self.target) & 0xFFF;
+            if d > 0x800 {
+                d -= 0x1000;
+            }
+            self.facing = (self.facing - d / 16) & 0xFFF;
+            self.mantle = (self.mantle - 1).max(0);
+            return 7;
+        }
+        0
+    }
+
+    /// 0x435100: a ledge (list 60). Up to 512 units below one and within 64 of it, with
+    /// nothing else going on, Buzz grabs it (sound 0x1B, state 0x1A) and for 53 ticks eases to
+    /// hanging 512 below it, turning to face it (returns 2); then he pulls himself up (vy
+    /// −0x600, a push along his facing, voice 0x19; returns 1) and it runs out over 16 ticks.
+    fn ledge_tick(&mut self, jump_held: bool) -> i32 {
+        if self.ledges.is_empty() {
+            return 0;
+        }
+        if self.state_bits() & 0xF_FB7E != 0 {
+            self.ledge = 0;
+            return 0;
+        }
+        let p = self.pos_obj();
+        if self.ledge == 0 {
+            for &[a, b] in &self.ledges {
+                let dy = p[1] - a[1];
+                if !(dy > 0 && dy < 0x4000) {
+                    continue;
+                }
+                let (dx, dz) = ((b[0] - a[0]) >> 5, (b[2] - a[2]) >> 5);
+                let len = ((dx as f64).hypot(dz as f64)).max(1.0);
+                let u = [(dx as f64 / len * 4096.0) as i32, (dz as f64 / len * 4096.0) as i32];
+                let (rx, rz) = ((p[0] - a[0]) >> 5, (p[2] - a[2]) >> 5);
+                let t = (rz * u[1] + rx * u[0]) >> 12;
+                if t <= 0 || t > (u[1] * dz + u[0] * dx) >> 12 {
+                    continue;
+                }
+                let (ox, oz) = (rx - (t * u[0] >> 12), rz - (t * u[1] >> 12));
+                if ox * ox + oz * oz >= 0x1000 {
+                    continue;
+                }
+                self.sound(0x1B);
+                self.ledge = 0x45;
+                if let Some(a) = self.anim.as_mut() {
+                    a.restart();
+                }
+                self.ledge_at = [(t * u[0] >> 7) + a[0], a[1] + 0x4000, (t * u[1] >> 7) + a[2]];
+                self.ledge_facing = (crate::boxes::angle12(u[0] as f32, u[1] as f32) + 0x400) & 0xFFF;
+                if ((self.ledge_facing - self.facing) + 0x400) & 0xFFF > 0x800 {
+                    self.ledge_facing = (self.ledge_facing - 0x800) & 0xFFF;
+                }
+                break;
+            }
+            if self.ledge == 0 {
+                return 0;
+            }
+        }
+        let mut out = 0;
+        let before = self.ledge;
+        self.ledge -= 1;
+        if before > 0xF && self.ledge < 0x10 {
+            // Pull up.
+            self.jump_start = None;
+            self.vel[1] = -0x600;
+            self.vel[0] = sin14(self.facing) >> 1;
+            self.vel[2] = sin14(self.facing + 0x400) >> 1;
+            if !jump_held {
+                self.jump = JumpPhase::Released;
+            }
+            self.sounds.push(Sound { id: 0x19, voice: true });
+            out = 1;
+        }
+        if self.ledge >= 0 {
+            if self.ledge < 0x10 {
+                return out;
+            }
+            let at = self.ledge_at;
+            let q = |v: i32, to: i32| v - ((v - to) >> 4);
+            let np = [q(p[0], at[0]), q(p[1], at[1]), q(p[2], at[2])];
+            self.pos = Vec3::from(np.map(|v| v as f32 / 32.0));
+            self.vel = [0; 3];
+            let mut d = (self.facing - self.ledge_facing) & 0xFFF;
+            if d > 0x7FF {
+                d -= 0x1000;
+            }
+            self.facing = (self.facing - d / 16) & 0xFFF;
+            self.target = self.facing;
+            return 2;
+        }
+        if self.state == state::LEDGE {
+            self.state = state::FALL;
+        }
+        self.ledge = 0;
+        out
+    }
+
+    /// 0x4359D0: zip lines (list 62). Falling with nothing else going on, below a line by
+    /// 0–624 units and within 90 of it (and over 200 from its end), Buzz is held under it until
+    /// he drops to 496 below, then rides it (sound 0x23, state 0x11), speeding up by 1 a tick to
+    /// 0x30, turning along it (returns 2). At its end or on a jump press (not in the first 10
+    /// ticks) he lets go with vy −0x5C0 and his speed along his facing (returns 1); 30 ticks
+    /// pass before the next grab.
+    fn zip_tick(&mut self, _world: &World, jump_pressed: bool, jump_held: bool) -> i32 {
+        if self.zips.is_empty() {
+            return 0;
+        }
+        self.zip_lock = (self.zip_lock - 1).max(0);
+        let p = self.pos_obj();
+        if self.state_bits() & 0xF_FF7F == 0 && self.zip_lock == 0 {
+            for (k, &[a, b]) in self.zips.iter().enumerate() {
+                let within = |v: i32, lo: i32, hi: i32, pad_lo: i32, pad_hi: i32| {
+                    let (l, h) = (lo.min(hi), lo.max(hi));
+                    v >= l - pad_lo && v <= h + pad_hi
+                };
+                if !within(p[0], a[0], b[0], 0x800, 0x800) || !within(p[2], a[2], b[2], 0x800, 0x800) || !within(p[1], a[1], b[1], 0x1000, 0x3E00) {
+                    continue;
+                }
+                let (dx, dy, dz) = ((b[0] - a[0]) >> 5, b[1] - a[1], (b[2] - a[2]) >> 5);
+                let (rx, rz) = ((p[0] - a[0]) >> 5, (p[2] - a[2]) >> 5);
+                let (r, d) = if rx.abs() < rz.abs() { (rz, dz) } else { (rx, dx) };
+                if d == 0 {
+                    continue;
+                }
+                let wy = r * (dy >> 5) / d;
+                let ox = ((a[0] - p[0]) >> 5) + r * dx / d;
+                let oz = ((a[2] - p[2]) >> 5) + r * dz / d;
+                let below = (wy + 0x1F0) * 0x20 - p[1] + a[1];
+                if ox * ox + oz * oz < 0x2000 && below > -0x1000 && below < 0x3E00 {
+                    let v = [dx as f64, (dy >> 5) as f64, dz as f64];
+                    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1.0);
+                    let len = n as i32;
+                    let at = ((r as f64 / d as f64) * n) as i32;
+                    if len - at > 199 {
+                        self.zip = 1;
+                        self.zip_idx = k;
+                        self.zip_v = wy * 0x20 + a[1];
+                        self.zip_dir = v.map(|c| (c / n * 4096.0) as i32);
+                        self.zip_len = len;
+                        self.zip_at = at;
+                        break;
+                    }
+                }
+            }
+        }
+        if self.zip == 1 {
+            if (self.zip_v - p[1]) + 0x3E00 < 0 {
+                self.zip = 2;
+                self.zip_v = 0;
+                self.grab_lock = 10;
+            } else {
+                self.vel[0] = 0;
+                self.vel[2] = 0;
+                return 0;
+            }
+        }
+        if self.zip == 2 {
+            self.sound(0x23);
+            let [a, _] = self.zips[self.zip_idx];
+            self.zip_v = (self.zip_v + 1).min(0x30);
+            let np = [
+                (self.zip_at * self.zip_dir[0] >> 7) + a[0],
+                (self.zip_at * self.zip_dir[1] >> 7) + 0x3E00 + a[1],
+                (self.zip_at * self.zip_dir[2] >> 7) + a[2],
+            ];
+            self.pos = Vec3::from(np.map(|v| v as f32 / 32.0));
+            self.vel = [0; 3];
+            let mut d = (self.facing - crate::boxes::angle12(self.zip_dir[0] as f32, self.zip_dir[2] as f32)) & 0xFFF;
+            if d > 0x7FF {
+                d -= 0x1000;
+            }
+            self.facing = (self.facing - (d >> 3) / 2) & 0xFFF;
+            self.target = self.facing;
+            self.zip_at += self.zip_v;
+            if self.zip_at < self.zip_len && (!jump_pressed || self.grab_lock != 0) {
+                return 2;
+            }
+            self.zip = 0;
+            self.zip_lock = 0x1E;
+            self.vel[0] = (sin14(self.facing) >> 5) * self.zip_v;
+            self.vel[2] = (sin14(self.facing + 0x400) >> 5) * self.zip_v;
+            self.vel[1] = -0x5C0;
+            self.jump = JumpPhase::Holding;
+            self.jump_start = None;
+            self.on_floor = false;
+            self.coyote = 0;
+            self.state = state::FALL;
+            if jump_held {
+                self.sounds.push(Sound { id: 0x19, voice: true });
+            }
+            return 1;
+        }
+        0
     }
 }
 
@@ -1756,6 +2109,38 @@ mod tests {
         q.update(&w, input(false, false), 1.0 / 60.0);
         assert_eq!(q.charge, 0);
         assert!(q.spin > 0);
+    }
+
+    /// A floor at 0 and a block from x = 1000 whose top is 900 up.
+    fn ledge_world(top: f32) -> World {
+        let q = |a: Vec3, b: Vec3, c: Vec3, d: Vec3| [[a, b, c], [a, c, d]];
+        let mut tris = Vec::new();
+        tris.extend(q(Vec3::new(-3000., 0., -3000.), Vec3::new(1000., 0., -3000.), Vec3::new(1000., 0., 3000.), Vec3::new(-3000., 0., 3000.)));
+        tris.extend(q(Vec3::new(1000., 0., -3000.), Vec3::new(1000., -top, -3000.), Vec3::new(1000., -top, 3000.), Vec3::new(1000., 0., 3000.)));
+        tris.extend(q(Vec3::new(1000., -top, -3000.), Vec3::new(4000., -top, -3000.), Vec3::new(4000., -top, 3000.), Vec3::new(1000., -top, 3000.)));
+        World::from_triangles(tris)
+    }
+
+    /// Jumping up against a high ledge, Buzz's hands catch its top on the way down: he is put
+    /// on it and climbs up (0x435F30); a low one he just lands on.
+    #[test]
+    fn mantle_climbs_onto_a_high_ledge() {
+        let w = ledge_world(800.0);
+        let mut p = Player::new(Vec3::new(800.0, 0.0, 0.0));
+        for _ in 0..10 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        p.set_facing(0x400);
+        let (mut caught, mut peak) = (false, 0.0f32);
+        for i in 0..200 {
+            let jump = (i < 12) || (30..42).contains(&i);
+            p.update(&w, Input { move_xz: [1.0, 0.0], jump: i == 0 || i == 30, jump_held: jump, ..Default::default() }, 1.0 / 60.0);
+            caught |= p.mantle > 0;
+            peak = peak.min(p.pos.y);
+        }
+        eprintln!("peak {peak}, end {:?}, caught {caught}", p.pos);
+        assert!(caught, "no mantle (peak {peak})");
+        assert!((p.pos.y + 800.0).abs() < 20.0 && p.pos.x > 1000.0, "not on the ledge: {:?}", p.pos);
     }
 
     #[test]

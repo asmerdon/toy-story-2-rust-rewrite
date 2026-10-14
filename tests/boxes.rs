@@ -98,3 +98,72 @@ fn attic_box_goes_round_its_corner() {
     eprintln!("after pushing −Z: box {:?}, Buzz {:?}", end, p.pos);
     assert!(end.z < corner.z - 1000.0, "box didn't go round the corner");
 }
+
+/// Level 1's ledges (level.dat list 60, 2750 units up the basement walls): falling just below
+/// one, Buzz grabs it (0x435100), hangs 512 below it for 53 ticks without moving, then pulls
+/// himself up (vy -0x600).
+#[test]
+fn level_1_ledge_is_grabbed_and_climbed() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let dir = game.join("data/level01");
+    let t = terrain::parse(&fs::read(dir.join("TERRAIN.ALL")).unwrap()).unwrap();
+    let lists = leveldat::parse(&fs::read(dir.join("level.dat")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let ledges = leveldat::segments(&lists, leveldat::LEDGES);
+    assert_eq!(ledges.len(), 7);
+    let mut climbed = 0;
+    for (k, [a, b]) in ledges.iter().enumerate() {
+        let mid = Vec3::new((a[0] + b[0]) as f32 / 64.0, a[1] as f32 / 32.0, (a[2] + b[2]) as f32 / 64.0);
+        let along = Vec3::new((b[0] - a[0]) as f32, 0.0, (b[2] - a[2]) as f32).normalize();
+        for side in [1.0f32, -1.0] {
+            let n = Vec3::new(-along.z, 0.0, along.x) * side;
+            let mut p = Player::new(mid + n * 40.0 + Vec3::Y * 300.0);
+            p.set_ledges(ledges.clone(), Vec::new());
+            p.set_facing(ts2::boxes::angle12(-n.x, -n.z));
+            let (mut grabbed, mut hung, mut pulled) = (false, 0, false);
+            for _ in 0..150 {
+                p.update(&world, ts2::game::Input::default(), 1.0 / 60.0);
+                grabbed |= p.ledge > 0;
+                if p.ledge > 0x10 && p.vel == [0; 3] && p.pos.y > mid.y + 300.0 && p.pos.y < mid.y + 513.0 {
+                    hung += 1;
+                }
+                pulled |= p.ledge > 0 && p.ledge < 0x10 && p.vel[1] < 0;
+            }
+            eprintln!("ledge {k} side {side}: grabbed {grabbed}, hung {hung} ticks, pulled up {pulled}");
+            climbed += (grabbed && hung > 10 && pulled) as usize;
+        }
+    }
+    assert_eq!(climbed, 14, "only {climbed} climbs");
+}
+
+/// Level 1's zip lines (list 62): dropping onto one near its top end, Buzz is caught under
+/// it, rides it down, speeding up, and lets go at the far end with an upward kick.
+#[test]
+fn level_1_zip_line_is_ridden() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let dir = game.join("data/level01");
+    let t = terrain::parse(&fs::read(dir.join("TERRAIN.ALL")).unwrap()).unwrap();
+    let lists = leveldat::parse(&fs::read(dir.join("level.dat")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let zips = leveldat::segments(&lists, leveldat::ZIP_LINES);
+    assert_eq!(zips.len(), 2);
+    for (k, [a, b]) in zips.iter().enumerate() {
+        let (a, b) = (Vec3::from(a.map(|v| v as f32 / 32.0)), Vec3::from(b.map(|v| v as f32 / 32.0)));
+        let start = a + (b - a) * 0.1 + Vec3::Y * 200.0;
+        let mut p = Player::new(start);
+        p.set_ledges(Vec::new(), leveldat::segments(&lists, leveldat::ZIP_LINES));
+        let (mut rode, mut let_go) = (0, false);
+        for _ in 0..600 {
+            let before = p.zip;
+            p.update(&world, ts2::game::Input::default(), 1.0 / 60.0);
+            rode += (p.zip == 2) as usize;
+            let_go |= before == 2 && p.zip == 0 && p.vel[1] < 0;
+            if let_go {
+                break;
+            }
+        }
+        let end = (p.pos - b).length();
+        eprintln!("zip {k}: rode {rode} ticks, let go {let_go}, {end:.0} from its end");
+        assert!(rode > 20 && let_go && end < 800.0, "zip line {k} not ridden");
+    }
+}
