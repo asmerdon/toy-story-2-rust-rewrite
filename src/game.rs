@@ -682,6 +682,9 @@ pub struct Player {
     fire_held: bool,
     /// Shots fired since the caller last drained this.
     pub shots: Vec<Shot>,
+    /// Particles to make (position in object units, type, spawn mode, angle), drained by the
+    /// caller: the spin's rings (0x434EB0).
+    pub effects: Vec<([i32; 3], u8, usize, i32)>,
     /// Ticks until Buzz may say an idle line again (0x50A0BC) and the last line (0x50A0B0).
     voice_timer: i32,
     last_voice: u16,
@@ -776,6 +779,7 @@ impl Player {
             fire_latch: false,
             fire_held: false,
             shots: Vec::new(),
+            effects: Vec::new(),
             voice_timer: 0,
             last_voice: 0,
             poles: Vec::new(),
@@ -1498,6 +1502,11 @@ impl Player {
     fn spin_tick(&mut self, pressed: bool) {
         if self.spin > 0 {
             self.spin -= 1;
+            // Rings rising round him (types 0x16/0x17), turned by the tick.
+            if self.spin > 0x14 {
+                let r = self.next_random().unwrap_or(0);
+                self.effects.push((self.pos_obj(), 0x16 + (r & 1), 2, ((-self.spin) & 0xF) << 7));
+            }
         }
         if pressed && self.coyote != 0 && !self.busy() && self.charge == 0 && self.spin == 0 && self.skid == 0 {
             self.spin = 0x30;
@@ -1517,6 +1526,9 @@ impl Player {
             self.charge += 1;
             if self.charge < SUPER_SPIN_END {
                 self.sound(0x26);
+                let r = self.next_random().unwrap_or(0);
+                let p = self.pos_obj();
+                self.effects.push(([p[0], p[1] - 0x3000, p[2]], 0x14 + (r & 1), 2, ((-self.charge) & 0xF) * 0xC0));
             } else if was_spinning {
                 self.sound(0x18);
             }

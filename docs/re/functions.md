@@ -274,3 +274,15 @@ Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid
 | 0x4B9100 | `QueueQuad(corners[4], uv0, uv1, …)` ✔ | Corner UVs (u0, v1), (u0, v0), (u1, v1), (u1, v0): for ribbons u runs along the beam (0x44E1A0 walks from the back end, first segment cell 2) |
 | 0x4346C0 (snap) | skid restart ✔ | A snap with the skid also writes 0xFFFF to Buzz +0x92 (0x52F392), so the skid's frame list (state 0x12: 13 frames at 0.5/tick) plays again from its start on every reversal |
 | 0x4011D0 (states) | overrides ✔ | After the ground/air choice, in order: ledge 0x1A (unless state 8), push 0x19, zip 0x11, …, super spin 0x13 / dizzy 0x14, climb 0xE–0x10, mantle 9, stomp 0x17 / 0x18, long-fall landing 0xD, hurt 5 (first 22 ticks of a hit, blinking after), dying 7. Fidgets (0x1C/0x1D) give way to idle while the laser, spin or charge is going |
+
+## Particles (ported: `src/particles.rs`)
+
+| Address | Name | Notes |
+|---|---|---|
+| 0x40FDF0 | `SpawnParticle(x, y, z, type, mode)` ✔ | Mode table 0x4EC948 (0x18 bytes): u32 nibbles (vx 12, vy 8, vz 4, gravity 0) picking a randomisation of the value that follows (1: ((r&v) − v/2)·8, 2: (r&v)·8, 3: −(r&v)·8, 4/5: ± (v >> 4 & 0xFF0), 6: ((r&v) − v/2)·16), then i16 angle and spin |
+| 0x40FAE0 | `CreateParticle(pos, vel, gravity, angle, spin, type)` ✔ | Not made beyond 6400 units of the camera (10240 for types 0x37/0x43/0x50); slot round-robin, else the least life. Type table 0x4EC160 (16 bytes): sprite, frame period (char, negative random), life, frames, death action, size w/h, flags, kind, rgb. Velocity / 2, gravity / 4, life × 2, period × 2; flags |= 0x200 |
+| 0x410F40 | `UpdateParticles` ✔ (most kinds) | Life −1, vy += gravity, frames, spin; flag 1 ends on the floor (0x486280); beyond 10240 of the camera or with flags & 0x300 = 0 it ends with no death action; then the kind (+0x2F): sizes growing / shrinking by the period byte, 0xC / 0xD riding up Buzz (spin rings), 0x19 / 0x1C bouncing (sounds 0x1F / 0x68), 4 / 8 / 0x10 / 0x11 / 0x27 / 0x29 / 0x33 trails, 0x2A / 0x35 twinkles, …; then a colour fade (modes 1–7 from the type colour and life). Not ported: homing (flag 8), 0x1D / 0x26 / 0x2F / 0x30 / 0x34, lights (0x44F200), floor shadows (list 0x54F098) |
+| 0x410B80 | `ParticleDeath` ✔ (3, 5) | 3: five dust puffs (0x25 mode 0x11) and a ring (0x28) on the floor, sound 0xB; 5: five sparks (0x29 mode 0xF); 1/2/4 → 0x410850 (not ported) |
+| 0x445980 | `DrawParticles` ✔ | Sprite (0x557500) cell = frame; colour (a, r, g, b) with a = 0x40 for blend 0, else 0xFF; flags & 0x60 blend; flag 0x10 flat (10 units up, angle negated), else camera-facing rolled by the angle |
+| 0x405D20 (part) | death bursts ✔ | Per type: 3 / 4 / 0xE / 0x14 / 0x18 → 3 fireballs (0x23 mode 0xE, random spin) and a light; 0x21 / 0x29 / 0x2E → 5 sparkles (99, modes 4 / 14, life 0x78 + r, grey) with smoke (0x11 mode 4); 0x10 / 0x19 / 0x36 → 6. The dropped coin is particle type 0x3D (kind 0x19 bounce) |
+| 0x434EB0 (part) | spin rings ✔ | Spinning (> 0x14): type 0x16 + r&1 mode 2 at Buzz, angle ((−t) & 15) << 7; super spin: 0x14 + r&1 at 0x3000 up, angle ((−charge) & 15) · 0xC0 |

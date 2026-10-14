@@ -112,7 +112,9 @@ pub struct Creature {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// A creature died here (0x405D20 mode 1 drops a coin unless its flags have 0x800).
-    Died { slot: usize, pos: [i32; 3], coin: bool },
+    /// `centre` is its ellipsoid's centre; `burst` what flies off: n > 0 fireballs (type 0x23),
+    /// n < 0 sparkles and smoke (types 99 and 0x11), 0 nothing.
+    Died { slot: usize, pos: [i32; 3], coin: bool, centre: [i32; 3], burst: i32 },
 }
 
 /// What a creature's update reported, for its type routine (the struct 0x4076F0 passes).
@@ -698,7 +700,18 @@ impl Creatures {
     /// 0x405D20 mode 1: the death animation (types 3 / 0xE / 0x18: animation 2 for 94 ticks,
     /// type 4: 62 ticks; others go at once), a coin dropped.
     fn kill(&mut self, slot: usize, c: &mut Creature) {
-        self.events.push(Event::Died { slot, pos: c.pos, coin: c.flags & 0x800 == 0 });
+        let e = self.shape(c.id).ellipsoid(c.anim as usize);
+        let (s, k) = (sin(c.angles[1] - 0x800) >> 2, sin(c.angles[1] - 0x400) >> 2);
+        let (ox, oz) = (e.offset[0] as i32, e.offset[2] as i32);
+        let centre = [((ox * k + oz * s) >> 12) + c.pos[0], e.offset[1] as i32 + c.pos[1], ((oz * k - ox * s) >> 12) + c.pos[2]];
+        let burst = match c.id {
+            3 | 4 | 0xE | 0x14 | 0x18 => 3,
+            0x1B => 4,
+            0x10 | 0x19 | 0x36 => 6,
+            0x21 | 0x29 | 0x2E => -5,
+            _ => 0,
+        };
+        self.events.push(Event::Died { slot, pos: c.pos, coin: c.flags & 0x800 == 0, centre, burst });
         c.flags |= 0x800;
         c.rates = [-32, -32];
         c.vel = [0, -0x400, 0];

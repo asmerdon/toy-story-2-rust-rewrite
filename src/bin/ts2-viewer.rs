@@ -347,6 +347,7 @@ struct Viewer {
     hud_state: ts2::hud::Hud,
     hud_sprites: Vec<Option<ts2::pickups::SpriteDef>>,
     hud_last: [i32; 3],
+    particles: ts2::particles::Particles,
 }
 
 fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -772,14 +773,39 @@ impl Viewer {
                         d.dot(cf) > d.length() * 0.6
                     };
                     for ev in self.lasers.fire(shot, muzzle, player, &self.world, cr, &visible) {
-                        if let ts2::laser::Event::Sound(id, at) = ev {
-                            sounds.push((id, at));
+                        match ev {
+                            ts2::laser::Event::Sound(id, at) => sounds.push((id, at)),
+                            // 0x4A5D30's impact: a flash by kind, smoke off walls, five sparks.
+                            ts2::laser::Event::Impact { at, kind, wall } => {
+                                let (t, m) = match kind {
+                                    0 => (1, 2),
+                                    1 => (10, 5),
+                                    _ => (0x49, 2),
+                                };
+                                self.particles.spawn(at, t, m);
+                                if wall {
+                                    self.particles.spawn(at, 5, 2);
+                                }
+                                for _ in 0..5 {
+                                    if let Some(k) = self.particles.spawn(at, 4, 4) {
+                                        let r = self.particles.rand() as i32;
+                                        self.particles.slots[k].life = (r & 0xF) * 2 + 0x18;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
                 cr.sounds.extend(sounds);
             }
+            for (at, t, m, angle) in player.effects.drain(..) {
+                if let Some(k) = self.particles.spawn(at, t, m) {
+                    self.particles.slots[k].angle = angle & 0xFFF;
+                }
+            }
+            self.particles.camera = cam_game.map(|v| (v * 32.0) as i32);
             for _ in 0..ticks {
+                self.particles.tick(&self.world, (player.pos_obj(), player.facing));
                 self.lasers.tick();
                 let coins = self.pickups.as_ref().map_or(0, |p| p.coins);
                 let now = [player.lives, player.health, coins];
@@ -806,7 +832,26 @@ impl Viewer {
                     cr.contact(player);
                 }
                 for ev in cr.events.drain(..) {
-                    let ts2::creatures::Event::Died { pos, coin, .. } = ev;
+                    let ts2::creatures::Event::Died { pos, coin, centre, burst, .. } = ev;
+                    // 0x405D20's burst: fireballs, or sparkles and smoke.
+                    for n in 0..burst.unsigned_abs() as i32 {
+                        if burst > 0 {
+                            if let Some(k) = self.particles.spawn(centre, 0x23, 0xE) {
+                                let r = self.particles.rand() as i32;
+                                self.particles.slots[k].spin = r - 0x80;
+                            }
+                        } else {
+                            if let Some(k) = self.particles.spawn(centre, 99, (n as usize & 1) * 10 + 4) {
+                                let (a, b, c, d) = (self.particles.rand() as i32, self.particles.rand() as i32, self.particles.rand(), self.particles.rand() as i32);
+                                let p = &mut self.particles.slots[k];
+                                p.vel[1] -= 0x100;
+                                p.life = (a & 0x1F) + 0x78;
+                                p.rgb = [(b & 0x7F) as u8 + 0x40; 3];
+                                p.spin = if c & 1 == 0 { -0x40 - (d & 0x3F) } else { (d & 0x3F) + 0x40 };
+                            }
+                            self.particles.spawn(centre, 0x11, 4);
+                        }
+                    }
                     if coin && let Some(pk) = self.pickups.as_mut() {
                         let p = pos.map(|v| v / 32);
                         let floor = self.world.floor_below(p[0] as f32, p[2] as f32, p[1] as f32 - 300.0).map(|f| f as i32);
@@ -831,7 +876,8 @@ impl Viewer {
             let f = self.cam.forward();
             let (right_g, fwd_g) = (to_game(f.cross(Vec3::Y)).normalize_or_zero(), to_game(Vec3::new(f.x, 0.0, f.z)).normalize_or_zero());
             let listener = Vec3::from(cam_game);
-            let creature_sounds: Vec<(u16, [i32; 3])> = self.creatures.as_mut().map(|c| c.sounds.drain(..).collect()).unwrap_or_default();
+            let mut creature_sounds: Vec<(u16, [i32; 3])> = self.creatures.as_mut().map(|c| c.sounds.drain(..).collect()).unwrap_or_default();
+            creature_sounds.extend(self.particles.events.drain(..).map(|ts2::particles::Event::Sound(id, at)| (id, at)));
             if let Some(a) = self.audio.as_mut() {
                 for (id, at) in creature_sounds {
                     a.play(id, false, OWNER_CREATURES, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);
@@ -980,6 +1026,21 @@ impl Viewer {
                 self.hud = pk.summary();
                 gfx.window.set_title(&format!("Toy Story 2 (Rust) - viewer   {}", self.hud));
             }
+        }
+        // Particles (0x445980).
+        {
+            let ngn = &self.ngn;
+            let texture = |slot: i16| {
+                let name = format!("tex{slot:02}");
+                let i = ngn.textures.iter().position(|t| t.name.eq_ignore_ascii_case(&name))?;
+                let (w, h, _) = ngn.textures[i].dimensions()?;
+                Some((i, [(w as f32).abs(), (h as f32).abs()]))
+            };
+            let f = self.cam.forward();
+            let r = f.cross(Vec3::Y).normalize_or_zero();
+            let u = r.cross(f).normalize_or_zero();
+            let g = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
+            scene::merge(&mut batches, self.particles.batches(&self.hud_sprites, &texture, g(r), g(u)));
         }
         // Laser beams.
         scene::merge(&mut batches, self.lasers.beams_batches(Vec3::from(world_to_game(self.cam.pos)), self.beam_sprite));
@@ -1390,6 +1451,7 @@ fn main() {
     });
     let laser_pose = game_exe.as_ref().and_then(|e| e.at(0x4DF294, 32).ok()).map(|b| b.to_vec()).unwrap_or_default();
     let lasers = ts2::laser::Lasers::new(random_table.clone().unwrap_or_default());
+    let particles = ts2::particles::Particles::new(game_exe.as_ref(), random_table.clone().unwrap_or_default());
     let hud_sprites = game_exe.as_ref().zip(exe::level_number(level_path)).map(|(e, lv)| ts2::hud::sprite_table(e, lv)).unwrap_or_default();
     match start {
         Some(s) => println!("player start {:?}, facing {:.0} degrees (F to play, Shift+F to drop at camera)", s.pos, s.yaw_radians().to_degrees()),
@@ -1450,6 +1512,7 @@ fn main() {
         hud_state: Default::default(),
         hud_sprites,
         hud_last: [0; 3],
+        particles,
     };
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut viewer).expect("run");

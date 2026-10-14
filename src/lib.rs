@@ -15,6 +15,7 @@ pub mod game;
 pub mod hud;
 pub mod laser;
 pub mod level1;
+pub mod particles;
 pub mod pickups;
 pub mod scene;
 pub mod specials;

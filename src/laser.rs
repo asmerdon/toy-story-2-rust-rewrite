@@ -37,8 +37,9 @@ pub struct Beam {
 pub enum Event {
     /// A sound at a position (object units): 8 for a wall hit, 7 for a bounce.
     Sound(u16, [i32; 3]),
-    /// Where a beam stopped against something (sparks), object units.
-    Impact([i32; 3]),
+    /// Where a beam of `kind` (0 normal, 1 charged) stopped against something, object units;
+    /// `wall` when it was the level.
+    Impact { at: [i32; 3], kind: u8, wall: bool },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -154,7 +155,7 @@ impl Lasers {
         bits |= creatures.laser_ray(origin, &mut delta, kind + 1, facing);
         let end = [0, 1, 2].map(|k| origin[k] + delta[k]);
         if bits != 0 {
-            events.push(Event::Impact(end));
+            events.push(Event::Impact { at: end, kind, wall: bits == 1 });
             if bits == 1 {
                 events.push(Event::Sound(8, end));
             }
