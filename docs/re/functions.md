@@ -256,3 +256,17 @@ Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid
 | 0x4942D0 / 0x493DC0 / 0x4946A0 | narrow-screen variants ✔ | As above with x in a 320-wide screen (0x4946A0 / 0x494820 use the HUD tint 0x54DE9C / 0x554038 / 0x54DD6C) |
 | 0x4B8CC0 | `ScreenQuad(x, y, w, h, uv0, uv1, tex, argb, mode)` ✔ | 0..1 screen units; colour through the identity table 0x50851C |
 | 0x4A2A60 (part) | HUD clocks ✔ | Bytes 0x52AD5F–0x52AD63 count ticks modulo 4, 8, 16, 32, 64 |
+
+## Sound ownership, input, screen sprites (round 3 findings)
+
+| Address | Name | Notes |
+|---|---|---|
+| 0x4A3980 / 0x4A3B90 | `PlayOwnedSound(owner, slot, …)` ✔ | Sounds whose slot word has bit 15 (e.g. 0x26 super spin, 0x27 charge whine, 0x2E box scrape) go here from 0x49E660 with the object as owner: 0x47DE50 with that owner and looping on; a table at 0x830E58 (32 × {buffer, timeout 0x10, volumes}) keeps one buffer per owner, refreshed each call |
+| 0x4A3BE0 | `UpdateOwnedSounds` ✔ | Per frame: timeout −1; at 0 the buffer stops (0x47D930) |
+| 0x4A3C80 | `PlayHeldSound` ~ | Owned, not looping, no timeout |
+| 0x47E5B0 | `LoadSoundEffect(name, slot, …)` ✔ | One buffer from the WAV, five more by DuplicateSoundBuffer; frequency kept per slot (0x726234); tag 0x725294 = 1 |
+| 0x414AF0 | `ReadInput` ✔ | Keyboard (DirectInput 256-byte state): key table 0x529B10 {key, pad bit}; direction keys also set axes ±0x8000 (0x731CD8/C). A joystick sets 0x830C34 = 1 (analog path) |
+| 0x433F40 | `StickHeading(pad)` ✔ | Angle from the camera (0x52F3AC/B4) to Buzz plus: digital, table 0x4F5AC8[(pad >> 4) & 15] (up 0, up+right 0x200, right 0x400, …; up+down = 0, left+right = 0); analog, the axes' angle through the curve 0x4F5AB4 (8 segments). Writes the target facing 0x52F348; returns the magnitude (0x4000 digital) |
+| 0x4346C0 (tail) | push release ✔ | While pushing (0x53C648), a target more than 90° from the push angle 0x53C624 lets go; otherwise facing = push angle. The skid on a sharp turn needs 0x53C828 & 0xFF481 = 1 (not while the laser is up) |
+| 0x4B8DD0 | `QueueScreenSprite` ✔ | Mode 0xC40 sprites go to the front of the list 0x884AC0 (drawn last-queued first: meter bars over their frames); additive/subtractive ones to the back |
+| 0x4B9100 | `QueueQuad(corners[4], uv0, uv1, …)` ✔ | Corner UVs (u0, v1), (u0, v0), (u1, v1), (u1, v0): for ribbons u runs along the beam (0x44E1A0 walks from the back end, first segment cell 2) |

@@ -531,6 +531,15 @@ pub struct Input {
     pub dpad: u8,
 }
 
+/// 0x433F40 with a digital pad (keyboard, no joystick: 0x830C34 = 0): the direction Buzz
+/// heads for is the table 0x4F5AC8 indexed by the d-pad bits (up 1, right 2, down 4, left 8)
+/// plus the angle from the camera to Buzz. Opposite keys together count as no key of that
+/// pair, except up + down, which is straight ahead. None without a direction key.
+pub fn dpad_heading(dpad: u8, camera_to_buzz: i32) -> Option<i32> {
+    const TABLE: [i32; 16] = [0, 0, 0x400, 0x200, 0x800, 0, 0x600, 0, 0xC00, 0xE00, 0, 0, 0xA00, 0, 0, 0];
+    (dpad & 0xF0 != 0).then(|| (TABLE[(dpad >> 4) as usize] + camera_to_buzz) & 0xFFF)
+}
+
 /// D-pad bits as `Input::dpad` holds them (the PS1 pad layout).
 pub mod pad {
     pub const UP: u8 = 0x10;
@@ -1263,7 +1272,7 @@ impl Player {
             // Sharp reversal: snap round; on the ground, skid (sound 0x12).
             self.facing = self.target;
             self.tap_start = self.target;
-            if self.coyote != 0 {
+            if self.state_bits() & 0xF_F481 == 1 {
                 self.skid = SKID_TICKS;
                 self.sound(0x12);
             }

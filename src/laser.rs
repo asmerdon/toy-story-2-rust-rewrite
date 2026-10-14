@@ -187,9 +187,10 @@ impl Lasers {
         }
     }
 
-    /// The beams as camera-facing ribbons (0x44E1A0) of sprite `sprite` (texture, its size and
-    /// the cells' corners): 400-unit segments back from the far end, the first in cell 2, the
-    /// rest in cell 1; additive, fading with life.
+    /// The beams as camera-facing ribbons (0x44E1A0) of sprite 9 (texture, its size, the cell
+    /// size and cells 0-2): 400-unit segments from the back end towards the far end, the first
+    /// in cell 2, the rest in cell 1, each stretching the cell's width along the beam and its
+    /// height across it (0x4B9100's corner order); additive, fading with life.
     pub fn beams_batches(&self, camera: Vec3, texture: Option<(usize, [f32; 2], [f32; 2], [[f32; 2]; 3])>) -> Vec<Batch> {
         let mut out = Vec::new();
         for b in self.beams.iter().filter(|b| b.life > 0) {
@@ -205,11 +206,13 @@ impl Lasers {
             let fade = (b.life * 4) as f32 / 128.0;
             let c = b.color.map(|v| (v as f32 * fade).min(255.0) as u8);
             let color = [0xFF, c[0], c[1], c[2]];
-            let mut at = 0.0f32;
+            // `at` is the distance from the far end; walk from the back end (at = len).
+            let mut at = len;
             let mut cell = 2;
-            while at < len {
-                let next = (at + 400.0).min(len);
-                let (p0, p1) = (end + u * at, end + u * next);
+            while at > 0.0 {
+                let next = (at - 400.0).max(0.0);
+                // p: the segment's back-end side, q: its far-end side.
+                let (p, q) = (end + u * at, end + u * next);
                 let uv = |s: f32, t: f32| match texture {
                     Some((_, tex, size, cells)) => {
                         let [cu, cv] = cells[cell];
@@ -217,8 +220,8 @@ impl Lasers {
                     }
                     None => [s, t],
                 };
-                let v = |p: Vec3, s: f32, t: f32| GpuVertex { pos: p.to_array(), uv: uv(s, t), color };
-                let (a, bb, cc, d) = (v(p0 - side, 0.0, 0.0), v(p0 + side, 1.0, 0.0), v(p1 + side, 1.0, 1.0), v(p1 - side, 0.0, 1.0));
+                let v = |pt: Vec3, s: f32, t: f32| GpuVertex { pos: pt.to_array(), uv: uv(s, t), color };
+                let (a, bb, cc, d) = (v(q - side, 0.0, 1.0), v(q + side, 0.0, 0.0), v(p + side, 1.0, 0.0), v(p - side, 1.0, 1.0));
                 let tex = texture.map(|t| t.0);
                 scene::push(&mut out, tex, Blend::Additive, [a, bb, cc]);
                 scene::push(&mut out, tex, Blend::Additive, [a, cc, d]);

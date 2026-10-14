@@ -132,12 +132,15 @@ impl Boxes {
         // Pick a box to push: on the floor, pushing the stick, touching a box's side.
         if !player.stick_pushed || player.busy() {
             self.pushing = 0;
+        } else if self.pushing != 0 && ((self.push_angle - player.target) + 0x400) & 0xFFF > 0x800 {
+            // The stick turned more than 90° away from the push (end of 0x4346C0): let go.
+            self.pushing = 0;
         } else if self.pushing == 0 && player.on_floor {
             if let Some((m, n)) = player.wall_mover
                 && let Some(k) = self.boxes.iter().position(|b| b.mover == m && b.fall == 0 && b.slide >= 0)
             {
                 let dir = (angle12(n.x, n.z) - 0x800) & 0xFFF;
-                if ((dir - player.target) + 0x180) & 0xFFF < 0x300 {
+                if ((dir - player.facing) + 0x180) & 0xFFF < 0x300 {
                     let b = &self.boxes[k];
                     self.pushing = k + 1;
                     self.offset = [(b.pos[0] - player.pos_obj()[0]) >> 5, (b.pos[2] - player.pos_obj()[2]) >> 5];
@@ -247,8 +250,9 @@ impl Boxes {
         }
         self.along(&mut b);
         self.place(&b, world, specials);
-        // Buzz keeps his place behind the box.
+        // Buzz keeps his place behind the box, facing along the push (0x4346C0).
         if self.pushing != 0 {
+            player.facing = self.push_angle;
             let p = player.pos_obj();
             player.vel[0] = b.pos[0] - self.offset[0] * 32 - p[0];
             player.vel[2] = b.pos[2] - self.offset[1] * 32 - p[2];

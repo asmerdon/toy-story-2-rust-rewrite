@@ -210,6 +210,22 @@ impl SoundBank {
         (slot != 0).then_some(slot)
     }
 
+    /// Sound `id` belongs to whoever plays it (top bit of its slot word): 0x49E660 sends it to
+    /// 0x4A3980, which loops one buffer per owner, keeps it going while the owner plays it again
+    /// each tick, and lets 0x4A3BE0 stop it 16 ticks after the last time.
+    pub fn is_owned(&self, id: u16) -> bool {
+        let Some(def) = self.exe_defs.get(id as usize) else { return false };
+        let mut word = def[0] as u16;
+        if word & 0x4000 != 0 {
+            let start = (word & 0x3FFF) as usize / 2;
+            match self.remap.get(start..).and_then(|r| r.iter().take(32).find(|(lv, _)| *lv as usize == self.level)) {
+                Some(&(_, w)) => word = w as u16,
+                None => return false,
+            }
+        }
+        word & 0x8000 != 0
+    }
+
     /// The sample and its (left, right) volumes for sound `id`, as 0x49E660 resolves them.
     pub fn sound(&self, id: u16) -> Option<(&Sample, i32, i32)> {
         let def = self.exe_defs.get(id as usize)?;

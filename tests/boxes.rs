@@ -47,3 +47,54 @@ fn level_1_door_is_pushed_over_and_opens() {
     let own = n.layers[0].instances[38].rot[0] as i32 >> 4;
     assert_eq!((angles[0] - own) & 0xFFF, 0x200, "door not tipped open");
 }
+
+/// The attic box (box 6, path 0: 2250 units towards −X, then 2625 towards −Z). Buzz pushes it
+/// to the corner, lets go, walks round to its +Z side and pushes it on; he never gets stuck.
+#[test]
+fn attic_box_goes_round_its_corner() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let dir = game.join("data/level01");
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let n = ngn::parse(&fs::read(dir.join("level.ngn")).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(dir.join("TERRAIN.ALL")).unwrap()).unwrap();
+    let lists = leveldat::parse(&fs::read(dir.join("level.dat")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let mut specials = ts2::specials::Specials::new(&n);
+    let mut boxes = ts2::boxes::Boxes::new(1, &lists, Some(&e), &world, &mut specials);
+    let b = |boxes: &ts2::boxes::Boxes| Vec3::from(boxes.boxes[6].pos.map(|v| v as f32 / 32.0));
+    let start = b(&boxes);
+    let y = world.floor_below(start.x + 450.0, start.z, start.y - 1500.0).expect("attic floor");
+    let mut p = Player::new(Vec3::new(start.x + 450.0, y, start.z));
+    p.set_facing(0xC00);
+    let mut run = |p: &mut Player, boxes: &mut ts2::boxes::Boxes, stick: [f32; 2], ticks: usize| {
+        let mut moved = 0.0f32;
+        for _ in 0..ticks {
+            let before = p.pos;
+            p.update_with(&world, ts2::game::Input { move_xz: stick, ..Default::default() }, 1.0 / 60.0, &mut |p, w| {
+                boxes.tick(p, w, &mut specials);
+            });
+            moved += (p.pos - before).length();
+        }
+        moved
+    };
+    run(&mut p, &mut boxes, [-1.0, 0.0], 400);
+    let corner = b(&boxes);
+    eprintln!("after pushing −X: box {:?} (start {:?}), Buzz {:?}", corner, start, p.pos);
+    assert!((corner.x - 15375.0).abs() < 40.0, "box didn't reach the corner");
+    // Let go, walk round: +Z, −X past the box, then push −Z.
+    run(&mut p, &mut boxes, [0.0, 0.0], 5);
+    assert!(run(&mut p, &mut boxes, [1.0, 0.0], 20) > 100.0, "stuck after letting go");
+    // Round the corner by 500 units of +Z.
+    while p.pos.z < -8850.0 {
+        run(&mut p, &mut boxes, [0.0, 1.0], 1);
+    }
+    while p.pos.x > 15375.0 {
+        run(&mut p, &mut boxes, [-1.0, 0.0], 1);
+    }
+    run(&mut p, &mut boxes, [0.0, -1.0], 40);
+    eprintln!("Buzz round the side at {:?}", p.pos);
+    run(&mut p, &mut boxes, [0.0, -1.0], 500);
+    let end = b(&boxes);
+    eprintln!("after pushing −Z: box {:?}, Buzz {:?}", end, p.pos);
+    assert!(end.z < corner.z - 1000.0, "box didn't go round the corner");
+}

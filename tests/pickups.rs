@@ -75,10 +75,11 @@ fn hud_sprites_resolve() {
     }
     let q = hud.quads(&status, &sprites);
     let used: Vec<usize> = q.iter().map(|q| q.sprite).collect();
-    assert_eq!(used, [10, 0x14, 0xB, 6, 0xC, 0x10, 0x14, 0x14]);
+    // Drawn last-queued first (0x4B8DD0), so the battery column lands on top of its frame.
+    assert_eq!(used, [0x14, 0x14, 0x10, 0xC, 6, 0xB, 0x14, 10]);
     // Digits: 5 lives, 1 and 2 coins.
-    assert_eq!(q[1].cell, 0x1A + 5);
-    assert_eq!((q[6].cell, q[7].cell), (0x1B, 0x1C));
+    assert_eq!(q[6].cell, 0x1A + 5);
+    assert_eq!((q[1].cell, q[0].cell), (0x1B, 0x1C));
     assert_eq!(ts2::hud::batches(&q, &sprites, &|slot| {
         let name = format!("tex{slot:02}");
         let i = n.textures.iter().position(|t| t.name.eq_ignore_ascii_case(&name))?;

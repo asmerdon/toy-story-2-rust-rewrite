@@ -190,6 +190,9 @@ impl Hud {
             put(WIDE, 0x1B6 - (shift << 9) / 0x140, 0xDA - off, 6, 0, color, c * 0x1644 / 2, 0x3000);
             put(NARROW, 0x110 - shift, 0xD8 - off, 0xD, 0, grey, 0x1000, 0x1000);
         }
+        // 0x4B8DD0 puts each normal-mode sprite at the front of the list it draws from, so the
+        // last one queued is drawn first: meter bars end up over their frames.
+        q.reverse();
         q
     }
 }

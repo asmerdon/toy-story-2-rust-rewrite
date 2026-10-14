@@ -21,6 +21,7 @@
 //!   Esc                  quit
 
 use glam::{Mat4, Vec3};
+use rodio::Source;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{env, fs, process};
@@ -124,12 +125,22 @@ struct AudioOut {
     /// DirectSound buffers per sample slot (0x47DE50 loads six copies of each sample): a free
     /// one plays; with all six busy, the one furthest through restarts.
     buffers: std::collections::HashMap<u16, Vec<(rodio::Sink, std::time::Instant)>>,
+    /// Owned sounds (0x4A3980): one looping buffer per (slot, owner), stopped 16 ticks after
+    /// its owner last played it (0x4A3BE0).
+    owned: std::collections::HashMap<(u16, u32), (rodio::Sink, i32)>,
 }
+
+/// Ticks an owned sound keeps looping after the last time its owner played it.
+const OWNED_TICKS: i32 = 0x10;
+/// Owners of positional sounds: Buzz, things he moves (boxes, script objects), creatures.
+const OWNER_BUZZ: u32 = 0;
+const OWNER_OBJECT: u32 = 1;
+const OWNER_CREATURES: u32 = 2;
 
 const BUFFERS_PER_SAMPLE: usize = 6;
 
 impl AudioOut {
-    fn play(&mut self, id: u16, voice: bool, rel: Vec3, right: Vec3, forward: Vec3) {
+    fn play(&mut self, id: u16, voice: bool, owner: u32, rel: Vec3, right: Vec3, forward: Vec3) {
         if voice && self.voice.as_ref().is_some_and(|v| !v.empty()) {
             return;
         }
@@ -137,6 +148,21 @@ impl AudioOut {
         let Some(slot) = self.bank.sound_slot(id) else { return };
         let (l, r) = ts2::audio::positional(vol, rel, right, forward);
         let (gl, gr) = self.bank.gains(l, r);
+        if self.bank.is_owned(id) {
+            let key = (slot, owner);
+            if let Some((s, t)) = self.owned.get_mut(&key)
+                && !s.empty()
+            {
+                *t = OWNED_TICKS;
+                return;
+            }
+            let Some(sample) = self.bank.slot(slot) else { return };
+            let stereo: Vec<i16> = sample.data.iter().flat_map(|&s| [(s as f32 * gl) as i16, (s as f32 * gr) as i16]).collect();
+            let Ok(sink) = rodio::Sink::try_new(&self.handle) else { return };
+            sink.append(rodio::buffer::SamplesBuffer::new(2, sample.rate, stereo).repeat_infinite());
+            self.owned.insert(key, (sink, OWNED_TICKS));
+            return;
+        }
         if voice {
             let Some(sample) = self.bank.slot(slot) else { return };
             self.voice = self.emit(sample, gl, gr);
@@ -158,6 +184,17 @@ impl AudioOut {
         let (l, r) = ts2::audio::positional(vol, rel, right, forward);
         let (gl, gr) = self.bank.gains(l, r);
         self.buffered(slot, gl, gr);
+    }
+
+    /// 0x4A3BE0 for `ticks` ticks: owned sounds not played again stop.
+    fn tick_owned(&mut self, ticks: i32) {
+        self.owned.retain(|_, (s, t)| {
+            *t -= ticks;
+            if *t <= 0 {
+                s.stop();
+            }
+            *t > 0
+        });
     }
 
     /// Plays `slot` on one of its six buffers, as 0x47DE50 picks them.
@@ -640,17 +677,20 @@ impl Viewer {
         let fwd = self.cam.forward();
         let right = fwd.cross(Vec3::Y).normalize_or_zero();
         if let Some(player) = self.player.as_mut() {
-            // Camera-relative movement on the ground plane, converted to game space (x, -z).
-            let flat_fwd = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or_zero();
-            let mut m = Vec3::ZERO;
-            for (k, d) in [(KeyCode::KeyW, flat_fwd), (KeyCode::KeyS, -flat_fwd), (KeyCode::KeyD, right), (KeyCode::KeyA, -right)] {
-                if self.keys.contains(&k) {
-                    m += d;
-                }
-            }
-            let m = m.normalize_or_zero();
+            // The keys as d-pad bits; the heading from them and the camera-to-Buzz angle as
+            // the original reads a keyboard (0x414AF0 → 0x433F40).
+            let dpad = [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
+                .iter()
+                .filter(|(k, _)| self.keys.contains(k))
+                .fold(0, |acc, (_, b)| acc | b);
+            let cam_g = Vec3::from(world_to_game(self.cam.pos));
+            let to_buzz = ts2::boxes::angle12(player.pos.x - cam_g.x, player.pos.z - cam_g.z);
+            let move_xz = game::dpad_heading(dpad, to_buzz).map_or([0.0; 2], |a| {
+                let r = a as f32 / 4096.0 * std::f32::consts::TAU;
+                [r.sin(), r.cos()]
+            });
             let input = game::Input {
-                move_xz: [m.x, -m.z],
+                move_xz,
                 jump: std::mem::take(&mut self.jump_pressed),
                 jump_held: self.keys.contains(&KeyCode::Space),
                 stomp: std::mem::take(&mut self.stomp_pressed),
@@ -686,11 +726,12 @@ impl Viewer {
                 let listener = Vec3::from(world_to_game(self.cam.pos));
                 let (right_g, fwd_g) = (to_game(right).normalize_or_zero(), to_game(Vec3::new(fwd.x, 0.0, fwd.z)).normalize_or_zero());
                 for s in sounds {
-                    audio.play(s.id, s.voice, player.pos - listener, right_g, fwd_g);
+                    audio.play(s.id, s.voice, OWNER_BUZZ, player.pos - listener, right_g, fwd_g);
                 }
                 for (s, at) in sounds_at {
-                    audio.play(s.id, s.voice, at - listener, right_g, fwd_g);
+                    audio.play(s.id, s.voice, OWNER_OBJECT, at - listener, right_g, fwd_g);
                 }
+                audio.tick_owned(ticks as i32);
             }
             // Follow camera: orbit behind the player at chest height.
             let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
@@ -785,7 +826,7 @@ impl Viewer {
             let creature_sounds: Vec<(u16, [i32; 3])> = self.creatures.as_mut().map(|c| c.sounds.drain(..).collect()).unwrap_or_default();
             if let Some(a) = self.audio.as_mut() {
                 for (id, at) in creature_sounds {
-                    a.play(id, false, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);
+                    a.play(id, false, OWNER_CREATURES, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);
                 }
             }
             for _ in 0..ticks {
@@ -808,7 +849,10 @@ impl Viewer {
                                 if let Some(a) = self.audio.as_ref() {
                                     let pos = Vec3::from(pos.map(|v| v as f32));
                                     self.jingles.retain(|j| j.pos != pos);
-                                    self.jingles.push(Jingle { steps: a.bank.jingle(-1).to_vec(), next: 0, timer: 0, pos });
+                                    // The exe plays jingle −1 (PICKUP5 six times, at PS1 pitches the PC
+                                    // ignores); the running PC game is heard playing it once (user's
+                                    // comparison), so only its first note plays here.
+                                    self.jingles.push(Jingle { steps: a.bank.jingle(-1).iter().take(1).copied().collect(), next: 0, timer: 0, pos });
                                 }
                                 if kind == ts2::pickups::Kind::Token {
                                     println!("you have collected a token! (the original offers \"keep on playing / exit level\" here)");
@@ -1319,7 +1363,7 @@ fn main() {
         match rodio::OutputStream::try_default() {
             Ok((stream, handle)) => {
                 println!("sound: {} samples for level {level}", bank.sample_count());
-                Some(AudioOut { _stream: stream, handle, bank, voice: None, buffers: Default::default() })
+                Some(AudioOut { _stream: stream, handle, bank, voice: None, buffers: Default::default(), owned: Default::default() })
             }
             Err(err) => {
                 println!("no sound output: {err}");
