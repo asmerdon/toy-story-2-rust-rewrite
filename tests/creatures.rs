@@ -137,3 +137,55 @@ fn laser_shots_hit_a_robot() {
     assert_eq!(fired, 2);
     assert_eq!(c.slots[k].health, health - 2);
 }
+
+/// A ZURG3 (id 4) with Buzz in its zone fires a pair of shots (particle 0x26) per 360-tick
+/// cycle; a shot reaching Buzz hurts him, but bounces off him while he spins.
+#[test]
+fn zurg3_fires_and_shots_hurt_unless_spinning() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let dir = game.join("data/level01");
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(dir.join("TERRAIN.ALL")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let pk = packets::parse(&fs::read(dir.join("level.raw")).unwrap()).unwrap();
+    let spawns: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
+    let random = fs::read(game.join("data/rand.dat")).unwrap();
+    let mut c = Creatures::new(&spawns, Some(&e), random.clone());
+    let k = c.slots.iter().position(|s| s.id == 4).expect("a ZURG3 in level 1");
+    let home = c.slots[k].pos;
+    let mut shots = Vec::new();
+    for tick in 0..800 {
+        c.tick(&world, home, home);
+        for r in c.particles.drain(..) {
+            shots.push((tick, r));
+        }
+    }
+    eprintln!("ZURG3 slot {k} shots at ticks {:?}", shots.iter().map(|s| s.0).collect::<Vec<_>>());
+    assert!(shots.len() >= 2 && shots.iter().all(|s| s.1.typ == 0x26), "no shots");
+    assert_eq!(shots[1].0 - shots[0].0, 16, "the pair is 16 ticks apart");
+
+    // A shot flying into Buzz.
+    let mut p = ts2::particles::Particles::new(Some(&e), random);
+    let buzz = [0, 0, 0];
+    p.camera = buzz;
+    let fire = |p: &mut ts2::particles::Particles| p.create([0, -0x1CC0, -0x2000], [0, 0, 0x400], 0, 0, 0, 0x26).unwrap();
+    fire(&mut p);
+    let mut hurt = false;
+    for _ in 0..30 {
+        p.tick(&world, (buzz, 0));
+        p.touch(buzz, false);
+        hurt |= p.events.iter().any(|ev| matches!(ev, ts2::particles::Event::Hurt(_)));
+    }
+    assert!(hurt, "the shot should hurt Buzz");
+    let mut p2 = ts2::particles::Particles::new(Some(&e), Vec::new());
+    p2.camera = buzz;
+    let k = fire(&mut p2);
+    let mut batted = false;
+    for _ in 0..30 {
+        p2.tick(&world, (buzz, 0));
+        p2.touch(buzz, true);
+        batted |= p2.events.iter().any(|ev| matches!(ev, ts2::particles::Event::Sound(7, _)));
+        assert!(!p2.events.iter().any(|ev| matches!(ev, ts2::particles::Event::Hurt(_))), "hurt while spinning");
+    }
+    assert!(batted && p2.slots[k].vel[2] < 0, "the shot should bounce back");
+}

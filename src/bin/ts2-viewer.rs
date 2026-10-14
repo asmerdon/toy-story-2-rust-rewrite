@@ -806,6 +806,7 @@ impl Viewer {
             self.particles.camera = cam_game.map(|v| (v * 32.0) as i32);
             for _ in 0..ticks {
                 self.particles.tick(&self.world, (player.pos_obj(), player.facing));
+                self.particles.touch(player.pos_obj(), player.spin > 0x14 || player.super_spinning());
                 self.lasers.tick();
                 let coins = self.pickups.as_ref().map_or(0, |p| p.coins);
                 let now = [player.lives, player.health, coins];
@@ -831,6 +832,9 @@ impl Viewer {
                     cr.tick(&self.world, cam_obj, player.pos_obj());
                     cr.contact(player);
                 }
+                for r in cr.particles.drain(..) {
+                    self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);
+                }
                 for ev in cr.events.drain(..) {
                     let ts2::creatures::Event::Died { pos, coin, centre, burst, .. } = ev;
                     // 0x405D20's burst: fireballs, or sparkles and smoke.
@@ -852,10 +856,9 @@ impl Viewer {
                             self.particles.spawn(centre, 0x11, 4);
                         }
                     }
-                    if coin && let Some(pk) = self.pickups.as_mut() {
-                        let p = pos.map(|v| v / 32);
-                        let floor = self.world.floor_below(p[0] as f32, p[2] as f32, p[1] as f32 - 300.0).map(|f| f as i32);
-                        pk.drop_coin(p, floor);
+                    // The coin is a particle (type 0x3D) that bounces and is picked up by touch.
+                    if coin {
+                        self.particles.create([pos[0], pos[1] - 0x1000, pos[2]], [0, -0x800, 0], 0x80, 0, 0, 0x3D);
                     }
                 }
             }
@@ -877,7 +880,35 @@ impl Viewer {
             let (right_g, fwd_g) = (to_game(f.cross(Vec3::Y)).normalize_or_zero(), to_game(Vec3::new(f.x, 0.0, f.z)).normalize_or_zero());
             let listener = Vec3::from(cam_game);
             let mut creature_sounds: Vec<(u16, [i32; 3])> = self.creatures.as_mut().map(|c| c.sounds.drain(..).collect()).unwrap_or_default();
-            creature_sounds.extend(self.particles.events.drain(..).map(|ts2::particles::Event::Sound(id, at)| (id, at)));
+            let owned: Vec<(u16, [i32; 3], usize)> = self.creatures.as_mut().map(|c| c.owned_sounds.drain(..).collect()).unwrap_or_default();
+            if let Some(a) = self.audio.as_mut() {
+                for (id, at, slot) in owned {
+                    a.play(id, false, OWNER_CREATURES + 1 + slot as u32, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);
+                }
+            }
+            for ev in self.particles.events.drain(..) {
+                match ev {
+                    ts2::particles::Event::Sound(id, at) => creature_sounds.push((id, at)),
+                    ts2::particles::Event::Coin(at) => {
+                        if let Some(pk) = self.pickups.as_mut() {
+                            pk.coins = (pk.coins + 1).min(99);
+                            if pk.coins == 50
+                                && let Some(a) = self.audio.as_mut()
+                            {
+                                a.play_flat(0x4F);
+                            }
+                        }
+                        if let Some(a) = self.audio.as_ref() {
+                            let pos = Vec3::from(at.map(|v| v as f32 / 32.0));
+                            self.jingles.push(Jingle { steps: a.bank.jingle(-1).iter().take(1).copied().collect(), next: 0, timer: 0, pos });
+                        }
+                    }
+                    ts2::particles::Event::Hurt(at) => {
+                        let b = player.pos_obj();
+                        player.hurt(ts2::boxes::angle12((b[0] - at[0]) as f32, (b[2] - at[2]) as f32), 3);
+                    }
+                }
+            }
             if let Some(a) = self.audio.as_mut() {
                 for (id, at) in creature_sounds {
                     a.play(id, false, OWNER_CREATURES, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);

@@ -56,6 +56,7 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 - **W/S snap freezes** -> each snap restarts the skid's frame list (+0x92 = 0xFFFF), so the 26-tick skid plays in full each time. Keyboard headings are now relative to the camera's orbit yaw (0x52F3AC is its ideal position).
 - **Mantle missing** -> 0x435F30 ported (jump at a ledge whose top passes your head height: put on top, 82-tick climb animation, state 9). Also the ledge grab 0x435100 (level.dat list 60, 7 in level 1, on the basement walls 2750 up) and zip lines 0x4359D0 (list 62, 2 in level 1). Tests: `mantle_climbs_onto_a_high_ledge`, `level_1_ledge_is_grabbed_and_climbed`, `level_1_zip_line_is_ridden`.
 - Hurt (state 5) and dying (7) animations now play.
+- Then (not yet tested by the user): particles (src/particles.rs: laser impacts and sparks, spin rings, death bursts), ZURG3 shooting (0x406220) with shots that hurt Buzz or bounce off his spin (0x4100F0), dropped coins as the original bouncing coin particle (type 0x3D) picked up by touch.
 
 ## User feedback, round 3 (2026-10-14), and what was done
 1. **Pickup sound plays several times; push scrape awful.** Scrape: sounds with bit 15 in their slot word are owned loops (0x4A3980): now one looping buffer per (slot, owner), stopped 16 ticks after the owner last played it. Pickup: the exe's jingle −1 plays PICKUP5 six times (PS1 pitches unused on PC) yet the user hears it once in the running game; now only its first note plays (deviation, noted in the viewer). Ask again.
@@ -66,11 +67,10 @@ Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.m
 6. **Laser thickness wrong.** Ribbon UVs were transposed: the sprite's 31-px axis runs along the beam, the 8-px axis across (0x4B9100). Fixed, with cell 2 at the muzzle end. Position was confirmed good.
 
 ## Next steps (in priority order)
-1. **Particles** (0x40FAE0 / 0x40FDF0 / 0x410F40, type table 0x4EC160, 64 slots): laser impacts and sparks, spin trails (0x14-0x17), dust; then 0x4100F0 (particles vs Buzz: coins kind 0x10, hurt kinds 1/2) for ZURG3 shots.
-2. **Level 1 creatures' own routines** (+0x94): ZURG3 shooting, Tin Man boss 0x416AB0, sheep 0x416A60 (Bo Peep), RC race 0x406A60, Hamm (0x4A1CE0), Mr Potato Head (0x4A2480); then the creature parts of 0x417680.
+1. **Level 1 creatures' own routines** (+0x94, table above in functions.md): Tin Man boss 0x416AB0, sheep 0x416A60 (Bo Peep's challenge), RC race 0x406A60; Hamm (0x4A1CE0 coins -> token), Mr Potato Head (0x4A2480); then the creature parts of the level 1 script 0x417680 (falling toys, Bo Peep, RC race, lift, spring, room 5 tilt 0x49EC00, shield gift).
+2. Particles still to do: homing (flag 8, kinds 0x1D/0x26), 0x410850 explosions (death actions 1/2/4), lights 0x44F200, floor shadows (0x54F098), Buzz's footstep dust 0x4A2D80.
 3. Token sequence / menu (0x49FD40 with 0x830CC4 = 9), hover boots (0x4A4BB0), first-person look (L1, 0x50A13C).
-4. Buzz's hurt (state 5) and death (state 7) animations (0x4011D0), laser muzzle from node 15.
-5. Original collision resolver port if gaps persist; slippery surface 13; riding movers.
+4. Original collision resolver if gaps persist; slippery surface 13; riding movers 0x488E10.
 
 ## Useful facts
 - Units: object units = level units × 32; 12-bit angles in game code, 16-bit in `.ngn` instance rotations; +Y is down.

@@ -87,6 +87,10 @@ pub struct Particle {
 pub enum Event {
     /// A sound at a position (object units).
     Sound(u16, [i32; 3]),
+    /// A coin particle was picked up here (0x4100F0: the coin count, jingle −1).
+    Coin([i32; 3]),
+    /// Something hurtful touched Buzz, coming from here: HurtBuzz(angle, 3).
+    Hurt([i32; 3]),
 }
 
 #[derive(Debug, Clone)]
@@ -592,6 +596,65 @@ impl Particles {
             scene::push(&mut out, Some(tex), blend, [q0, q2, q3]);
         }
         out
+    }
+
+    /// 0x4100F0: particles that touch Buzz (flag 2), within their size + 100 of his centre
+    /// (0x1CC0 above his feet; heights count half). By sprite: shots and the like hurt him and
+    /// end (some with their death action); while he spins (or super spins) the ones marked
+    /// deflectable fly back off him instead (sound 7); coins (sprite 16) are collected.
+    pub fn touch(&mut self, buzz: [i32; 3], spinning: bool) {
+        let centre = [buzz[0], buzz[1] - 0x1CC0, buzz[2]];
+        let mut hurt = None;
+        for i in 0..SLOTS {
+            let p = self.slots[i];
+            if p.life < 1 || p.flags & 2 == 0 {
+                continue;
+            }
+            let d = [((centre[0] - p.pos[0]) as i64 * 0x100) >> 13, ((centre[1] - p.pos[1]) as i64 * 0x80) >> 13, ((centre[2] - p.pos[2]) as i64 * 0x100) >> 13];
+            let r = (p.size[0] + 100) as i64;
+            if r * r <= d[0] * d[0] + d[1] * d[1] + d[2] * d[2] {
+                continue;
+            }
+            // (how it hurts: 0 not, 1 always, 2 unless he spins; death action; sound)
+            let (how, death, coin) = match p.sprite {
+                0 | 1 | 0x13 => (1, 0i8, false),
+                4 | 5 | 0x33 | 0x34 => (2, p.death as i8, false),
+                0x10 => (0, 5, true),
+                0x15 => (1, 4, false),
+                0x35 | 0x36 => (1, p.death as i8, false),
+                0x37 => (2, 0, false),
+                _ => continue,
+            };
+            if how == 2 && spinning {
+                // Batted away.
+                let a = crate::boxes::angle12((buzz[0] - p.pos[0]) as f32, (buzz[2] - p.pos[2]) as f32);
+                let q = &mut self.slots[i];
+                q.flags &= !0xA;
+                q.vel = [sin14(a + 0x800) >> 4, -0x400, sin14(a + 0xC00) >> 4];
+                q.gravity = 0x30;
+                q.life = 0x32;
+                self.events.push(Event::Sound(7, q.pos));
+                continue;
+            }
+            if how != 0 {
+                hurt = Some(p.pos);
+            }
+            let q = &mut self.slots[i];
+            if death > 0 {
+                q.death = death as u8;
+                q.life = 1;
+            } else if death < 0 {
+                q.life = 1;
+            } else if coin || how != 0 {
+                q.life = 1;
+            }
+            if coin {
+                self.events.push(Event::Coin(q.pos));
+            }
+        }
+        if let Some(at) = hurt {
+            self.events.push(Event::Hurt(at));
+        }
     }
 
     pub fn live(&self) -> usize {

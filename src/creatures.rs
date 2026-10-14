@@ -117,6 +117,17 @@ pub enum Event {
     Died { slot: usize, pos: [i32; 3], coin: bool, centre: [i32; 3], burst: i32 },
 }
 
+/// A particle a creature's routine makes (0x40FAE0's arguments), for the caller to create.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParticleRequest {
+    pub pos: [i32; 3],
+    pub vel: [i32; 3],
+    pub gravity: i32,
+    pub angle: i32,
+    pub spin: i32,
+    pub typ: u8,
+}
+
 /// What a creature's update reported, for its type routine (the struct 0x4076F0 passes).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Step {
@@ -138,6 +149,10 @@ pub struct Creatures {
     /// Sounds requested since the caller last drained this: (id, position in object units).
     pub sounds: Vec<(u16, [i32; 3])>,
     pub events: Vec<Event>,
+    /// Owned sounds (looping while played each tick) with the slot that owns them.
+    pub owned_sounds: Vec<(u16, [i32; 3], usize)>,
+    /// Particles the type routines made this tick.
+    pub particles: Vec<ParticleRequest>,
     /// Hit shapes by creature id, from each character's `.all` file (slot +0x38 sphere and
     /// +0x84 ellipsoid table, set by 0x43B0C0); `default_shape` for the rest.
     pub shapes: std::collections::HashMap<u8, HitShapes>,
@@ -229,6 +244,8 @@ impl Creatures {
             rpos: 0,
             sounds: Vec::new(),
             events: Vec::new(),
+            owned_sounds: Vec::new(),
+            particles: Vec::new(),
             shapes: Default::default(),
             default_shape: HitShapes {
                 sphere: [0, 500, 0, 500],
@@ -479,6 +496,7 @@ impl Creatures {
             }
             c.active = true;
             let s = self.think(&mut c, world, buzz);
+            self.routine(i, &mut c, &s);
             // 0x4086F0: > 0 a delayed death, < 0 dying (then removed).
             if c.hurt > 0 {
                 c.hurt -= 1;
@@ -495,6 +513,64 @@ impl Creatures {
             steps.push((i, s));
         }
         steps
+    }
+
+    /// The creature's own routine (+0x94, set by 0x406CD0 from its type), after the shared update.
+    fn routine(&mut self, slot: usize, c: &mut Creature, s: &Step) {
+        if c.id == 4 {
+            self.zurg3(slot, c, s);
+        }
+    }
+
+    /// 0x406220, ZURG3 (the flying robot): leans into its sideways speed and hums (sound
+    /// 0x2C); while Buzz is in its zone it fires every 360 ticks: the attack animation at 200,
+    /// a shot from its right side at 182 and its left at 166 (particle 0x26, sound 0xD), back to
+    /// hovering at 136, and a dodge to one side when the count runs out.
+    fn zurg3(&mut self, slot: usize, c: &mut Creature, s: &Step) {
+        let side = s.side.clamp(-0x100, 0x100);
+        c.angles[2] -= (c.angles[2] + side) / 16;
+        if c.hurt >= 0 {
+            self.owned_sounds.push((0x2C, c.pos, slot));
+        }
+        if s.chase & 1 == 0 {
+            if c.anim == 1 {
+                self.set_anim(c, 0, 7);
+            }
+            c.timer = 0x104;
+            return;
+        }
+        let before = c.timer;
+        c.timer -= 1;
+        if c.timer < 0 {
+            c.timer = 0x168;
+            let a = c.angles[1] + if self.rand() < 0x80 { -0x200 } else { 0x200 };
+            c.vel[0] = sin(a) >> 4;
+            c.vel[2] = sin(a + 0x400) >> 4;
+            return;
+        }
+        let f = c.angles[1];
+        if before > 200 && c.timer < 0xC9 {
+            self.set_anim(c, 1, 8);
+        }
+        let shot = |dx: i32, dz: i32| ParticleRequest {
+            pos: [c.pos[0] + (dx >> 2), c.pos[1], c.pos[2] + (dz >> 2)],
+            vel: [sin(f) >> 4, -0x200, sin(f + 0x400) >> 4],
+            gravity: 0x40,
+            angle: 0,
+            spin: 0x80,
+            typ: 0x26,
+        };
+        if before > 0xB6 && c.timer < 0xB7 {
+            self.particles.push(shot(sin(f + 0x400), sin(f - 0x800)));
+            self.sounds.push((0xD, c.pos));
+        }
+        if before > 0xA6 && c.timer < 0xA7 {
+            self.particles.push(shot(sin(f - 0x400), sin(f)));
+            self.sounds.push((0xD, c.pos));
+        }
+        if before > 0x88 && c.timer < 0x89 {
+            self.set_anim(c, 0, 7);
+        }
     }
 
     /// 0x4076F0.
