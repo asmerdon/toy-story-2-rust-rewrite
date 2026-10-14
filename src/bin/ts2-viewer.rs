@@ -297,8 +297,9 @@ struct Viewer {
     creatures: Option<ts2::creatures::Creatures>,
     jingles: Vec<Jingle>,
     hud: String,
-    /// Q: the wrist laser (Square).
+    /// Left mouse button: the wrist laser (Square), pressed since the last update and held.
     fire_pressed: bool,
+    fire_held: bool,
     lasers: ts2::laser::Lasers,
     /// Sprite 9 (the beam): texture, texture size, cell size and cells 0–2.
     beam_sprite: Option<(usize, [f32; 2], [f32; 2], [[f32; 2]; 3])>,
@@ -655,7 +656,7 @@ impl Viewer {
                 stomp: std::mem::take(&mut self.stomp_pressed),
                 stomp_held: self.keys.contains(&KeyCode::KeyE),
                 fire: std::mem::take(&mut self.fire_pressed),
-                fire_held: self.keys.contains(&KeyCode::KeyQ),
+                fire_held: self.fire_held,
                 dpad: [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
                     .iter()
                     .filter(|(k, _)| self.keys.contains(k))
@@ -1015,7 +1016,7 @@ impl Viewer {
         self.creature_idx = ci;
         self.anim_preview = None;
         println!(
-            "play mode: WASD run, Space jump (again in the air: double jump), Q laser (hold to charge), E spin on the ground (hold to charge) or stomp in the air, right-drag camera, F to exit. Animations come from the original \
+            "play mode: WASD run, Space jump (again in the air: double jump), left mouse laser (hold to charge), E spin on the ground (hold to charge) or stomp in the air, right-drag camera, F to exit. Animations come from the original \
              move table{}; [ ] previews any animation, 0 returns to the move table",
             if self.buzz.is_some() { "" } else { " (not available: toy2.exe not found)" }
         );
@@ -1030,7 +1031,6 @@ impl Viewer {
             KeyCode::Space if self.player.is_some() => self.jump_pressed = true,
             // Circle (stomp). The original's keyboard default is F, which toggles play mode here.
             KeyCode::KeyE if self.player.is_some() => self.stomp_pressed = true,
-            KeyCode::KeyQ if self.player.is_some() => self.fire_pressed = true,
             KeyCode::Digit0 if self.player.is_some() => {
                 self.anim_preview = None;
                 println!("Buzz animations from the original move table");
@@ -1139,6 +1139,12 @@ impl ApplicationHandler for Viewer {
                 }
             }
             WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => self.looking = state == ElementState::Pressed,
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                self.fire_held = state == ElementState::Pressed && self.player.is_some();
+                if self.fire_held {
+                    self.fire_pressed = true;
+                }
+            }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let dt = (now - self.last).as_secs_f32().min(0.1);
@@ -1383,6 +1389,7 @@ fn main() {
         jingles: Vec::new(),
         hud: String::new(),
         fire_pressed: false,
+        fire_held: false,
         lasers,
         beam_sprite,
         laser_pose,
