@@ -121,42 +121,58 @@ struct AudioOut {
     bank: ts2::audio::SoundBank,
     /// Buzz's voice channel: one voice line at a time (0x49EA60 / 0x4A3E60).
     voice: Option<rodio::Sink>,
+    /// DirectSound buffers per sample slot (0x47DE50 loads six copies of each sample): a free
+    /// one plays; with all six busy, the one furthest through restarts.
+    buffers: std::collections::HashMap<u16, Vec<(rodio::Sink, std::time::Instant)>>,
 }
+
+const BUFFERS_PER_SAMPLE: usize = 6;
 
 impl AudioOut {
     fn play(&mut self, id: u16, voice: bool, rel: Vec3, right: Vec3, forward: Vec3) {
         if voice && self.voice.as_ref().is_some_and(|v| !v.empty()) {
             return;
         }
-        let Some((sample, vol, _)) = self.bank.sound(id) else { return };
+        let Some((_, vol, _)) = self.bank.sound(id) else { return };
+        let Some(slot) = self.bank.sound_slot(id) else { return };
         let (l, r) = ts2::audio::positional(vol, rel, right, forward);
         let (gl, gr) = self.bank.gains(l, r);
-        if let Some(sink) = self.emit(sample, gl, gr) {
-            if voice {
-                self.voice = Some(sink);
-            } else {
-                sink.detach();
-            }
+        if voice {
+            let Some(sample) = self.bank.slot(slot) else { return };
+            self.voice = self.emit(sample, gl, gr);
+        } else {
+            self.buffered(slot, gl, gr);
         }
     }
 
     /// A sound with no position (PlaySound with obj 0: 0x4A37E0), at its two table volumes.
     fn play_flat(&mut self, id: u16) {
-        let Some((sample, l, r)) = self.bank.sound(id) else { return };
+        let Some((_, l, r)) = self.bank.sound(id) else { return };
+        let Some(slot) = self.bank.sound_slot(id) else { return };
         let (gl, gr) = self.bank.gains(l, r);
-        if let Some(s) = self.emit(sample, gl, gr) {
-            s.detach();
-        }
+        self.buffered(slot, gl, gr);
     }
 
     /// A sample slot played at a position (0x4A3810), as jingle steps do.
     fn play_slot(&mut self, slot: u16, vol: i32, rel: Vec3, right: Vec3, forward: Vec3) {
-        let Some(sample) = self.bank.slot(slot) else { return };
         let (l, r) = ts2::audio::positional(vol, rel, right, forward);
         let (gl, gr) = self.bank.gains(l, r);
-        if let Some(s) = self.emit(sample, gl, gr) {
-            s.detach();
+        self.buffered(slot, gl, gr);
+    }
+
+    /// Plays `slot` on one of its six buffers, as 0x47DE50 picks them.
+    fn buffered(&mut self, slot: u16, gl: f32, gr: f32) {
+        let Some(sample) = self.bank.slot(slot) else { return };
+        let Some(sink) = self.emit(sample, gl, gr) else { return };
+        let now = std::time::Instant::now();
+        let bufs = self.buffers.entry(slot).or_default();
+        bufs.retain(|(s, _)| !s.empty());
+        if bufs.len() >= BUFFERS_PER_SAMPLE
+            && let Some(k) = (0..bufs.len()).min_by_key(|&k| bufs[k].1)
+        {
+            bufs.swap_remove(k).0.stop();
         }
+        bufs.push((sink, now));
     }
 
     fn emit(&self, sample: &ts2::audio::Sample, gl: f32, gr: f32) -> Option<rodio::Sink> {
@@ -279,6 +295,13 @@ struct Viewer {
     creatures: Option<ts2::creatures::Creatures>,
     jingles: Vec<Jingle>,
     hud: String,
+    /// Q: the wrist laser (Square).
+    fire_pressed: bool,
+    lasers: ts2::laser::Lasers,
+    /// Sprite 9 (the beam): texture, texture size, cell size and cells 0–2.
+    beam_sprite: Option<(usize, [f32; 2], [f32; 2], [[f32; 2]; 3])>,
+    /// 0x4DF294: the laser arm pose's frame table.
+    laser_pose: Vec<u8>,
 }
 
 fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -615,6 +638,8 @@ impl Viewer {
                 jump_held: self.keys.contains(&KeyCode::Space),
                 stomp: std::mem::take(&mut self.stomp_pressed),
                 stomp_held: self.keys.contains(&KeyCode::KeyE),
+                fire: std::mem::take(&mut self.fire_pressed),
+                fire_held: self.keys.contains(&KeyCode::KeyQ),
                 dpad: [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
                     .iter()
                     .filter(|(k, _)| self.keys.contains(k))
@@ -662,8 +687,36 @@ impl Viewer {
                 }
                 None => self.cam.pos = target - fwd * 4.5,
             }
-            // Creatures (0x4086F0) near the camera.
+            // Laser shots fired this frame hit before the creatures move (0x434990 runs in
+            // Buzz's update, before 0x4086F0).
             let cam_game = world_to_game(self.cam.pos);
+            let shots: Vec<game::Shot> = player.shots.drain(..).collect();
+            if let Some(cr) = self.creatures.as_mut() {
+                let cg = Vec3::from(cam_game);
+                let f = self.cam.forward();
+                let cf = Vec3::new(f.x, -f.y, -f.z);
+                let mut sounds = Vec::new();
+                for shot in shots {
+                    // The arm's tip: ahead of his chest along the shot.
+                    let a = shot.yaw as f32 / 4096.0 * std::f32::consts::TAU;
+                    let muzzle = [shot.origin[0] + (a.sin() * 90.0 * 32.0) as i32, shot.origin[1], shot.origin[2] + (a.cos() * 90.0 * 32.0) as i32];
+                    let slots: Vec<Vec3> = cr.slots.iter().map(|c| Vec3::from(c.pos.map(|v| v as f32 / 32.0))).collect();
+                    let visible = |i: usize| {
+                        let d = slots[i] - cg;
+                        d.dot(cf) > d.length() * 0.6
+                    };
+                    for ev in self.lasers.fire(shot, muzzle, player, &self.world, cr, &visible) {
+                        if let ts2::laser::Event::Sound(id, at) = ev {
+                            sounds.push((id, at));
+                        }
+                    }
+                }
+                cr.sounds.extend(sounds);
+            }
+            for _ in 0..ticks {
+                self.lasers.tick();
+            }
+            // Creatures (0x4086F0) near the camera.
             if let Some(cr) = self.creatures.as_mut() {
                 let cam_obj = cam_game.map(|v| (v * 32.0) as i32);
                 for _ in 0..ticks {
@@ -806,8 +859,17 @@ impl Viewer {
                 (None, Some(pose)) => {
                     let layer = |(ai, f): (usize, f32)| self.anims[ci].get(ai).map(|a| (a, f));
                     let c = &self.ngn.creatures[ci];
-                    // The spin attack plays animation 9 on the upper body (0x4011D0).
-                    let overlay = if p.spin > 0 && pose.base.0 != pose.overlay.0 { (9, (0x30 - p.spin) as f32 / 2.0) } else { pose.overlay };
+                    // The spin attack plays animation 9 on the upper body, the laser 0x1A
+                    // (0x4011D0); not in states that animate the whole body as one.
+                    let mut overlay = pose.overlay;
+                    if pose.base.0 != pose.overlay.0 {
+                        if p.spin > 0 {
+                            overlay = (9, (0x30 - p.spin) as f32 / 2.0);
+                        }
+                        if let Some(f) = p.laser_pose(&self.laser_pose) {
+                            overlay = (0x1A, f);
+                        }
+                    }
                     scene::merge(
                         &mut batches,
                         scene::creature_batches_layered(&self.ngn, c, p.pos.to_array(), yaw, layer(pose.base), layer(overlay)),
@@ -834,6 +896,8 @@ impl Viewer {
                 gfx.window.set_title(&format!("Toy Story 2 (Rust) - viewer   {}", self.hud));
             }
         }
+        // Laser beams.
+        scene::merge(&mut batches, self.lasers.beams_batches(Vec3::from(world_to_game(self.cam.pos)), self.beam_sprite));
         // Special objects at their current transforms; their billboards join the near set's.
         let mut special_bb = Vec::new();
         for s in self.specials.objects.values() {
@@ -909,6 +973,7 @@ impl Viewer {
             KeyCode::Space if self.player.is_some() => self.jump_pressed = true,
             // Circle (stomp). The original's keyboard default is F, which toggles play mode here.
             KeyCode::KeyE if self.player.is_some() => self.stomp_pressed = true,
+            KeyCode::KeyQ if self.player.is_some() => self.fire_pressed = true,
             KeyCode::Digit0 if self.player.is_some() => {
                 self.anim_preview = None;
                 println!("Buzz animations from the original move table");
@@ -1156,22 +1221,9 @@ fn main() {
     let player_creature = ngn.creatures.iter().position(|c| c.id == 0);
     // Creatures run their behaviour scripts in play mode (exe tables needed).
     let mut creatures = game_exe.as_ref().map(|e| ts2::creatures::Creatures::new(&all_spawns, Some(e), random_table.clone().unwrap_or_default()));
-    // Touch shapes from each creature's model in its rest pose.
-    if let Some(cr) = creatures.as_mut() {
-        for c in &ngn.creatures {
-            let pts: Vec<[f32; 3]> = c.nodes.iter().filter_map(|n| n.mesh.as_ref()).flat_map(|m| m.vertices.iter().map(|v| v.pos)).collect();
-            if pts.is_empty() {
-                continue;
-            }
-            let lo = pts.iter().fold([f32::MAX; 3], |a, p| [0, 1, 2].map(|k| a[k].min(p[k])));
-            let hi = pts.iter().fold([f32::MIN; 3], |a, p| [0, 1, 2].map(|k| a[k].max(p[k])));
-            let shape = ts2::creatures::Shape {
-                up: -(lo[1] + hi[1]) / 2.0,
-                half_height: (hi[1] - lo[1]) / 2.0,
-                radius: (hi[0] - lo[0]).max(hi[2] - lo[2]) * 0.4,
-            };
-            cr.shapes.insert(c.id as u8, shape);
-        }
+    // Hit shapes from each character's .all file.
+    if let (Some(cr), Some(data)) = (creatures.as_mut(), std::path::Path::new(path).parent().and_then(|d| d.parent())) {
+        cr.load_shapes(data);
     }
 
     // Pushable boxes and the level's own script (level 1 only so far).
@@ -1204,7 +1256,7 @@ fn main() {
         match rodio::OutputStream::try_default() {
             Ok((stream, handle)) => {
                 println!("sound: {} samples for level {level}", bank.sample_count());
-                Some(AudioOut { _stream: stream, handle, bank, voice: None })
+                Some(AudioOut { _stream: stream, handle, bank, voice: None, buffers: Default::default() })
             }
             Err(err) => {
                 println!("no sound output: {err}");
@@ -1212,6 +1264,16 @@ fn main() {
             }
         }
     });
+    // The laser beam's sprite (9 in the table 0x4EC0A4) and the arm pose table.
+    let beam_sprite = game_exe.as_ref().and_then(|e| ts2::pickups::sprite_def(e, 9)).and_then(|d| {
+        let name = format!("tex{:02}", d.texture);
+        let i = ngn.textures.iter().position(|t| t.name.eq_ignore_ascii_case(&name))?;
+        let (w, h, _) = ngn.textures[i].dimensions()?;
+        let c = |k: usize| d.cells.get(k).map_or([0.0; 2], |c| [c[0] as f32, c[1] as f32]);
+        Some((i, [(w as f32).abs(), (h as f32).abs()], [d.size[0] as f32, d.size[1] as f32], [c(0), c(1), c(2)]))
+    });
+    let laser_pose = game_exe.as_ref().and_then(|e| e.at(0x4DF294, 32).ok()).map(|b| b.to_vec()).unwrap_or_default();
+    let lasers = ts2::laser::Lasers::new(random_table.clone().unwrap_or_default());
     match start {
         Some(s) => println!("player start {:?}, facing {:.0} degrees (F to play, Shift+F to drop at camera)", s.pos, s.yaw_radians().to_degrees()),
         None => println!("no player start found (toy2.exe not next to data\\, or not a main level file)"),
@@ -1262,6 +1324,10 @@ fn main() {
         creatures,
         jingles: Vec::new(),
         hud: String::new(),
+        fire_pressed: false,
+        lasers,
+        beam_sprite,
+        laser_pose,
     };
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut viewer).expect("run");

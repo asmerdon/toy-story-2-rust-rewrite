@@ -28,7 +28,7 @@ fn texture_index(ngn: &Ngn, name: &str) -> Option<usize> {
     ngn.textures.iter().position(|t| t.name == name)
 }
 
-fn push(batches: &mut Vec<Batch>, texture: Option<usize>, blend: Blend, tri: [GpuVertex; 3]) {
+pub fn push(batches: &mut Vec<Batch>, texture: Option<usize>, blend: Blend, tri: [GpuVertex; 3]) {
     match batches.iter_mut().find(|b| b.texture == texture && b.blend == blend) {
         Some(b) => b.vertices.extend_from_slice(&tri),
         None => batches.push(Batch { texture, blend, vertices: tri.to_vec() }),

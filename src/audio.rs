@@ -197,8 +197,8 @@ impl SoundBank {
         usize::try_from(-1 - id).ok().and_then(|k| self.jingles.get(k)).map_or(&[], |v| v.as_slice())
     }
 
-    /// The sample and its (left, right) volumes for sound `id`, as 0x49E660 resolves them.
-    pub fn sound(&self, id: u16) -> Option<(&Sample, i32, i32)> {
+    /// The sample slot sound `id` plays in this level, as 0x49E660 resolves it.
+    pub fn sound_slot(&self, id: u16) -> Option<u16> {
         let def = self.exe_defs.get(id as usize)?;
         let mut slot = def[0] as u16;
         if slot & 0x4000 != 0 {
@@ -207,10 +207,13 @@ impl SoundBank {
             slot = self.remap.get(start..)?.iter().take(32).find(|(lv, _)| *lv as usize == self.level)?.1 as u16;
         }
         let slot = slot & 0x7FFF;
-        if slot == 0 {
-            return None;
-        }
-        Some((self.slots.get(&slot)?, def[2] as i32, def[3] as i32))
+        (slot != 0).then_some(slot)
+    }
+
+    /// The sample and its (left, right) volumes for sound `id`, as 0x49E660 resolves them.
+    pub fn sound(&self, id: u16) -> Option<(&Sample, i32, i32)> {
+        let def = self.exe_defs.get(id as usize)?;
+        Some((self.slots.get(&self.sound_slot(id)?)?, def[2] as i32, def[3] as i32))
     }
 
     /// Left and right gains (0..1) for DirectSound volume/pan as 0x47DE50 sets them.

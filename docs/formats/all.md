@@ -47,3 +47,13 @@ Per-part bounding boxes show the parts already assembled in a bind pose (Woody: 
 ## Trailer (after 0x12345678): open
 
 Repeated records `78 56 34 12 | u16 count | u16 id | count × {i16 x, y, z, u16 0/1}`. Each record holds pairs of points with a 0/1 flag. This looks like attachment, collision or bone-pivot data. The ids (0x71, 0x73, 0x135, …) increase. **To decode next**, together with `.anm`.
+
+## Directory and hit shapes (from the PC loader 0x43D820 / 0x43ACA0)
+
+Word 0 (the "header") × 2 is the offset of a directory: `u32 count`, then `count` × 0x4C-byte entries. Each entry starts with `u32 size` (16-bit words) and has `u32 type` at +0x10. The data blocks follow each other from offset 4, in entry order. Types below 0x100 are model parts; higher types are shared blocks.
+
+The **type-9** entry (the last one) holds the creature's hit shapes:
+- its +0x2C words: a bounding sphere `i16 x, y, z` (object units, from the feet) and `i16 radius` (level units);
+- its data block: one 16-byte ellipsoid per animation, `i16 x, y, z` offset (object units, rotated by the facing), `i16` (the first entry holds the count), `i16 sx, sy, sz` axis scales (/256), `i16 radius` (level units).
+
+Examples: ZURG1 sphere (0, −6560, 0) r 298, ellipsoid (0, −6944, 0) scales (256, 269, 561) r 248; sheep (0, −3872, −960) scales (344, 330, 256) r 147. Parser: `all::hit_shapes`.

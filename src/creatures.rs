@@ -12,6 +12,7 @@
 //!
 //! Units as the game: object units (level units × 32), 12-bit angles, ticks.
 
+use crate::formats::all::{self, Ellipsoid, HitShapes};
 use crate::formats::exe::Exe;
 use crate::formats::packets::Spawn;
 use crate::game::{Player, World};
@@ -107,15 +108,6 @@ pub struct Creature {
     dying_script: bool,
 }
 
-/// A creature's touch shape: a vertical cylinder around its position, from its model.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Shape {
-    /// Centre height above the feet and half height, level units.
-    pub up: f32,
-    pub half_height: f32,
-    pub radius: f32,
-}
-
 /// Something creatures did this tick that the game around them handles.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -144,14 +136,19 @@ pub struct Creatures {
     /// Sounds requested since the caller last drained this: (id, position in object units).
     pub sounds: Vec<(u16, [i32; 3])>,
     pub events: Vec<Event>,
-    /// Touch shapes by creature id.
-    pub shapes: std::collections::HashMap<u8, Shape>,
+    /// Hit shapes by creature id, from each character's `.all` file (slot +0x38 sphere and
+    /// +0x84 ellipsoid table, set by 0x43B0C0); `default_shape` for the rest.
+    pub shapes: std::collections::HashMap<u8, HitShapes>,
+    default_shape: HitShapes,
     /// Hit kinds (0x4E066C): (type, knock-back ticks, damage).
     hits: Vec<[i16; 3]>,
     death_script: Option<Vec<i16>>,
 }
 
 const HITS: u32 = 0x4E066C;
+/// Ellipsoid used by characters without a table of their own (0x43B9B0 points every type at
+/// it), with the default sphere (0, 500, 0) radius 500.
+const DEFAULT_ELLIPSOID: u32 = 0x4F6EA0;
 const DEATH_SCRIPT: u32 = 0x4E02CC;
 
 const BEHAVIOURS: u32 = 0x4E02C4;
@@ -169,6 +166,11 @@ fn cos(a: i32) -> i32 {
 
 fn atan(x: i32, z: i32) -> i32 {
     crate::boxes::angle12(x as f32, z as f32)
+}
+
+/// `dir/name`, matching the name without regard to case (the install mixes cases).
+fn find_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(name)))
 }
 
 /// Frame lists of the shared sequence table: frame bytes up to 0xFF and the byte after it.
@@ -226,6 +228,14 @@ impl Creatures {
             sounds: Vec::new(),
             events: Vec::new(),
             shapes: Default::default(),
+            default_shape: HitShapes {
+                sphere: [0, 500, 0, 500],
+                ellipsoids: vec![
+                    exe.and_then(|e| e.at(DEFAULT_ELLIPSOID, 16).ok())
+                        .map(|b| HitShapes::entry(&(0..8).map(|k| i16::from_le_bytes([b[2 * k], b[2 * k + 1]])).collect::<Vec<_>>()))
+                        .unwrap_or(Ellipsoid { offset: [0, -250, 0], scale: [512, 256, 512], radius: 250 }),
+                ],
+            },
             hits,
             death_script,
         };
@@ -263,6 +273,112 @@ impl Creatures {
             c.slots.push(cr);
         }
         c
+    }
+
+    /// Reads every character's hit shapes: `creatures.cfg` in `data` names each id's file
+    /// (`<dir>\\<name>.all`, the directory relative to a level folder).
+    pub fn load_shapes(&mut self, data: &std::path::Path) {
+        let Ok(cfg) = std::fs::read_to_string(data.join("creatures.cfg")) else { return };
+        let ids: std::collections::HashSet<u8> = self.slots.iter().map(|c| c.id).collect();
+        for line in cfg.lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let [kw, id, name, dir, ..] = f[..] else { continue };
+            let Ok(id) = id.parse::<u8>() else { continue };
+            if kw != "CREATURE" || !ids.contains(&id) {
+                continue;
+            }
+            let dir = dir.trim_start_matches("..\\").to_ascii_lowercase();
+            if let Some(h) = find_file(&data.join(&dir), &format!("{}.all", name.to_ascii_lowercase()))
+                .and_then(|p| std::fs::read(p).ok())
+                .and_then(|b| all::hit_shapes(&b))
+            {
+                self.shapes.insert(id, h);
+            }
+        }
+    }
+
+    /// The hit shapes of creature id `id`.
+    pub fn shape(&self, id: u8) -> &HitShapes {
+        self.shapes.get(&id).unwrap_or(&self.default_shape)
+    }
+
+    /// Centre of slot `i`'s ellipsoid for its current animation, object units, and the ellipsoid.
+    pub fn ellipsoid_at(&self, i: usize) -> ([i32; 3], Ellipsoid) {
+        let c = &self.slots[i];
+        let e = self.shape(c.id).ellipsoid(c.anim as usize);
+        let (s, k) = (sin(c.angles[1] - 0x800) >> 2, sin(c.angles[1] - 0x400) >> 2);
+        let (ox, oy, oz) = (e.offset[0] as i32, e.offset[1] as i32, e.offset[2] as i32);
+        ([((ox * k + oz * s) >> 12) + c.pos[0], oy + c.pos[1], ((oz * k - ox * s) >> 12) + c.pos[2]], e)
+    }
+
+    /// 0x4A5870: a laser ray from `origin` along `delta` (object units) against every creature
+    /// in play whose record allows it (+0x1A bit 4), as ellipsoids. The nearest hit shortens
+    /// `delta` to the entry point. Returns 0 (nothing), 2 (hit) or 4 (hit something the laser
+    /// can't hurt, record bit 1 clear: the beam bounces). With `kind` 1 or 2 the hit lands
+    /// (hit kinds 2 and 3 of 0x4E066C) at Buzz's `facing`.
+    pub fn laser_ray(&mut self, origin: [i32; 3], delta: &mut [i32; 3], kind: u8, facing: i32) -> u32 {
+        let mut found = None;
+        for i in 0..self.slots.len() {
+            let c = &self.slots[i];
+            if c.id == 0 || !c.active || c.health <= 0 || c.rec.state & 4 == 0 || c.knock < 0 || c.hurt < 0 {
+                continue;
+            }
+            let (centre, e) = self.ellipsoid_at(i);
+            let (s, k) = (sin(c.angles[1] - 0x800) >> 2, sin(c.angles[1] - 0x400) >> 2);
+            let [sx, sy, sz] = e.scale.map(|v| v as i32);
+            // Into the ellipsoid's frame, where it is a sphere: level units.
+            let local = |v: [i32; 3]| {
+                let (x, z) = (v[0] - centre[0], v[2] - centre[2]);
+                [((x * k + z * s) >> 12) * sx >> 8, (v[1] - centre[1]) * sy >> 8, ((z * k - x * s) >> 12) * sz >> 8]
+            };
+            let a = local(origin).map(|v| -(v >> 5));
+            let end = [0, 1, 2].map(|j| origin[j] + delta[j]);
+            let b = local(end).map(|v| -(v >> 5));
+            let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]].map(|v| -v);
+            let len = ((d[0] as f64).powi(2) + (d[1] as f64).powi(2) + (d[2] as f64).powi(2)).sqrt();
+            if len < 1.0 {
+                continue;
+            }
+            let u = d.map(|v| v as f64 / len);
+            // Centre relative to the ray start is −a.
+            let t = a.iter().zip(&u).map(|(&p, &q)| p as f64 * q).sum::<f64>();
+            if t <= 0.0 || t > len {
+                continue;
+            }
+            let perp2 = (0..3).map(|j| (a[j] as f64 - t * u[j]).powi(2)).sum::<f64>();
+            let r = e.radius as f64;
+            if perp2 >= r * r {
+                continue;
+            }
+            let t_in = t - (r * r - perp2).sqrt();
+            // Back to the world: undo the scales and the rotation.
+            let lx = t_in * u[0] * 256.0 * 32.0 / sx.max(1) as f64;
+            let ly = t_in * u[1] * 256.0 * 32.0 / sy.max(1) as f64;
+            let lz = t_in * u[2] * 256.0 * 32.0 / sz.max(1) as f64;
+            let (kf, sf) = (k as f64 / 4096.0, s as f64 / 4096.0);
+            *delta = [(lx * kf - lz * sf) as i32, ly as i32, (lz * kf + lx * sf) as i32];
+            found = Some(i);
+        }
+        let Some(i) = found else { return 0 };
+        if kind != 0 {
+            self.hit(i, facing, if kind == 1 { 2 } else { 3 });
+        }
+        if self.slots[i].rec.state & 1 == 0 { 4 } else { 2 }
+    }
+
+    /// Creatures the laser auto-aims at (0x4A5D30): in play, targetable (+0x1A bit 4), not
+    /// dying, within 4096 level units of `origin` and 768 of its height. Slot indices.
+    pub fn aim_candidates(&self, origin: [i32; 3]) -> Vec<usize> {
+        (0..self.slots.len())
+            .filter(|&i| {
+                let c = &self.slots[i];
+                if c.id == 0 || !c.active || c.health <= 0 || c.rec.state & 4 == 0 || c.hurt < 0 {
+                    return false;
+                }
+                let d = [0, 1, 2].map(|j| ((c.pos[j] - origin[j]) >> 5) as i64);
+                d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 0x100_0000 && d[1].abs() < 0x300
+            })
+            .collect()
     }
 
     fn rand(&mut self) -> u8 {
@@ -646,28 +762,38 @@ impl Creatures {
         self.slots[slot] = c;
     }
 
-    /// 0x407440: Buzz touching creatures. His attack (spin, stomp) hits them; harmful ones
-    /// (flag 0x100) hurt him when he isn't attacking; others just push him away.
+    /// 0x407440: Buzz touching creatures. His centre (0x1CC0 above his feet) against first the
+    /// creature's sphere, then its ellipsoid, each grown by his reach (150 level units, 400
+    /// spinning or just after a stomp). His attack (spin, stomp) hits them; harmful ones (flag
+    /// 0x100) hurt him when he isn't attacking; others just push him away.
     pub fn contact(&mut self, player: &mut Player) {
         let (kind, reach) = player.attack();
-        let b = player.pos.to_array();
-        let chest = b[1] - 230.0;
+        let b = player.pos_obj();
+        let chest = [b[0], b[1] - 0x1CC0, b[2]];
         for i in 0..self.slots.len() {
             let c = &self.slots[i];
-            if c.id == 0 || !c.active || c.health <= 0 || c.hurt < 0 || c.flags & 0x80 == 0 {
+            if c.id == 0 || !c.active || c.health <= 0 || c.hurt < 0 || c.knock < 0 {
                 continue;
             }
-            let sh = self.shapes.get(&c.id).copied().unwrap_or(Shape { up: 150.0, half_height: 150.0, radius: 120.0 });
-            let p = c.pos.map(|v| v as f32 / 32.0);
-            let centre = p[1] - sh.up;
-            let (dx, dz) = (b[0] - p[0], b[2] - p[2]);
-            let r = sh.radius + reach as f32 * 0.5;
-            if dx * dx + dz * dz >= r * r || (chest - centre).abs() >= sh.half_height + reach as f32 * 0.5 {
+            let sh = self.shape(c.id);
+            let sp = [0, 1, 2].map(|j| (sh.sphere[j] as i32 + c.pos[j] - chest[j]) >> 5);
+            let rr = sh.sphere[3] as i32 + reach;
+            if sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2] >= rr * rr {
                 continue;
             }
-            let angle = crate::boxes::angle12(dx, dz);
-            let below = centre >= chest;
-            let k = if kind != 0 && c.rec.state & 2 != 0 && !(kind == 5 && !below) { kind as usize } else { 0 };
+            let (centre, e) = self.ellipsoid_at(i);
+            let (s, k) = (sin(c.angles[1] - 0x800) >> 2, sin(c.angles[1] - 0x400) >> 2);
+            let (x, z) = (centre[0] - chest[0], centre[2] - chest[2]);
+            let lz = ((k * z - s * x) >> 12) * e.scale[2] as i32 >> 13;
+            let lx = ((s * z + k * x) >> 12) * e.scale[0] as i32 >> 13;
+            let ly = (centre[1] - chest[1]) * e.scale[1] as i32 >> 13;
+            let r = e.radius as i32 + reach;
+            if lx * lx + ly * ly + lz * lz >= r * r || c.flags & 0x80 == 0 {
+                continue;
+            }
+            let angle = atan(b[0] - c.pos[0], b[2] - c.pos[2]);
+            // A stomp only lands from above.
+            let k = if kind != 0 && c.rec.state & 2 != 0 && !(kind == 5 && ly < 0) { kind as usize } else { 0 };
             let mode = if c.flags & 0x100 != 0 && kind == 0 {
                 3
             } else if c.health == 0x66 || k != 0 {

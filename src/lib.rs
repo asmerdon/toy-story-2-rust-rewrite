@@ -12,6 +12,7 @@ pub mod camera;
 pub mod export;
 pub mod formats;
 pub mod game;
+pub mod laser;
 pub mod level1;
 pub mod pickups;
 pub mod scene;

@@ -27,6 +27,9 @@ pub mod state {
     pub const CLIMB_SLIDE: u16 = 0x10;
     /// Sharp reversal on the ground (26 ticks).
     pub const SKID: u16 = 0x12;
+    /// The super spin, and the dizzy spell after it (0x4011D0 from 0x53C83C).
+    pub const SUPER_SPIN: u16 = 0x13;
+    pub const DIZZY: u16 = 0x14;
     /// Stomp: hang and slam.
     pub const STOMP: u16 = 0x17;
     /// Stomp impact.

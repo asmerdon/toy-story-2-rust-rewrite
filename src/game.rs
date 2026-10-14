@@ -50,6 +50,9 @@ const TURN_CAP: i32 = 0x300;
 /// Sharp reversals (≥ 0x5DD, about 132°) snap round instead of turning.
 const SNAP_TURN: i32 = 0x5DD;
 const SKID_TICKS: i32 = 0x1A;
+/// The super spin's length, and the charge value where its spinning part ends (0x434EB0).
+const SUPER_SPIN: i32 = 300;
+const SUPER_SPIN_END: i32 = -0x77;
 const SKID_FRICTION: i32 = 4;
 const SKID_SIDE_DECEL: i32 = 0x10;
 
@@ -517,6 +520,10 @@ pub struct Input {
     pub stomp: bool,
     /// Circle held (charges the spin).
     pub stomp_held: bool,
+    /// Square pressed since the last update (pad bit 0x8000): the wrist laser; and held
+    /// (charges it).
+    pub fire: bool,
+    pub fire_held: bool,
     /// The d-pad itself (pad bits 0x10 up, 0x20 right, 0x40 down, 0x80 left); climbing reads it
     /// directly rather than as a camera-relative direction.
     pub dpad: u8,
@@ -528,6 +535,16 @@ pub mod pad {
     pub const RIGHT: u8 = 0x20;
     pub const DOWN: u8 = 0x40;
     pub const LEFT: u8 = 0x80;
+}
+
+/// A laser shot Buzz fired this tick (0x434990 calls 0x4A5D30): kind 1 normal, 2 charged;
+/// along `yaw` (12-bit) and `pitch` from the arm, 0x2C00 object units above his feet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shot {
+    pub kind: u8,
+    pub yaw: i32,
+    pub pitch: i32,
+    pub origin: [i32; 3],
 }
 
 /// Jump phase, as the original keeps it at player +0x8C.
@@ -619,6 +636,14 @@ pub struct Player {
     /// Surface type of the floor under Buzz this tick.
     pub surface: Option<u8>,
     circle_held: bool,
+    /// 0x53C620: the laser's arm timer: 1–11 raising the arm, 12 the shot, then on to 0x3F
+    /// (held, it loops back by 0x28 to keep aiming); 0 = off. 0x53C840: charge (to 0x40).
+    pub laser: i32,
+    pub laser_charge: i32,
+    fire_latch: bool,
+    fire_held: bool,
+    /// Shots fired since the caller last drained this.
+    pub shots: Vec<Shot>,
     /// Ticks until Buzz may say an idle line again (0x50A0BC) and the last line (0x50A0B0).
     voice_timer: i32,
     last_voice: u16,
@@ -684,6 +709,11 @@ impl Player {
             charge: 0,
             surface: None,
             circle_held: false,
+            laser: 0,
+            laser_charge: 0,
+            fire_latch: false,
+            fire_held: false,
+            shots: Vec::new(),
             voice_timer: 0,
             last_voice: 0,
             poles: Vec::new(),
@@ -782,10 +812,11 @@ impl Player {
         self.pos.to_array().map(|v| (v * 32.0).round() as i32)
     }
 
-    /// Doing something that stops pushing boxes (0x53C828 bits other than "on the ground"):
-    /// climbing, stomping, a long-fall panic or its recovery.
+    /// Doing something that stops pushing boxes, spinning and the like (0x53C828 bits other
+    /// than "on the ground"): the super spin, climbing, stomping, a long-fall panic or its
+    /// recovery.
     pub fn busy(&self) -> bool {
-        self.climb > 0 || self.stomp != 0 || self.fall_timer < 0 || self.fall_timer == FALL_PANIC
+        self.charge < 0 || self.climb > 0 || self.stomp != 0 || self.fall_timer < 0 || self.fall_timer == FALL_PANIC
     }
 
     /// Facing in radians around the vertical axis (0 = +Z).
@@ -814,6 +845,8 @@ impl Player {
         self.jump_latch |= input.jump;
         self.stomp_latch |= input.stomp;
         self.circle_held = input.stomp_held;
+        self.fire_latch |= input.fire;
+        self.fire_held = input.fire_held;
         self.accum = (self.accum + dt * TICKS).min(MAX_TICKS_PER_UPDATE);
         while self.accum >= 1.0 {
             self.accum -= 1.0;
@@ -858,6 +891,8 @@ impl Player {
         }
 
         self.grab_lock = (self.grab_lock - 1).max(0);
+        let fire = std::mem::take(&mut self.fire_latch);
+        self.laser_tick(fire, self.fire_held || fire);
         let stomp = self.stomp_tick(stomp_pressed);
         self.spin_tick(stomp_pressed);
         if self.hurt_timer > 0 {
@@ -933,6 +968,12 @@ impl Player {
             }
             // 0xFE also clears the standing sub-state (0x50A098).
             self.idle_sub = 0;
+        }
+        // States that animate the whole body as one (both layers the same animation) put the
+        // spin and the laser's arm down (0x4011D0).
+        if self.anim.as_ref().and_then(|a| a.moves.get(self.state as usize)).is_some_and(|m| m.anim == m.base_anim) {
+            self.spin = 0;
+            self.laser = 0;
         }
         if let Some(a) = self.anim.as_mut() {
             let ids: Vec<u16> = a.sounds.drain(..).collect();
@@ -1327,38 +1368,139 @@ impl Player {
         }
     }
 
-    /// 0x434EB0: Circle on the ground starts a spin attack (48 ticks, sound 0x11); held, it
-    /// charges (to 60); released fully charged, a super spin (300 ticks).
+    /// 0x434EB0: Circle on the ground starts a spin attack (48 ticks, sound 0x11). Kept held
+    /// with nothing else going on, it charges: from tick 13 the charge whine (sound 0x27) plays
+    /// every tick, up to 60. Released fully charged, the super spin: 181 ticks spinning (sound
+    /// 0x26 every tick, state 0x13), then 119 dizzy (sound 0x18 once, state 0x14).
     fn spin_tick(&mut self, pressed: bool) {
         if self.spin > 0 {
             self.spin -= 1;
         }
         if pressed && self.coyote != 0 && !self.busy() && self.charge == 0 && self.spin == 0 && self.skid == 0 {
             self.spin = 0x30;
+            self.laser = 0;
             self.charge = 1;
             self.sound(0x11);
         }
-        if self.circle_held && self.charge > 0 && self.coyote != 0 {
+        if self.circle_held && !self.busy() && self.charge > 0 {
             self.charge = (self.charge + 1).min(0x3C);
+            if self.charge >= 0xD {
+                self.sound(0x27);
+            }
             return;
         }
         if self.charge < 0 {
+            let was_spinning = self.charge < SUPER_SPIN_END;
             self.charge += 1;
-            if self.charge == -0x77 {
-                self.sound(0x18);
-            } else if self.charge < -0x77 && self.charge % 8 == 0 {
+            if self.charge < SUPER_SPIN_END {
                 self.sound(0x26);
+            } else if was_spinning {
+                self.sound(0x18);
             }
             return;
         }
         // Released: a full charge becomes the super spin.
-        self.charge = if self.charge > 0x3B && self.coyote != 0 { -300 } else { 0 };
+        self.charge = if self.charge > 0x3B && !self.busy() { -SUPER_SPIN } else { 0 };
+    }
+
+    /// The state bits 0x436220 gathers at 0x53C828 each tick, as far as they are ported: 1 on
+    /// the ground, 2 super spin, 0x10 climbing, 0x20 long fall or its landing, 0x40 stomping,
+    /// 0x80 the laser.
+    pub fn state_bits(&self) -> u32 {
+        let mut f = (self.coyote != 0) as u32;
+        f |= if self.charge < 0 { 2 } else { 0 };
+        f |= if self.climb > 0 { 0x10 } else { 0 };
+        f |= if self.fall_timer < 0 || self.fall_timer == FALL_PANIC { 0x20 } else { 0 };
+        f |= if self.stomp != 0 { 0x40 } else { 0 };
+        f |= if self.laser != 0 { 0x80 } else { 0 };
+        f
+    }
+
+    /// 0x434990: Square raises the arm (11 ticks) and fires (sound 2); pressed again within
+    /// the next 41 ticks it fires again. Held, the shot charges (whine 0x27 from tick 13);
+    /// released after 64 ticks, a charged shot (sound 6). Climbing, a long fall and the like
+    /// put the arm down. Shots go to `shots`, along Buzz's facing.
+    fn laser_tick(&mut self, pressed: bool, held: bool) {
+        let bits = self.state_bits();
+        if bits & 0xF_BE3C != 0 {
+            self.laser = 0;
+            self.laser_charge = 0;
+        } else if self.laser == 0 {
+            self.laser_charge = 0;
+        }
+        let mut fire = 0u8;
+        if pressed && bits & 0xF_BEFE == 0 {
+            self.laser_charge = 0;
+            self.charge = 0;
+            self.spin = 0;
+            self.laser = 1;
+            return;
+        }
+        if self.laser == 0 {
+            return;
+        }
+        if self.laser < 0xC {
+            if self.laser + 1 < 0xC {
+                self.laser += 1;
+                return;
+            }
+            fire = 1;
+        } else {
+            self.laser += 1;
+            if !held {
+                if self.laser_charge > 0x24 {
+                    self.laser = 0x34;
+                }
+                if self.laser_charge == 0x40 {
+                    fire = 2;
+                }
+                self.laser_charge = 0;
+            } else {
+                self.laser_charge = (self.laser_charge + 1).min(0x40);
+                if pressed && bits & 0xF_BE7E == 0 {
+                    if self.laser < 0x35 {
+                        fire = 1;
+                    } else {
+                        self.laser = 0x40 - self.laser;
+                    }
+                } else if self.laser > 0x33 {
+                    self.laser -= 0x28;
+                }
+                if self.laser_charge > 0xC {
+                    self.sound(0x27);
+                }
+            }
+            if self.laser > 0x3F {
+                self.laser = 0;
+            }
+            if fire == 0 {
+                return;
+            }
+        }
+        self.laser = 0xC;
+        self.sound(if fire == 1 { 2 } else { 6 });
+        let p = self.pos_obj();
+        self.shots.push(Shot { kind: fire, yaw: self.facing, pitch: 0, origin: [p[0], p[1] - 0x2C00, p[2]] });
+    }
+
+    /// The laser's arm pose (0x4011D0): animation 0x1A on the upper body, at frame
+    /// (table 0x4DF294[t / 2] · 2 + t % 2) / 2 for timer t; `table` from the exe.
+    pub fn laser_pose(&self, table: &[u8]) -> Option<f32> {
+        (self.laser > 0).then(|| {
+            let t = self.laser as usize;
+            ((t & 1) + table.get(t / 2).copied().unwrap_or(0) as usize * 2) as f32 / 2.0
+        })
+    }
+
+    /// In the spinning part of the super spin (0x53C83C below −0x77).
+    pub fn super_spinning(&self) -> bool {
+        self.charge < SUPER_SPIN_END
     }
 
     /// Attacking creatures this tick (0x407440): kind 1 spinning, 5 stomping, 0 not; and the
     /// reach (400 while spinning or just after a stomp lands, else 150 level units).
     pub fn attack(&self) -> (u8, i32) {
-        let spinning = self.spin > 0x14 || self.charge < -0x77;
+        let spinning = self.spin > 0x14 || self.super_spinning();
         let mut reach = if spinning { 400 } else { 150 };
         let mut kind = if spinning { 1 } else { 0 };
         if self.stomp > 0 {
@@ -1506,15 +1648,6 @@ impl Player {
                 self.state = state::SKID;
             }
         }
-        if self.climb > 0 {
-            self.state = if self.climb & 4 != 0 {
-                state::CLIMB_SLIDE
-            } else if self.climb & 2 != 0 {
-                state::CLIMB_UP
-            } else {
-                state::CLIMB_HANG
-            };
-        }
         if self.stomp > 0 {
             self.state = state::STOMP;
         }
@@ -1523,6 +1656,18 @@ impl Player {
         }
         if self.fall_timer < 0 {
             self.state = state::FALL_RECOVER;
+        }
+        if self.charge < 0 {
+            self.state = if self.super_spinning() { state::SUPER_SPIN } else { state::DIZZY };
+        }
+        if self.climb > 0 {
+            self.state = if self.climb & 4 != 0 {
+                state::CLIMB_SLIDE
+            } else if self.climb & 2 != 0 {
+                state::CLIMB_UP
+            } else {
+                state::CLIMB_HANG
+            };
         }
     }
 }
@@ -1550,6 +1695,42 @@ mod tests {
         }
         assert!(p.on_floor && p.coyote == COYOTE_TICKS);
         p
+    }
+
+    /// Holding Circle charges the spin (whine from tick 13); released full, the super spin
+    /// runs 181 ticks, then 119 dizzy.
+    #[test]
+    fn held_spin_charges_into_a_super_spin() {
+        let w = room();
+        let mut p = landed(&w);
+        let input = |stomp, held| Input { stomp, stomp_held: held, ..Default::default() };
+        p.update(&w, input(true, true), 1.0 / 60.0);
+        assert_eq!((p.spin, p.charge), (0x30, 2));
+        p.sounds.clear();
+        for _ in 0..70 {
+            p.update(&w, input(false, true), 1.0 / 60.0);
+        }
+        assert_eq!(p.charge, 0x3C);
+        assert!(p.sounds.iter().filter(|s| s.id == 0x27).count() > 50, "no charge whine");
+        p.update(&w, input(false, false), 1.0 / 60.0);
+        assert_eq!(p.charge, -SUPER_SPIN);
+        assert!(p.super_spinning() && p.attack().0 == 1);
+        assert_eq!(p.state, state::SUPER_SPIN);
+        for _ in 0..181 {
+            p.update(&w, input(false, false), 1.0 / 60.0);
+        }
+        assert!(!p.super_spinning() && p.charge < 0);
+        assert_eq!(p.state, state::DIZZY);
+        for _ in 0..119 {
+            p.update(&w, input(false, false), 1.0 / 60.0);
+        }
+        assert_eq!(p.charge, 0);
+        // A quick tap is one spin, no charge.
+        let mut q = landed(&w);
+        q.update(&w, input(true, true), 1.0 / 60.0);
+        q.update(&w, input(false, false), 1.0 / 60.0);
+        assert_eq!(q.charge, 0);
+        assert!(q.spin > 0);
     }
 
     #[test]

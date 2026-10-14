@@ -60,3 +60,14 @@ fn smooth_models_reach_geometry_end() {
         assert!(m.parts.iter().any(|p| !p.normals.is_empty()), "{name} has no normals");
     }
 }
+
+/// ZURG1's hit ellipsoid and sphere (the `.all` directory's type-9 entry).
+#[test]
+fn zurg1_hit_shapes() {
+    let Some(game) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else { return };
+    let b = std::fs::read(game.join("data/chars/zurg1.all")).unwrap();
+    let h = ts2::formats::all::hit_shapes(&b).unwrap();
+    assert_eq!(h.sphere, [0, -6560, 0, 298]);
+    assert_eq!(h.ellipsoids.len(), 3);
+    assert_eq!(h.ellipsoid(7), ts2::formats::all::Ellipsoid { offset: [0, -6944, 0], scale: [256, 269, 561], radius: 248 });
+}

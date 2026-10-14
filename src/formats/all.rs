@@ -246,3 +246,64 @@ pub fn parse(b: &[u8]) -> Result<Model, Error> {
     }
     Ok(Model { header, parts, stop, stop_offset: r.o, file_len: b.len() })
 }
+
+/// A creature's hit shape for one animation: an ellipsoid, as 0x407440 (touching Buzz) and
+/// 0x4A5870 (laser rays) test it. Offset in object units from the creature's feet (rotated
+/// by its facing), axis scales in 1/256ths, radius in level units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ellipsoid {
+    pub offset: [i16; 3],
+    pub scale: [i16; 3],
+    pub radius: i16,
+}
+
+/// Hit shapes from the file's directory: a bounding sphere (offset in object units, radius in
+/// level units) and one ellipsoid per animation, indexed by animation number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HitShapes {
+    pub sphere: [i16; 4],
+    pub ellipsoids: Vec<Ellipsoid>,
+}
+
+impl HitShapes {
+    /// The ellipsoid for `anim` (the last one for animations past the end of the table).
+    pub fn ellipsoid(&self, anim: usize) -> Ellipsoid {
+        self.ellipsoids[anim.min(self.ellipsoids.len() - 1)]
+    }
+
+    /// From eight i16 words: offset x, y, z, a count, scale x, y, z, radius.
+    pub fn entry(w: &[i16]) -> Ellipsoid {
+        Ellipsoid { offset: [w[0], w[1], w[2]], scale: [w[4], w[5], w[6]], radius: w[7] }
+    }
+}
+
+/// The hit shapes in a `.all` file, as the creature loader 0x43D820 / 0x43ACA0 finds them. The
+/// first word, doubled, is the offset of a directory: u32 count, then 0x4C-byte entries {u32
+/// size in 16-bit words, 3 × u32, u32 type, …, 4 × i16 sphere at +0x2C}; their data blocks
+/// follow each other from offset 4. The type-9 entry's block is the ellipsoid table.
+pub fn hit_shapes(b: &[u8]) -> Option<HitShapes> {
+    let u32_at = |o: usize| b.get(o..o + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()));
+    let i16_at = |o: usize| b.get(o..o + 2).map(|s| i16::from_le_bytes([s[0], s[1]]));
+    let dir = u32_at(0)? as usize * 2;
+    let count = u32_at(dir)? as usize;
+    if count > 4096 {
+        return None;
+    }
+    let mut data = 4usize;
+    for k in 0..count {
+        let e = dir + 4 + k * 0x4C;
+        let size = u32_at(e)? as usize * 2;
+        if u32_at(e + 0x10)? == 9 {
+            let sphere = [0, 1, 2, 3].map(|j| i16_at(e + 0x2C + 2 * j).unwrap_or(0));
+            let ellipsoids: Vec<Ellipsoid> = (0..size / 16)
+                .filter_map(|j| {
+                    let w: Option<Vec<i16>> = (0..8).map(|i| i16_at(data + 16 * j + 2 * i)).collect();
+                    w.map(|w| HitShapes::entry(&w))
+                })
+                .collect();
+            return (!ellipsoids.is_empty()).then_some(HitShapes { sphere, ellipsoids });
+        }
+        data += size;
+    }
+    None
+}

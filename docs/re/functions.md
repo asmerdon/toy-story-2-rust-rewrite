@@ -136,12 +136,23 @@ Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+
 | 0x4086F0 | `UpdateCreatures` ✔ | Dead ones count +0x7A down and restart; live ones within reach of the camera ((d >> 8)² < 400², or flag 1) run 0x4076F0; +0x70 > 0 delayed death, < 0 dying, then removed (0x405D20 mode 2) |
 | 0x4076F0 | `CreatureThink` ✔ | Script ops: 1 wait, 2 random wait, 3 random target in radius, 5 random point in zone, 8 skip if, 0xC flags, 0xD animation, 0xE random test, 0xF top speed, 0x10/0x12 distance tests, 0x11 Buzz in zone, 0x14 accel, 0x16 animation rates, 0x17 sound, 0x18 jump at target, 0x19 face target / Buzz, 0x1A velocity, 0x1B target Buzz, 0x1C vy, 0x1D turn rate, 0x1E state, 0x1F/0x23 targets towards / away from Buzz, 0x21 timer, −1 back; anything else yields (6/7: jump until landing). Flags +0x40: 1 always active, 4 walk to target, 8 chase Buzz inside the zone, 0x10 hover, 0x20 fixed height, 0x80 touchable, 0x100 harmful, 0x400 airborne jump, 0x800 no coin. Movement: velocity in the creature's frame, deceleration, acceleration to top speed, turning, zone clamp (rotated rectangle), gravity 0x40/tick to 0x800 with floor following, or hovering towards the target height. Animation clock: rate × forward speed / 2 (rate < 0: fixed); then calls +0x94 with {flags, chase, side, forward} |
 | 0x405C80 / 0x405CF0 | animation step / set ✔ | Frame lists in the shared table 0x4E0588 |
-| 0x407440 | `CreatureContacts` ✔ (shape approximated) | Buzz's chest (y − 0x1CC0) against each touchable creature; reach 400 while spinning (0x53C650 > 0x14 or super spin 0x53C83C < −0x77) or just after a stomp lands, else 150. Attack kind 1 spin / 5 stomp (only from above) if the record's state has bit 2. Harmful creatures hurt Buzz (mode 3) when he isn't attacking; others push him (mode 1); sheep (health 102) nothing. The real shape is an ellipsoid per animation (+0x84 table) |
+| 0x407440 | `CreatureContacts` ✔ | Buzz's centre (y − 0x1CC0) against each creature's sphere (slot +0x38: offset, radius) then its ellipsoid for the current animation (+0x84 table indexed by +0x12: offset rotated by the facing, axes scaled by s/256, radius), both grown by his reach: 400 while spinning (0x53C650 > 0x14 or super spin 0x53C83C < −0x77) or just after a stomp lands, else 150. Attack kind 1 spin / 5 stomp (only from above) if the record's state has bit 2. Harmful creatures (flag 0x100) hurt Buzz (mode 3) when he isn't attacking; others push him (mode 1); sheep (health 102) nothing |
 | 0x408A60 | `HitCreature(c, angle, kind)` ✔ | Table 0x4E066C {type, knock-back ticks (+0x7C), damage}: 0 none, 1 spin (1, 30, 2), 2 (2, 4, 1), 3 (2, 4, 4), 4 (3, 4, 2), 5 stomp (1, 30, 2); type 2 needs state bit 1; health < 100 only; at 0: flags &= 0xFE63, health 999, death script (pointer 0x4E02CC), 0x405D20(1) |
 | 0x405D20 | `KillCreature(c, mode)` ✔ (no particles) | Mode 1: coin dropped (particle 0x3D) unless flag 0x800, death animation (ids 3/0xE: anim 2, 94 ticks; 4: 62; 0x14: 70), sound 10. Mode 2: removed; never back if no respawn time |
-| 0x434EB0 | `BuzzSpin` ✔ | Circle on the ground: 48-tick spin (sound 0x11), held: charge to 60 (sound 0x27), released charged: super spin (−300, sounds 0x26/0x18). Animation 9 on the upper body at (48 − t) / 2 |
+| 0x434EB0 | `BuzzSpin` ✔ | Circle on the ground with nothing else going on (0x53C828 & 0xFFF7F = 1): 48-tick spin (sound 0x11; cancels the laser). Held with no other state bits: charge +1/tick to 60; from 13 the whine 0x27 every tick (pitch slot 3 = 0x800 + 0x50·charge, unused on PC). Released at 60: super spin, 0x53C83C = −300 (state bit 2): sound 0x26 every tick and particles 0x14/0x15 while below −0x77 (state 0x13, hits), then sound 0x18 and 119 ticks dizzy (state 0x14). Animation 9 on the upper body at (48 − t) / 2 |
 | 0x4071E0 | `HurtBuzz(angle, mode)` ✔ | Mode 1 knock-back (sin >> 4), 2 a battery (skipped while 0x52F394 > 0; the shield 0x52F398 turns it into a −60 flash), then vy −0x200, phase 5, 90 ticks invulnerable, voice 0x1A; below 0 batteries: dies (voice 0x15, 0x52B7DC = 2, 120 ticks). Mode 4 kills |
 | 0x434550 | `BuzzMove` ✔ | After the move: the floor's surface (terrain object flags low byte, copied by 0x482A00 / 0x483EF0): types 0–3 hurt, 16–19 kill and put him back, 13 slippery (0x53C818, not ported) |
+
+## Laser (ported: `src/game.rs` `laser_tick`, `src/laser.rs`)
+
+| Address | Name | Notes |
+|---|---|---|
+| 0x434990 | `BuzzLaser` ✔ | Square (pad 0x8000). Timer 0x53C620: a fresh press with no state bits but ground / first person / 0x4000 (0x53C828 & 0xFBEFE = 0) starts it at 1 (state bit 0x80; clears both spin values); 1–11 raise the arm, 12 fires; then +1/tick to 0x3F → 0. Held: charge 0x53C840 +1/tick to 0x40 (whine 0x27 above 12; timer loops back by 0x28 past 0x33); a new press refires below 0x35. Released: charge > 0x24 → timer 0x34; charge 0x40 → charged shot. Fire: timer 12, sound 2 (6 charged), 0x4A5D30 from y − 0x2C00 along the facing (first person: the look angles 0x52F3C0/2); a bounce adds a second beam from the far end at yaw + 0x600 + 4r, pitch 4r − 0x200 (sound 7). Bits 0xFBE3C (climbing, long falls, pushing, …) put the arm down. Powered modes 0x53C824 / 0x882964 auto-fire (not ported) |
+| 0x4A5D30 | `FireBeam(kind, yaw, pitch, origin, muzzleOffset, 4, autoAim)` ✔ | Four 0x2C-byte beams at 0x882970 (free or the shortest-lived). Auto-aim over the in-play list: on screen (+0x40 bit 1), record +0x1A bit 4, not dying, within 4096 units and 768 of height: the one nearest the yaw; within ±0x80 the ray turns onto its ellipsoid centre and pitches (±0x40) to it, else Buzz turns to it (0x52F348). Ray 4 × 0x8000 long; 0x48C860 (level) then 0x4A5870 (creatures) shorten it. Colours kind 0 red width 0x20, 1 yellow 0x40, 2 green 0x20; life 0x20. Hit: impact particle (1 / 10 / 0x49), 5 sparks (type 4); a wall hit adds particle 5 and sound 8. Back end moves at 2048/tick toward the far end. Returns the beam if it bounced |
+| 0x4A5870 | `LaserVsCreatures(origin, delta, kind)` ✔ | Each targetable creature's ellipsoid as a sphere in its own frame; nearest entry point shortens delta. Hit kind 2 (3 charged) of 0x4E066C at Buzz's facing; returns 2, or 4 if the record has no bit 1 (the beam bounces) |
+| 0x4A5C40 | `UpdateBeams` ✔ | Queues each live beam as ribbon 9 (0x44E100) from the far end to the back end, colour × life·4/128; life and steps −1, back end += step |
+| 0x44E100 / 0x44E1A0 | `QueueRibbon` / `DrawRibbon` ✔ | Up to 100 per frame, drawn by 0x440F70: a camera-facing strip of sprite `n` (table 0x557500), half width `w`, in 400-unit segments from the start (first segment cell 2, the rest cell 1), colour (r, g, b), mode 0x4840 |
+| 0x4DF294 (data) | laser arm frames | 32 bytes: the upper body plays animation 0x1A at frame (table[t / 2]·2 + t % 2) / 2 for timer t (0x4011D0); spin and laser stop in states whose two layers are the same animation |
 
 ## Cutscene scripts
 | Address | Name | Notes |
@@ -173,6 +184,14 @@ Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+
 Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when drawn), `+0x0C/+0x0E/+0x10` rotation, `+0x14` creature slot, `+0x12` animation, `+0x16` second animation, `+0x18` time (16.16), `+0x1C` second time, `+0x74` sequence pointer.
 
 ## Loading
+
+| Address | Name | Notes |
+|---|---|---|
+| 0x43B9B0 | `LoadCreatureTypes` ✔ | Clears the per-type tables: ellipsoid pointers 0x53E6C8[128] (default 0x4F6EA0: offset (0, −250, 0), scales (512, 256, 512), radius 250), spheres 0x53EAC8 (0, 500, 0, 500); then 0x43B0C0 |
+| 0x43B0C0 | `LoadCreatureModels(list)` ✔ | For each creature id used by the level: `chars*\<name>` (a switch of paths) through 0x43ACA0; then copies each slot's type sphere to +0x38 and ellipsoid table to +0x84 |
+| 0x43ACA0 | `LoadCharacter(path, …)` ✔ | Loads `<path>.anm` (0x4A6940) and `<path>.all` (0x43D820); a last directory entry of type 9 (stored as 12) is the hit-shape entry: its data block is the ellipsoid table, its +0x2C words the sphere |
+| 0x43D820 | `LoadAllModel(path, first, buf)` ✔ (hit shapes only) | `.all`: word 0 × 2 = directory offset; u32 count, 0x4C-byte entries (u32 size in words, …, u32 type at +0x10; types ≥ 0x100 are shared blocks chained through 0x12345678 markers); data blocks follow each other from offset 4 |
+
 | Address | Name | Notes |
 |---|---|---|
 | 0x4CA420 | `LoadCreature` ✔ | `.ngn` chunk 0x106 tags 0x200–0x208 (hobjload.c) |
@@ -215,7 +234,7 @@ Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when dra
 | 0x49E660 | `PlaySound(id, obj)` ✔ | 16-byte entries at 0x502950: slot (0x4000 = per-level remap at 0x5028E8, pairs of level/slot), PS1 pitch (unused on PC), volume, second volume, pitch-variation shift. obj < 0x100 → fixed left/right (0x4A37E0), else positional (0x4A3810) |
 | 0x49EA60 / 0x49EA90 | `PlayVoice` ✔ | Same, one voice per object (0x4A3E60 checks) |
 | 0x4A3810 | `PositionalVolume` ✔ | Offset to the listener through the camera matrix (4.12) >> 17: x in level units, z in half level units; ears at x = ±0x400; per-ear volume = (0xC00 − distance) / 24 × vol / 128, 0–128 |
-| 0x47DE50 | `StartSample(slot, left, right, …)` ✔ | Volume = dB table 0x4FD668[max(l, r)] (hundredths of a dB); pan = (r − l) × 10000 / 128 |
+| 0x47DE50 | `StartSample(slot, left, right, …, owner)` ✔ | Six DirectSound buffers per sample: with an owner it updates the buffer already playing for it; otherwise a free buffer (play cursor 0) plays, and with all six busy the one furthest through restarts. Frequency is the sample's own (pitch unused). Volume = dB table 0x4FD668[max(l, r)] (hundredths of a dB); pan = (r − l) × 10000 / 128 |
 | 0x401000 markers | | 0x83–0x86 → sounds 0x30/0x10/0x17/0x43 |
 
 Idle voice lines: 0x4011D0 decrements 0x50A0BC every tick; when a fidget starts and it's 0, it's reset to 0x708 and 0x49EA90 plays 0xCE / 0xCF alternately (last one in 0x50A0B0).

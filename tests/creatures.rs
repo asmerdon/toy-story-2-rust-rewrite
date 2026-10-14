@@ -92,3 +92,48 @@ fn level_1_robots_wander_in_their_zones() {
     assert!(landed && highest < 1200.0, "not hopping along the floor");
     assert_eq!(c.slots[far].pos, far_home, "a far creature moved");
 }
+
+/// Square raises the arm and fires after 11 ticks; the beam auto-aims at the ZURG1 ahead and
+/// each shot costs it one of its 4 health (hit kind 2). Its hit shapes come from zurg1.all.
+#[test]
+fn laser_shots_hit_a_robot() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let dir = game.join("data/level01");
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(dir.join("TERRAIN.ALL")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let pk = packets::parse(&fs::read(dir.join("level.raw")).unwrap()).unwrap();
+    let spawns: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
+    let random = fs::read(game.join("data/rand.dat")).unwrap();
+    let mut c = Creatures::new(&spawns, Some(&e), random.clone());
+    c.load_shapes(&game.join("data"));
+    assert_eq!(c.shape(3).sphere, [0, -6560, 0, 298]);
+    let k = 9;
+    let cam = c.slots[k].pos;
+    c.tick(&world, cam, [0; 3]);
+    let robot = glam::Vec3::from(c.slots[k].pos.map(|v| v as f32 / 32.0));
+    // 600 units away along +x, facing it (−x is 12-bit angle 0xC00), slightly off-aim.
+    let mut buzz = ts2::game::Player::new(robot + glam::Vec3::new(600.0, 0.0, 0.0));
+    buzz.on_floor = true;
+    buzz.coyote = 6;
+    buzz.set_facing(0xC20);
+    let mut lasers = ts2::laser::Lasers::new(random);
+    let health = c.slots[k].health;
+    let mut fired = 0;
+    for tick in 0..120 {
+        let input = ts2::game::Input { fire: tick == 0 || tick == 30, ..Default::default() };
+        buzz.update(&world, input, 1.0 / 60.0);
+        buzz.pos = robot + glam::Vec3::new(600.0, 0.0, 0.0);
+        for shot in buzz.shots.drain(..).collect::<Vec<_>>() {
+            fired += 1;
+            assert!(tick == 11 || tick >= 30, "fired at tick {tick}");
+            lasers.fire(shot, shot.origin, &mut buzz, &world, &mut c, &|_| true);
+        }
+        lasers.tick();
+        c.tick(&world, cam, buzz.pos_obj());
+        c.slots[k].pos = robot.to_array().map(|v| (v * 32.0) as i32);
+    }
+    eprintln!("{fired} shots, robot health {health} -> {}", c.slots[k].health);
+    assert_eq!(fired, 2);
+    assert_eq!(c.slots[k].health, health - 2);
+}
