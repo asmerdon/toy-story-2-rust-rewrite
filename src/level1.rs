@@ -27,7 +27,9 @@
 //!   (special 0x17, surface 8: stomp on it to be thrown). Room 4: the fountain, its steam vents
 //!   and a hot spot that burns.
 //!
-//! Not ported yet: Hamm's hints (0x4A1E60), 0x4A26F0, the reward sparkles, the camera-height
+//! - The hint Hamm (0x4A1E60) and Bo Peep's calls (0x4A26F0).
+//!
+//! Not ported yet: the reward sparkles, the camera-height
 //! limits on the stairs (Buzz state 0x3C) and the cosmic shield's use.
 
 use crate::boxes::Boxes;
@@ -74,6 +76,13 @@ pub struct Level1 {
     pub abilities: u8,
     /// Hamm's and Mr Potato Head's call timers (0x830C98 / 0x830D34).
     calls: [i32; 2],
+    /// The hint-giving Hamm's next hint (0x830D24, −1 until he's first in play) and call timer
+    /// (0x830CA4); Bo Peep's call timer (0x830D40).
+    hint: i32,
+    hint_call: i32,
+    bo_call: i32,
+    /// The tokens Buzz has collected (bits, `0x52F0D7[level]`), set by the caller.
+    pub tokens: u8,
     /// The RC race (room 2): state 0x52F2F8 (1 talked, 2 racing, 3 over), the car's waypoint
     /// and laps (0x52F528 / 0x52F4F8), Buzz's laps (0x52AD64) and his quarter of the room
     /// with the finish-line latch (0x52F584 / 0x52F580).
@@ -122,6 +131,8 @@ pub struct Level1 {
 struct Story {
     texts: std::collections::HashMap<u32, String>,
     lists: std::collections::HashMap<i16, Vec<[i32; 3]>>,
+    /// The hint texts' addresses, by token.
+    hints: Vec<u32>,
 }
 
 /// Conversation texts (exe addresses).
@@ -133,6 +144,11 @@ const POTATO_ASK: u32 = 0x4F0ADC;
 const POTATO_THANKS: u32 = 0x4F0B60;
 const POTATO_AFTER: u32 = 0x4F0C10;
 const RC_ASK: u32 = 0x4F042C;
+/// The hint Hamm's five hints (pointers at 0x4F0F7C, one per token) and his line once Buzz has
+/// them all.
+const HINTS: u32 = 0x4F0F7C;
+const ALL_TOKENS: u32 = 0x502868;
+const HINT_HAMM: (usize, i16) = (0x23, 0x27);
 const TIN_MAN_TEXT: u32 = 0x4F0330;
 /// Characters' slots and their camera lists.
 const BO_PEEP: (usize, i16) = (1, 0x1C);
@@ -191,6 +207,10 @@ impl Level1 {
             item: 8,
             abilities: 0,
             calls: [0; 2],
+            hint: -1,
+            hint_call: 0,
+            bo_call: 0,
+            tokens: 0,
             race: 0,
             waypoint: 0,
             rc_laps: 0,
@@ -220,7 +240,9 @@ impl Level1 {
 
     /// The conversations' texts (from the exe) and camera lists (from level.dat).
     pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
-        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK, TIN_MAN_TEXT] {
+        let hints: Vec<u32> = (0..5).filter_map(|k| exe.at(HINTS + 4 * k, 4).ok().map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))).collect();
+        self.story.hints = hints.clone();
+        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK, TIN_MAN_TEXT, ALL_TOKENS].into_iter().chain(hints) {
             let mut s = Vec::new();
             while let Ok(b) = exe.at(va + s.len() as u32, 1) {
                 if b[0] == 0 || s.len() > 400 {
@@ -230,7 +252,7 @@ impl Level1 {
             }
             self.story.texts.insert(va, String::from_utf8_lossy(&s).into_owned());
         }
-        for l in lists.iter().filter(|l| matches!(l.kind, 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | RC_TRACK | FOUNTAIN)) {
+        for l in lists.iter().filter(|l| matches!(l.kind, 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | RC_TRACK | FOUNTAIN | 0x27)) {
             self.story.lists.insert(l.kind, l.points.clone());
         }
     }
@@ -292,6 +314,16 @@ impl Level1 {
         }
         self.race(room, player, cr);
         self.tin_man(room, player, cr);
+        self.hint_hamm(cr, talking);
+        // 0x4A26F0(1, 0xB2): Bo Peep calls out while she still wants her sheep.
+        if cr.sheep >= 0 && !talking && let Some(b) = cr.slots.get(BO_PEEP.0).filter(|c| c.id == 7 && c.active) {
+            let pos = b.pos;
+            self.bo_call -= 1;
+            if self.bo_call < 0 {
+                self.bo_call = self.rand() * 2 + 0xF0;
+                self.sounds.push((0xB2, pos));
+            }
+        }
         if room == Some(6) && let Some(m) = cr.slots.get(POTATO.0).filter(|c| c.id == 9) {
             let pos = m.pos;
             if m.active && !talking {
@@ -407,6 +439,47 @@ impl Level1 {
             self.given[2] = true;
             self.race = 3;
         }
+    }
+
+    /// 0x4A1E60(0x23, 0x27, 0x4F0F7C): the hint Hamm. In play, he calls now and then (slot 70);
+    /// touched, he gives the hint for the next token Buzz hasn't got (slot 71), starting from
+    /// a random one, or says Buzz has them all.
+    fn hint_hamm(&mut self, cr: &mut Creatures, talking: bool) {
+        let Some(h) = cr.slots.get_mut(HINT_HAMM.0).filter(|c| c.id != 0 && c.active) else { return };
+        let pos = h.pos;
+        let touched = h.flags & 0x200 != 0;
+        h.flags &= !0x200;
+        if self.hint == -1 {
+            self.hint = self.rand() & 3;
+        }
+        if !talking {
+            self.hint_call -= 1;
+            if self.hint_call < 0 {
+                self.hint_call = self.rand() * 2 + 0xF0;
+                self.slots.push((70, 128, pos));
+            }
+        }
+        if !touched || talking {
+            return;
+        }
+        let text = if self.tokens & 0x1F != 0x1F {
+            self.slots.push((71, 128, pos));
+            while self.tokens >> self.hint & 1 != 0 {
+                self.hint += 1;
+                if self.hint > 4 {
+                    self.hint = 0;
+                }
+            }
+            self.hint += 1;
+            let t = self.story.hints.get(self.hint as usize - 1).copied().unwrap_or(ALL_TOKENS);
+            if self.hint > 4 {
+                self.hint = 0;
+            }
+            t
+        } else {
+            ALL_TOKENS
+        };
+        self.talk(HINT_HAMM.0, HINT_HAMM.1, text, None, None);
     }
 
     /// Gives the script the game's random bytes for its effects.

@@ -66,7 +66,16 @@ The user asked for first-person mode (with the crib in level 1) and to carry on 
 
 - **Room gadgets**: room 2 lift (climb pole 8: special 6 and the pole sink 1472 units, speeding up), room 3 spring (stomp onto surface 8 next to Hamm: thrown ~5400 up along heading 0x11E onto a shelf; new `Player::launched` flight mode), room 4 fountain squirts, steam vents and a hot spot that costs a battery. Tests `tests/rooms.rs`.
 
-Ask the user to try: Q in the bedroom crib and shoot both bars; talk to Bo Peep / Hamm / Mr Potato Head; collect the sheep and the ear; race the RC car in room 2.
+- **Hint Hamm** (slot 0x23, list 0x27, 0x4A1E60): calls now and then (slot 70); touched, gives the hint for the next token not yet collected (texts via pointers at 0x4F0F7C), or "you have all the tokens". `Level1::tokens` is set by the viewer from `Pickups::tokens`. Bo Peep calls out (sound 0xB2, 0x4A26F0) until she has her sheep. No dedicated test yet (builds, suite passes).
+
+Ask the user to try (none of round 5 is user-tested yet):
+- Tin Man: climb the plant and rope to the attic (room 5), get challenged, shoot him while he's open; health bar at the top, token 4 when he dies.
+- Room 5 see-saw: stand / land on either end.
+- Room 2 lift: climb pole 8 (by the RC car's room door, about (1271, 6746, -3030)).
+- Room 3 spring: jump and stomp onto it next to Hamm (about (17601, 6695, -8278)): thrown up onto a high shelf.
+- Room 4: fountain squirts / steam; the hot spot near (23462, 4601, -13082) costs a battery.
+- Talk to the hint Hamm.
+- Earlier round-5 items: Q in the bedroom crib and shoot both bars; talk to Bo Peep / Hamm / Mr Potato Head; collect the sheep and the ear; race the RC car in room 2.
 
 ## User feedback, round 4 (2026-10-14), and what was done
 - Audio, HUD, laser look: user happy. Attic box works.
@@ -86,7 +95,7 @@ Ask the user to try: Q in the bedroom crib and shoot both bars; talk to Bo Peep 
 6. **Laser thickness wrong.** Ribbon UVs were transposed: the sprite's 31-px axis runs along the beam, the 8-px axis across (0x4B9100). Fixed, with cell 2 at the muzzle end. Position was confirmed good.
 
 ## Next steps (in priority order)
-1. **Where I stopped:** the Tin Man, see-saw, lift, spring and room 4 effects are done. Next: Hamm's hints 0x4A1E60, 0x4A26F0 (room 4), cutscene pickups 0x402610, the stairs camera limits (state 0x3C part of 0x417680), reward sparkles 0x49FB40, using the cosmic shield (0x52F2D8 bit 1, 0x52F398). ("Room 1 falling toys" from earlier notes isn't in 0x417680.)
+1. **Where I stopped (2026-10-14):** level 1 script 0x417680 is ported except the items below. Next: a test for the hint Hamm, cutscene pickups 0x402610, the stairs camera limits (state 0x3C part of 0x417680), reward sparkles 0x49FB40, using the cosmic shield (0x52F2D8 bit 1, 0x52F398). ("Room 1 falling toys" from earlier notes isn't in 0x417680.)
 2. Particles still to do: homing (flag 8, kinds 0x1D/0x26), 0x410850 explosions (death actions 1/2/4), lights 0x44F200, floor shadows (0x54F098), Buzz's footstep dust 0x4A2D80.
 3. Token sequence / menu (0x49FD40 with 0x830CC4 = 9), rocket/hover boots (0x4A4D60 / 0x4A4F80 / 0x4A4EC0, 0x4A4BB0; level 1 has no boots pickup), grappling hook in first person (0x4A5370, list 59).
 4. Original collision resolver if gaps persist; slippery surface 13; riding movers 0x488E10.

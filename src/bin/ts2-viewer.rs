@@ -917,6 +917,7 @@ impl Viewer {
                 }
                 if let Some(l) = self.level1.as_mut() {
                     let coins = self.pickups.as_ref().map_or(0, |p| p.coins);
+                    l.tokens = self.pickups.as_ref().map_or(0, |p| p.tokens);
                     for t in 0..ticks {
                         l.tick_creatures(&self.world, &mut self.specials, player, cr);
                         l.tick_characters(&self.world, player, cr, coins);
