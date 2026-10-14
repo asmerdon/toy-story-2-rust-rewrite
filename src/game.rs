@@ -788,6 +788,9 @@ pub struct Player {
     pub pushing: bool,
     /// 0x53C810: his vertical speed going into this tick's move (how hard he lands).
     pub fall_speed: i32,
+    /// Flag 0x40 of +0x40: thrown by something (room 3's spring). Until he lands, no friction
+    /// and speeds up to 0xB80 each way (0x436220's profile).
+    pub launched: bool,
 }
 
 /// Idle voice lines alternate between these two sound ids, at most every 0x708 ticks (30 s).
@@ -873,6 +876,7 @@ impl Player {
             last_pos: pos,
             pushing: false,
             fall_speed: 0,
+            launched: false,
         }
     }
 
@@ -885,6 +889,34 @@ impl Player {
     /// Gives the player the level's poles and ropes (`leveldat::poles`).
     pub fn set_poles(&mut self, poles: Vec<Pole>) {
         self.poles = poles;
+    }
+
+    pub fn pole(&self, i: usize) -> Option<Pole> {
+        self.poles.get(i).copied()
+    }
+
+    /// Moves pole `i`'s bottom to height `y` (object units), its length kept.
+    pub fn move_pole(&mut self, i: usize, y: i32) {
+        if let Some(p) = self.poles.get_mut(i) {
+            p.pos[1] = y;
+        }
+    }
+
+    /// The pole Buzz is on or has just let go of (0x53C5E4 / 6 while 0x53C668 ≠ 0).
+    pub fn pole_held(&self) -> Option<usize> {
+        (self.climb != 0).then_some(self.pole)
+    }
+
+    /// Thrown up at `vy` heading `heading` at full speed (room 3's spring): a jump, facing
+    /// and velocity along `heading` (16384 per sine), flag 0x40.
+    pub fn launch(&mut self, vy: i32, heading: i32) {
+        self.start_jump(vy, JumpPhase::Released);
+        self.vel[0] = sin12(heading);
+        self.vel[2] = cos12(heading);
+        self.facing = heading & 0xFFF;
+        self.target = heading & 0xFFF;
+        self.launched = true;
+        self.stomp = 0;
     }
 
     /// Gives the player the game's random table (`data\rand.dat`); without it Buzz never fidgets.
@@ -1035,6 +1067,9 @@ impl Player {
     fn tick_pad_with(&mut self, world: &World, stick: [f32; 2], dpad: u8, jump_held: bool, jump_pressed: bool, stomp_pressed: bool, pre_move: &mut PreMove<'_>) {
         self.stick_pushed = stick != [0.0, 0.0];
         self.fall_speed = self.vel[1];
+        if self.launched && self.on_floor {
+            self.launched = false;
+        }
         let magnitude = stick[0].hypot(stick[1]).min(1.0);
         let pushing = magnitude > 0.0;
         // Movement profile.
@@ -1469,6 +1504,8 @@ impl Player {
 
     /// 0x4343D0: accelerate along the facing and bleed off sideways speed.
     fn accelerate(&mut self, side_decel: i32, friction: i32, max: i32, pushing: bool) {
+        // Thrown: nothing slows him and the caps are 0xB80.
+        let (side_decel, friction, max, fwd_max) = if self.launched && !self.on_floor { (0, 0, 0xB80, 0xB80) } else { (side_decel, friction, max, MAX_FORWARD) };
         let (s, c) = (sin12(self.facing), cos12(self.facing));
         let [vx, _, vz] = self.vel;
         let toward_zero = |v: i32, by: i32| if v < 0 { (v + by).min(0) } else { (v - by).max(0) };
@@ -1477,7 +1514,7 @@ impl Player {
         if pushing && fwd < max {
             fwd += ACCEL + friction;
         }
-        let fwd = fwd.clamp(-MAX_FORWARD, MAX_FORWARD);
+        let fwd = fwd.clamp(-fwd_max, fwd_max);
         self.forward = fwd;
         self.side = side;
         self.vel[0] = (side * c + fwd * s) / 4096;

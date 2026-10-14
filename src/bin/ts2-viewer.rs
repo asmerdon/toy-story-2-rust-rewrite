@@ -897,6 +897,19 @@ impl Viewer {
                 for r in cr.particles.drain(..) {
                     self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);
                 }
+                if let Some(l) = self.level1.as_mut() {
+                    for r in l.particles.drain(..) {
+                        self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);
+                    }
+                    for (at, t, m, spin, life) in l.spawns.drain(..) {
+                        if let Some(k) = self.particles.spawn(at, t, m) {
+                            self.particles.slots[k].spin = spin;
+                            if let Some(life) = life {
+                                self.particles.slots[k].life = life;
+                            }
+                        }
+                    }
+                }
                 for (at, t, m, spin) in cr.spawns.drain(..) {
                     if let Some(k) = self.particles.spawn(at, t, m) {
                         self.particles.slots[k].spin = spin;
@@ -1609,6 +1622,9 @@ fn main() {
     let mut level1 = (level_no == Some(1)).then(|| ts2::level1::Level1::new(&world, &mut specials));
     if let (Some(l), Some(e)) = (level1.as_mut(), game_exe.as_ref()) {
         l.set_story(e, &level_lists);
+    }
+    if let (Some(l), Some(r)) = (level1.as_mut(), random_table.as_ref()) {
+        l.set_random(r.clone());
     }
     if let Some(b) = &boxes {
         println!("{} pushable objects", b.boxes.len());

@@ -23,8 +23,12 @@
 //!   Mr. Potato Head's ear (room 6), the RC race (room 2), the Tin Man (room 5).
 //! - Room 5: a see-saw (mover and special 0xF, 0x49EC00) tipped by where Buzz stands on it.
 //!
-//! Not ported yet: the lift of room 2 (special 6 and pole 8), the spring of room 3, Hamm's
-//! hints and the cosmic shield's use.
+//! - Room 2: the lift (special 6 sinking with pole 8 once Buzz climbs it). Room 3: the spring
+//!   (special 0x17, surface 8: stomp on it to be thrown). Room 4: the fountain, its steam vents
+//!   and a hot spot that burns.
+//!
+//! Not ported yet: Hamm's hints (0x4A1E60), 0x4A26F0, the reward sparkles, the camera-height
+//! limits on the stairs (Buzz state 0x3C) and the cosmic shield's use.
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
@@ -87,6 +91,29 @@ pub struct Level1 {
     /// (mover table units, 0x4000 a turn).
     tilt: i32,
     tilt_z: i32,
+    /// Room 3's spring (0x52F4FC): 0 idle, counting up once stomped (throws Buzz at 7), then
+    /// −0x20 counting back up to 0.
+    spring: i32,
+    /// Room 2's lift (special 6 carrying pole 8): speed (0x52F504: 0 waiting, −1 done), height
+    /// and its lowest (0x52F5BC / 0x52F5B4), where it is across (0x52F5B8 / 0x52F5C0), and
+    /// the pole's offset from it (0x52F530).
+    lift_v: i32,
+    lift: [i32; 3],
+    lift_max: i32,
+    pole_offset: Option<i32>,
+    /// Room 4's fountain: its next target point (0x52F52C), the steam timer and vent
+    /// (0x52F5B0 / 0x52F598); the tick count behind the every-n-ticks flags (0x4A2960).
+    fountain: usize,
+    steam: i32,
+    vent: usize,
+    clock: u32,
+    /// Particles the script makes: by type and mode (0x40FDF0) with a spin and a life, and
+    /// fully specified (0x40FAE0).
+    pub spawns: Vec<([i32; 3], u8, usize, i32, Option<i32>)>,
+    pub particles: Vec<crate::creatures::ParticleRequest>,
+    /// Random bytes for the effects (the game's `rand.dat` stream).
+    random: Vec<u8>,
+    rpos: usize,
     story: Story,
 }
 
@@ -116,6 +143,10 @@ const TIN_MAN: (usize, i16) = (8, 0x1A);
 /// The RC car's waypoints (level.dat list 30) and how many it laps.
 const RC_TRACK: i16 = 0x1E;
 const RC_LAPS: i32 = 3;
+/// Room 4's fountain: level.dat list 22, squirting from its first point to the others.
+const FOUNTAIN: i16 = 0x16;
+/// The steam vents beside it (0x4F0EB8, object units).
+const VENTS: [[i32; 3]; 3] = [[0xB81A8, 0x29283, -0x86785], [0xB31E8, 0x29283, -0x86785], [0xB81A8, 0x29283, -0x81685]];
 
 /// The crib bars' creature slots and the health that means "at rest".
 const BARS: [usize; 2] = [0, 2];
@@ -140,6 +171,7 @@ impl Level1 {
         specials.scale_about(0x16, 0x15);
         world.set_mover(8, false);
         world.set_mover(14, false);
+        let lift = specials.pos_obj(6).unwrap_or_default();
         Level1 {
             door: 0,
             plank: 0,
@@ -169,6 +201,19 @@ impl Level1 {
             boss_hud: false,
             tilt: 0,
             tilt_z: 0,
+            spring: 0,
+            lift_v: 0,
+            lift,
+            lift_max: lift[1] + 0xB800,
+            pole_offset: None,
+            fountain: 0,
+            steam: 0,
+            vent: 0,
+            clock: 0,
+            spawns: Vec::new(),
+            particles: Vec::new(),
+            random: Vec::new(),
+            rpos: 0,
             story: Story::default(),
         }
     }
@@ -185,7 +230,7 @@ impl Level1 {
             }
             self.story.texts.insert(va, String::from_utf8_lossy(&s).into_owned());
         }
-        for l in lists.iter().filter(|l| matches!(l.kind, 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | RC_TRACK)) {
+        for l in lists.iter().filter(|l| matches!(l.kind, 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | RC_TRACK | FOUNTAIN)) {
             self.story.lists.insert(l.kind, l.points.clone());
         }
     }
@@ -364,6 +409,137 @@ impl Level1 {
         }
     }
 
+    /// Gives the script the game's random bytes for its effects.
+    pub fn set_random(&mut self, random: Vec<u8>) {
+        self.random = random;
+    }
+
+    fn rand(&mut self) -> i32 {
+        if self.random.is_empty() {
+            return 0x80;
+        }
+        let b = self.random[self.rpos % self.random.len()];
+        self.rpos = (self.rpos + 1) % 0x5DC.min(self.random.len());
+        b as i32
+    }
+
+    /// Every `n` ticks (the flags 0x52F1C2–0x52F1CB of 0x4A2960).
+    fn every(&self, n: u32) -> bool {
+        self.clock % n == 0
+    }
+
+    /// Room 4 (0x417680): near the fountain (within 0x280 × 256 of it), every 64 ticks a
+    /// squirt (particle 0xC) arcs from list 22's first point to one of the others, picked 1–16
+    /// on; every 120 ticks the next of three vents puffs steam (0x22 mode 2) and every other
+    /// tick it smokes (0x10 mode 10). Near the hot spot beside it: within 30 × 256 it burns
+    /// Buzz (0x4071E0 mode 2) and it smokes every 8 ticks (0x11 mode 10).
+    fn room4_effects(&mut self, player: &mut Player) {
+        let buzz = player.pos_obj();
+        if near([0xB3E1A, 0x26720, -0x814C1], buzz, 0x280) {
+            let pts = self.story.lists.get(&FOUNTAIN).cloned().unwrap_or_default();
+            if self.every(64) && pts.len() > 1 {
+                let (p0, pk) = (pts[0], pts[self.fountain.min(pts.len() - 1)]);
+                let (dx, dz) = ((p0[0] * 32 - pk[0] * 32) >> 8, (p0[2] * 32 - pk[2] * 32) >> 8);
+                let u = (crate::boxes::angle12(dx as f32, dz as f32) - 0x800) & 0xFFF;
+                let d = ((dx * dx + dz * dz) as f64).sqrt() as i32;
+                let reach = (d * 7 / 2).max(1);
+                let vy = ((d << 12) / reach) * -0x80 / 64;
+                let spin = (self.rand() - 0x80) >> 2;
+                self.particles.push(crate::creatures::ParticleRequest {
+                    pos: p0.map(|v| v * 32),
+                    vel: [sin_table(u) * reach >> 13, vy, sin_table(u + 0x400) * reach >> 13],
+                    gravity: 0x80,
+                    angle: 0,
+                    spin,
+                    typ: 0xC,
+                });
+                self.fountain += 1 + (self.rand() & 0xF) as usize;
+                if self.fountain >= pts.len() {
+                    self.fountain = self.fountain + 1 - pts.len();
+                }
+            }
+            self.steam += 1;
+            if self.steam > 0x78 {
+                self.steam -= 0x78;
+                self.vent = (self.vent + 1) % 3;
+                let v = VENTS[self.vent];
+                self.spawns.push(([v[0], v[1] - 0x800, v[2]], 0x22, 2, 0, None));
+            }
+            if self.every(2) {
+                let life = (self.rand() & 0xF) + 0x20;
+                self.spawns.push((VENTS[self.vent], 0x10, 10, 0, Some(life)));
+            }
+        }
+        let hot = [0xB74DC, 0x23F3E, -0x6634A];
+        if near(hot, buzz, 0x280) {
+            if near(hot, buzz, 30) {
+                player.hurt(0, 2);
+            }
+            if self.every(8) {
+                let spin = (self.rand() - 0x80) >> 3;
+                self.spawns.push((hot, 0x11, 10, spin, None));
+            }
+        }
+    }
+
+    /// Room 2's lift (0x417680): climbing pole 8 sets it going (sound 0x21); special 6 and the
+    /// pole sink together, speeding up by 0x20 a tick, down to 0xB800 below where it started.
+    fn lift(&mut self, specials: &mut Specials, player: &mut Player) {
+        const POLE: usize = 8;
+        if self.lift_v == 0 && player.pole_held() == Some(POLE) {
+            self.lift_v = 2;
+            player.sounds.push(Sound { id: 0x21, voice: false });
+        }
+        if self.lift_v <= 0 {
+            return;
+        }
+        let Some(pole) = player.pole(POLE) else { return };
+        let offset = *self.pole_offset.get_or_insert(pole.pos[1] - self.lift[1]);
+        self.lift[1] += self.lift_v;
+        if self.lift[1] > self.lift_max {
+            self.lift_v = -1;
+            self.lift[1] = self.lift_max;
+        }
+        player.move_pole(POLE, offset + self.lift[1]);
+        specials.set_pos(6, self.lift.map(|v| v >> 5));
+        if self.lift_v > 0 {
+            self.lift_v += 0x20;
+        }
+    }
+
+    /// Room 3's spring (special 0x17 on surface 8, 0x417680): it shows squashed by its count
+    /// (y scale |n| × 0x80, turned |n| × 0x20). Stomping onto it starts the count; at 7 it
+    /// throws Buzz (vy −0x1280, heading 0x11E at full speed, sound 0x1C); at 0x21 it rests for
+    /// 32 ticks.
+    fn spring(&mut self, specials: &mut Specials, player: &mut Player) {
+        let n = self.spring.abs();
+        specials.set_scale(0x17, [0x1000, n * 0x80, 0x1000]);
+        specials.turn_from_own(0x17, [0, 0, n * 0x20]);
+        let on = player.on_floor && player.surface == Some(8);
+        let mut count = false;
+        if on && self.spring == 0 {
+            if player.stomp != 0 {
+                self.spring = 2;
+                count = true;
+            }
+        } else if self.spring < 0 {
+            self.spring = (self.spring + 1).min(0);
+        } else if self.spring > 0 {
+            count = true;
+        }
+        if count {
+            self.spring += 1;
+            if self.spring < 0x21 {
+                if self.spring == 7 {
+                    player.launch(-0x1280, 0x11E);
+                    player.sounds.push(Sound { id: 0x1C, voice: false });
+                }
+            } else {
+                self.spring = -0x20;
+            }
+        }
+    }
+
     /// 0x49EC00 (mover 0xF, special 0xF, mode 1, limits ±0x1C0, divisor 8): room 5's see-saw.
     /// Buzz standing on it pushes the side he's on down, harder the further out he is and
     /// the harder he lands; off it, it drifts towards its positive tilt. The swing slows by 2
@@ -522,8 +698,18 @@ impl Level1 {
         let room = world.room_at(player.pos);
         let buzz = player.pos_obj();
 
+        self.clock = self.clock.wrapping_add(1);
         if room == Some(5) {
             self.see_saw(world, specials, player);
+        }
+        if room == Some(4) {
+            self.room4_effects(player);
+        }
+        if room == Some(2) {
+            self.lift(specials, player);
+        }
+        if room == Some(3) {
+            self.spring(specials, player);
         }
 
         // The basement door: box 3 going over its edge.

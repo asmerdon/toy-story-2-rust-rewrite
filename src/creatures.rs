@@ -217,6 +217,8 @@ pub struct Creatures {
     pub boss: Boss,
     /// Buzz this tick (object units), for the type routines.
     buzz: [i32; 3],
+    /// Ticks run, for the every-n-ticks flags (0x4A2960).
+    clock: u32,
     /// Hit shapes by creature id, from each character's `.all` file (slot +0x38 sphere and
     /// +0x84 ellipsoid table, set by 0x43B0C0); `default_shape` for the rest.
     pub shapes: std::collections::HashMap<u8, HitShapes>,
@@ -315,6 +317,7 @@ impl Creatures {
             racing: false,
             boss: Boss::default(),
             buzz: [0; 3],
+            clock: 0,
             shapes: Default::default(),
             default_shape: HitShapes {
                 sphere: [0, 500, 0, 500],
@@ -542,6 +545,7 @@ impl Creatures {
     pub fn tick(&mut self, world: &World, camera: [i32; 3], buzz: [i32; 3]) -> Vec<(usize, Step)> {
         let mut steps = Vec::new();
         self.buzz = buzz;
+        self.clock = self.clock.wrapping_add(1);
         for i in 0..self.slots.len() {
             let mut c = self.slots[i].clone();
             c.active = false;
@@ -684,7 +688,8 @@ impl Creatures {
             }
             let f = c.angles[1];
             let at = [c.pos[0] + sin(f) * 2 / 3, c.pos[1] - 0x5000, c.pos[2] + cos(f) * 2 / 3];
-            if self.boss.blink {
+            // Every 7 ticks (0x52F1C7).
+            if self.clock % 7 == 0 {
                 let spin = self.rand() as i32 - 0x80;
                 self.spawns.push((at, 0x11, 10, spin));
             }
