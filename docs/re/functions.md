@@ -247,3 +247,15 @@ Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid
 |---|---|---|
 | 0x4A6390 | `CheckCD` ✔ | validate.tta |
 | 0x412D70 | `ConfigCDAudio` ✔ | "Base CD track is %d" |
+
+## HUD (ported: `src/hud.rs`)
+
+| Address | Name | Notes |
+|---|---|---|
+| 0x49FD40 | `DrawHud` ✔ (elements 0–4) | Per element k: show timer 0x52C824 + 2k, slide 0x52F2E0 + 2k. 0 lives: sprite 10 at (16, 16) half size (320-wide), digit sprite 0x14 cell lives + 0x1A at (60, 32) (512-wide). 1 batteries: sprite 0xB at (272, 16) half size; column sprite 6 at (476, 47 − h), 5 × h with h = 2·health + 2, colour (0x80, 6h, 0), blinking below 5; frame sprite 0xC at (296, 16). 2 coins (bottom, y = 0xE0 − offset): sprite 0x10 cell t / 2 (t mod 24) at (26, y) scaled (0xCCD, 0x800); digits at 0x33 and 0x3F. 3 spin meter (shown 0x78 while 0x53C83C ≠ 0): sprite 0xE at (272, 0xDE); bar sprite 6 at (438, 0xDA), length charge / 2 (super spin: shrinking), yellow, blinking black when full; frame sprite 0xD. 4 laser meter (shown 0x3C while 0x53C620 ≠ 0): sprite 0xF, beside the spin meter when that's up; bar width charge × 0x1644 / 2, colour (0x80, 2·charge, 0), blinking when full. Also: token menu (0x830CC4 = 9), pause menus, ammo counters, elements 5–9 (level counters) |
+| 0x49FC60 | `HudSlide(k)` ✔ | Timer running: slide += 0x20 to 0x400, timer −1 (unless ≥ 1000); else slide −= 0x20 to 0. Returns 1 at slide 0 (hidden), else sin(slide) >> 8 − 0x40 |
+| 0x447D40 | `BuildSpriteTable` ✔ | 0x557500[128]: entries 0–0x31 from 0x4EC0A4, then the level's list 0x4F7284[level] (to −1); 0x557704 = 0x4F7268 for sprite −1 |
+| 0x493F40 / 0x494820 | `HudSprite` / `HudSpriteTinted` ✔ | (x, y) in a 512 × 256 screen; size × (sx, sy) / 4096; mode & 0x60: 0x60 alpha 0xFF − (mode >> 8), 0x20 additive, 0x40 subtractive |
+| 0x4942D0 / 0x493DC0 / 0x4946A0 | narrow-screen variants ✔ | As above with x in a 320-wide screen (0x4946A0 / 0x494820 use the HUD tint 0x54DE9C / 0x554038 / 0x54DD6C) |
+| 0x4B8CC0 | `ScreenQuad(x, y, w, h, uv0, uv1, tex, argb, mode)` ✔ | 0..1 screen units; colour through the identity table 0x50851C |
+| 0x4A2A60 (part) | HUD clocks ✔ | Bytes 0x52AD5F–0x52AD63 count ticks modulo 4, 8, 16, 32, 64 |

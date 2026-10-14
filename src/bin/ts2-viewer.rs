@@ -224,9 +224,9 @@ struct Gfx {
     config: wgpu::SurfaceConfiguration,
     /// Pipelines for Opaque, Alpha, Additive and Darken, in that order.
     pipelines: [wgpu::RenderPipeline; 4],
-    /// Uniforms for the far level pass, the near level pass, and everything else.
-    uniform_bufs: [wgpu::Buffer; 3],
-    uniform_bgs: [wgpu::BindGroup; 3],
+    /// Uniforms for the far level pass, the near level pass, everything else, and the HUD.
+    uniform_bufs: [wgpu::Buffer; 4],
+    uniform_bgs: [wgpu::BindGroup; 4],
     /// One bind group per level texture, plus a white one at the end for untextured geometry.
     texture_bgs: Vec<wgpu::BindGroup>,
     depth: wgpu::TextureView,
@@ -236,6 +236,8 @@ struct Gfx {
     /// Billboards of the near and far sets, this frame.
     billboards: [Vec<GpuBatch>; 2],
     creature: Vec<GpuBatch>,
+    /// The HUD, in screen space (0..1, y down), drawn last over everything.
+    hud: Vec<GpuBatch>,
 }
 
 struct Viewer {
@@ -302,6 +304,10 @@ struct Viewer {
     beam_sprite: Option<(usize, [f32; 2], [f32; 2], [[f32; 2]; 3])>,
     /// 0x4DF294: the laser arm pose's frame table.
     laser_pose: Vec<u8>,
+    /// The HUD (0x49FD40), its sprite table, and last values (changes show their element).
+    hud_state: ts2::hud::Hud,
+    hud_sprites: Vec<Option<ts2::pickups::SpriteDef>>,
+    hud_last: [i32; 3],
 }
 
 fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -458,7 +464,7 @@ impl Gfx {
             cache: None,
         }));
 
-        let uniform_bufs: [wgpu::Buffer; 3] = std::array::from_fn(|_| {
+        let uniform_bufs: [wgpu::Buffer; 4] = std::array::from_fn(|_| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("uniforms"),
                 size: std::mem::size_of::<Uniforms>() as u64,
@@ -466,7 +472,7 @@ impl Gfx {
                 mapped_at_creation: false,
             })
         });
-        let uniform_bgs: [wgpu::BindGroup; 3] = std::array::from_fn(|i| {
+        let uniform_bgs: [wgpu::BindGroup; 4] = std::array::from_fn(|i| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout: &uniform_layout,
@@ -523,7 +529,7 @@ impl Gfx {
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
         let level_far = upload(&device, level_far, texture_bgs.len() - 1);
-        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new() }
+        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new() }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -552,12 +558,22 @@ impl Gfx {
             let u = Uniforms { range: [r[0], r[1], 0.0, 0.0], ..*uniforms };
             self.queue.write_buffer(buf, 0, bytemuck::bytes_of(&u));
         }
+        // The HUD: screen (x, y) in 0..1, y down, straight to clip space (the shader negates y).
+        let hud = Uniforms {
+            view_proj: Mat4::from_cols(glam::Vec4::new(2.0, 0.0, 0.0, 0.0), glam::Vec4::new(0.0, 2.0, 0.0, 0.0), glam::Vec4::ZERO, glam::Vec4::new(-1.0, 1.0, 0.5, 1.0)).to_cols_array_2d(),
+            params: [1.0, 0.0, 1.0, 0.0],
+            range: [0.0, f32::MAX, 0.0, 0.0],
+        };
+        self.queue.write_buffer(&self.uniform_bufs[3], 0, bytemuck::bytes_of(&hud));
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
         let order = [scene::Blend::Opaque, scene::Blend::Alpha, scene::Blend::Additive, scene::Blend::Darken];
         // Two passes, depth cleared in between, as 0x4CDDD0 does.
-        let passes: [(&[(usize, &[GpuBatch])], bool); 2] =
-            [(&[(0, &self.level_far), (0, &self.billboards[1])], true), (&[(1, &self.level), (1, &self.billboards[0]), (2, &self.creature)], false)];
+        let passes: [(&[(usize, &[GpuBatch])], bool); 3] = [
+            (&[(0, &self.level_far), (0, &self.billboards[1])], true),
+            (&[(1, &self.level), (1, &self.billboards[0]), (2, &self.creature)], false),
+            (&[(3, &self.hud)], false),
+        ];
         for (draws, first) in passes {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -715,6 +731,22 @@ impl Viewer {
             }
             for _ in 0..ticks {
                 self.lasers.tick();
+                let coins = self.pickups.as_ref().map_or(0, |p| p.coins);
+                let now = [player.lives, player.health, coins];
+                for (k, el) in [ts2::hud::LIVES, ts2::hud::HEALTH, ts2::hud::COINS].into_iter().enumerate() {
+                    if now[k] != self.hud_last[k] {
+                        self.hud_state.show(el, ts2::hud::SHOW_TICKS);
+                    }
+                }
+                self.hud_last = now;
+                self.hud_state.tick(&ts2::hud::Status {
+                    lives: player.lives,
+                    health: player.health,
+                    coins,
+                    spin_charge: player.charge,
+                    laser: player.laser,
+                    laser_charge: player.laser_charge,
+                });
             }
             // Creatures (0x4086F0) near the camera.
             if let Some(cr) = self.creatures.as_mut() {
@@ -909,6 +941,29 @@ impl Viewer {
             batches.push(c.clone());
         }
         gfx.creature = upload(&gfx.device, &batches, gfx.texture_bgs.len() - 1);
+        // The HUD, in play mode.
+        let hud = match &self.player {
+            Some(p) => {
+                let status = ts2::hud::Status {
+                    lives: p.lives,
+                    health: p.health,
+                    coins: self.pickups.as_ref().map_or(0, |pk| pk.coins),
+                    spin_charge: p.charge,
+                    laser: p.laser,
+                    laser_charge: p.laser_charge,
+                };
+                let ngn = &self.ngn;
+                let texture = |slot: i16| {
+                    let name = format!("tex{slot:02}");
+                    let i = ngn.textures.iter().position(|t| t.name.eq_ignore_ascii_case(&name))?;
+                    let (w, h, _) = ngn.textures[i].dimensions()?;
+                    Some((i, [(w as f32).abs(), (h as f32).abs()]))
+                };
+                ts2::hud::batches(&self.hud_state.quads(&status, &self.hud_sprites), &self.hud_sprites, &texture)
+            }
+            None => Vec::new(),
+        };
+        gfx.hud = upload(&gfx.device, &hud, gfx.texture_bgs.len() - 1);
         // Billboards (rails, spindles, plants) turn to the camera every frame.
         {
             let to_game = |v: Vec3| [v.x, -v.y, -v.z];
@@ -954,6 +1009,8 @@ impl Viewer {
         }
         player.set_poles(self.poles.clone());
         self.orig_cam = Some(ts2::camera::Camera::new(&player));
+        self.hud_state.level_start();
+        self.hud_last = [player.lives, player.health, self.pickups.as_ref().map_or(0, |p| p.coins)];
         self.player = Some(player);
         self.creature_idx = ci;
         self.anim_preview = None;
@@ -1274,6 +1331,7 @@ fn main() {
     });
     let laser_pose = game_exe.as_ref().and_then(|e| e.at(0x4DF294, 32).ok()).map(|b| b.to_vec()).unwrap_or_default();
     let lasers = ts2::laser::Lasers::new(random_table.clone().unwrap_or_default());
+    let hud_sprites = game_exe.as_ref().zip(exe::level_number(level_path)).map(|(e, lv)| ts2::hud::sprite_table(e, lv)).unwrap_or_default();
     match start {
         Some(s) => println!("player start {:?}, facing {:.0} degrees (F to play, Shift+F to drop at camera)", s.pos, s.yaw_radians().to_degrees()),
         None => println!("no player start found (toy2.exe not next to data\\, or not a main level file)"),
@@ -1328,6 +1386,9 @@ fn main() {
         lasers,
         beam_sprite,
         laser_pose,
+        hud_state: Default::default(),
+        hud_sprites,
+        hud_last: [0; 3],
     };
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut viewer).expect("run");

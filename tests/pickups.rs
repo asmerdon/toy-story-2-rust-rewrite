@@ -53,3 +53,35 @@ fn level_1_pickups() {
     // Special 49 waits for an unlocked move (0x503A44): shown but not collectable.
     assert_eq!(p.items.iter().find(|i| i.id == 49).map(|i| (i.kind, i.radius)), Some((Kind::Shield, 0)));
 }
+
+/// The HUD's sprites (0x49FD40) all resolve to textures in level 1, and a fresh HUD draws
+/// lives, batteries and coins.
+#[test]
+fn hud_sprites_resolve() {
+    let Some(dir) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let e = Exe::parse(fs::read(dir.join("toy2.exe")).unwrap()).unwrap();
+    let n = ngn::parse(&fs::read(dir.join("data/level01/level.ngn")).unwrap()).unwrap();
+    let sprites = ts2::hud::sprite_table(&e, 1);
+    for k in [6usize, 10, 11, 12, 13, 14, 15, 16, 20] {
+        let d = sprites[k].as_ref().unwrap_or_else(|| panic!("sprite {k}"));
+        let name = format!("tex{:02}", d.texture);
+        assert!(n.textures.iter().any(|t| t.name.eq_ignore_ascii_case(&name)), "sprite {k}: {name} missing");
+    }
+    let mut hud = ts2::hud::Hud::default();
+    hud.level_start();
+    let status = ts2::hud::Status { lives: 5, health: 14, coins: 12, ..Default::default() };
+    for _ in 0..40 {
+        hud.tick(&status);
+    }
+    let q = hud.quads(&status, &sprites);
+    let used: Vec<usize> = q.iter().map(|q| q.sprite).collect();
+    assert_eq!(used, [10, 0x14, 0xB, 6, 0xC, 0x10, 0x14, 0x14]);
+    // Digits: 5 lives, 1 and 2 coins.
+    assert_eq!(q[1].cell, 0x1A + 5);
+    assert_eq!((q[6].cell, q[7].cell), (0x1B, 0x1C));
+    assert_eq!(ts2::hud::batches(&q, &sprites, &|slot| {
+        let name = format!("tex{slot:02}");
+        let i = n.textures.iter().position(|t| t.name.eq_ignore_ascii_case(&name))?;
+        Some((i, [256.0, 256.0]))
+    }).iter().map(|b| b.vertices.len()).sum::<usize>(), 8 * 6);
+}
