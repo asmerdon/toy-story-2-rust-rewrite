@@ -60,13 +60,6 @@ pub struct Level1 {
     bars: [i32; 2],
     crib: i32,
     crib_v: i32,
-    /// Hamm's and Mr Potato Head's call timers (0x830C98 / 0x830D34).
-    calls: [i32; 2],
-    /// The hint-giving Hamm's next hint (0x830D24, −1 until he's first in play) and call timer
-    /// (0x830CA4); Bo Peep's call timer (0x830D40).
-    hint: i32,
-    hint_call: i32,
-    bo_call: i32,
     /// The RC race: the car's waypoint and laps (0x52F528 / 0x52F4F8), Buzz's quarter of the room
     /// and the finish-line latch (0x52F584 / 0x52F580); its state and Buzz's laps are `race` /
     /// `laps` in [`Common`].
@@ -103,8 +96,6 @@ const INFO_TABLE: u32 = 0x4F0EE8;
 /// Conversation texts (exe addresses).
 const BO_PEEP_THANKS: u32 = 0x4F03E0;
 const BO_PEEP_ASK: u32 = 0x4F036C;
-const HAMM_THANKS: u32 = 0x502834;
-const HAMM_ASK: u32 = 0x5027E0;
 const POTATO_ASK: u32 = 0x4F0ADC;
 const POTATO_THANKS: u32 = 0x4F0B60;
 const POTATO_AFTER: u32 = 0x4F0C10;
@@ -112,7 +103,6 @@ const RC_ASK: u32 = 0x4F042C;
 /// The hint Hamm's five hints (pointers at 0x4F0F7C, one per token) and his line once Buzz has
 /// them all.
 const HINTS: u32 = 0x4F0F7C;
-const ALL_TOKENS: u32 = 0x502868;
 const HINT_HAMM: (usize, i16) = (0x23, 0x27);
 const TIN_MAN_TEXT: u32 = 0x4F0330;
 /// Characters' slots and their camera lists.
@@ -154,10 +144,6 @@ impl Level1 {
             bars: [0; 2],
             crib: 0,
             crib_v: 0,
-            calls: [0; 2],
-            hint: -1,
-            hint_call: 0,
-            bo_call: 0,
             waypoint: 0,
             rc_laps: 0,
             quarter: 0,
@@ -185,7 +171,7 @@ impl Level1 {
     /// The conversations' texts (from the exe) and camera lists (from level.dat).
     pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
         self.story.hints = (0..5).filter_map(|k| exe.at(HINTS + 4 * k, 4).ok().map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))).collect();
-        let texts = [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK, TIN_MAN_TEXT, ALL_TOKENS];
+        let texts = [BO_PEEP_THANKS, BO_PEEP_ASK, crate::script::HAMM_THANKS, crate::script::HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK, TIN_MAN_TEXT, crate::script::ALL_TOKENS];
         self.load_story(exe, lists, &texts, Some(INFO_TABLE));
     }
 
@@ -197,78 +183,21 @@ impl Level1 {
     /// The characters of 0x417680 (Bo Peep in room 4, Hamm 0x4A1CE0 in room 3, Mr Potato
     /// Head 0x4A2480 in room 6), after the creatures' update. `coins` is Buzz's count.
     pub fn tick_characters(&mut self, world: &World, player: &Player, cr: &mut Creatures, coins: i32) {
-        let talking = self.cutscene.is_some();
         let room = world.room_at(player.pos);
-        let touched = |cr: &mut Creatures, slot: usize, id: u8| {
-            cr.slots.get_mut(slot).filter(|c| c.id == id && c.flags & 0x200 != 0).map(|c| c.flags &= !0x200).is_some()
-        };
-        if room == Some(4) && touched(cr, BO_PEEP.0, 7) && cr.sheep >= 0 {
-            if cr.sheep == 5 {
-                self.voices.push(0xB4);
-                self.talk(BO_PEEP.0, BO_PEEP.1, BO_PEEP_THANKS, Some(1), None);
-                cr.sheep = -1;
-            } else {
-                self.voices.push(0xB3);
-                self.talk(BO_PEEP.0, BO_PEEP.1, BO_PEEP_ASK, None, None);
-            }
+        if room == Some(4) {
+            self.finder(cr, BO_PEEP.0, BO_PEEP.1, BO_PEEP_ASK, BO_PEEP_THANKS, None, 1);
         }
-        if room == Some(3) && let Some(h) = cr.slots.get(HAMM.0).filter(|c| c.id == 10) {
-            let pos = h.pos;
-            if !self.given[0] && h.active && !talking {
-                self.calls[0] -= 1;
-                if self.calls[0] < 0 {
-                    self.calls[0] = (pos[0] & 0xFF) * 2 + 0xF0;
-                    self.slots.push((72, 128, pos));
-                }
-            }
-            if touched(cr, HAMM.0, 10) && !self.given[0] {
-                if coins > 0x31 {
-                    self.slots.push((74, 128, pos));
-                    self.talk(HAMM.0, HAMM.1, HAMM_THANKS, Some(0), Some([0xE10 & 0xFFF, 0x6E0]));
-                } else {
-                    self.slots.push((73, 128, pos));
-                    self.talk(HAMM.0, HAMM.1, HAMM_ASK, None, Some([0xE10 & 0xFFF, 0x6E0]));
-                }
-            }
+        if room == Some(3) {
+            self.hamm(cr, HAMM.0, HAMM.1, [0xE10, 0x6E0], 0, coins);
         }
         self.race(room, player, cr);
         self.tin_man(room, player, cr);
-        self.hint_hamm(cr, talking);
+        self.hint_character(cr, HINT_HAMM.0, HINT_HAMM.1);
         // 0x4A26F0(1, 0xB2): Bo Peep calls out while she still wants her sheep.
-        if cr.sheep >= 0 && !talking && let Some(b) = cr.slots.get(BO_PEEP.0).filter(|c| c.id == 7 && c.active) {
-            let pos = b.pos;
-            self.bo_call -= 1;
-            if self.bo_call < 0 {
-                self.bo_call = self.rand() * 2 + 0xF0;
-                self.sounds.push((0xB2, pos));
-            }
-        }
-        if room == Some(6) && let Some(m) = cr.slots.get(POTATO.0).filter(|c| c.id == 9) {
-            let pos = m.pos;
-            if m.active && !talking {
-                self.calls[1] -= 1;
-                if self.calls[1] < 0 {
-                    self.calls[1] = (pos[2] & 0xFF) * 2 + 0xF0;
-                    self.slots.push((75, 128, pos));
-                }
-            }
-            if touched(cr, POTATO.0, 9) {
-                let f = Some([0x200, 0xA00]);
-                match self.item.signum() {
-                    0 => self.talk(POTATO.0, POTATO.1, POTATO_AFTER, None, f),
-                    1 => {
-                        self.talk(POTATO.0, POTATO.1, POTATO_ASK, None, f);
-                        self.slots.push((76, 128, pos));
-                    }
-                    _ => {
-                        self.slots.push((77, 128, pos));
-                        self.talk(POTATO.0, POTATO.1, POTATO_THANKS, None, f);
-                        self.item = 0;
-                        // Level 1's gift (0x503A23): the cosmic shield.
-                        self.abilities |= 1;
-                    }
-                }
-            }
+        self.call(cr, BO_PEEP.0, 0xB2, cr.sheep >= 0);
+        if room == Some(6) {
+            // Level 1's gift (0x503A23): the cosmic shield.
+            self.potato(cr, POTATO.0, POTATO.1, [POTATO_ASK, POTATO_THANKS, POTATO_AFTER], [0x200, 0xA00], 1);
         }
     }
 
@@ -358,47 +287,6 @@ impl Level1 {
             self.given[2] = true;
             self.race = 3;
         }
-    }
-
-    /// 0x4A1E60(0x23, 0x27, 0x4F0F7C): the hint Hamm. In play, he calls now and then (slot 70);
-    /// touched, he gives the hint for the next token Buzz hasn't got (slot 71), starting from
-    /// a random one, or says Buzz has them all.
-    fn hint_hamm(&mut self, cr: &mut Creatures, talking: bool) {
-        let Some(h) = cr.slots.get_mut(HINT_HAMM.0).filter(|c| c.id != 0 && c.active) else { return };
-        let pos = h.pos;
-        let touched = h.flags & 0x200 != 0;
-        h.flags &= !0x200;
-        if self.hint == -1 {
-            self.hint = self.rand() & 3;
-        }
-        if !talking {
-            self.hint_call -= 1;
-            if self.hint_call < 0 {
-                self.hint_call = self.rand() * 2 + 0xF0;
-                self.slots.push((70, 128, pos));
-            }
-        }
-        if !touched || talking {
-            return;
-        }
-        let text = if self.tokens & 0x1F != 0x1F {
-            self.slots.push((71, 128, pos));
-            while self.tokens >> self.hint & 1 != 0 {
-                self.hint += 1;
-                if self.hint > 4 {
-                    self.hint = 0;
-                }
-            }
-            self.hint += 1;
-            let t = self.story.hints.get(self.hint as usize - 1).copied().unwrap_or(ALL_TOKENS);
-            if self.hint > 4 {
-                self.hint = 0;
-            }
-            t
-        } else {
-            ALL_TOKENS
-        };
-        self.talk(HINT_HAMM.0, HINT_HAMM.1, text, None, None);
     }
 
     /// Room 4 (0x417680): near the fountain (within 0x280 × 256 of it), every 64 ticks a

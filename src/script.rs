@@ -61,6 +61,10 @@ pub struct Common {
     pub put_out: Vec<(usize, usize)>,
     /// Ticks run, behind the every-n-ticks flags (0x4A2960).
     pub clock: u32,
+    /// The characters' call timers, as 0x4A2080 sets them at the start: Hamm (0x830C98),
+    /// the hint character (0x830CA4) and its next hint (0x830D24, −1 until first in play),
+    /// the finder (0x830D40), Mr Potato Head (0x830D34).
+    pub timers: Timers,
     /// The game's random bytes (`rand.dat`) and read position.
     pub(crate) random: Vec<u8>,
     pub(crate) rpos: usize,
@@ -139,6 +143,166 @@ impl Common {
         }
         self.talk(usize::MAX, list, text, None, Some([facing & 0xFFF, 0]));
         true
+    }
+}
+
+/// See [`Common::timers`].
+#[derive(Debug, Clone, Copy)]
+pub struct Timers {
+    pub hamm: i32,
+    pub hint_call: i32,
+    pub hint: i32,
+    pub finder: i32,
+    pub potato: i32,
+}
+
+impl Default for Timers {
+    fn default() -> Timers {
+        Timers { hamm: 200, hint_call: 100, hint: -1, finder: 0xFA, potato: 0x96 }
+    }
+}
+
+/// Hamm's two lines (0x4A1CE0), the hint character's line once Buzz has every token.
+pub const HAMM_THANKS: u32 = 0x502834;
+pub const HAMM_ASK: u32 = 0x5027E0;
+pub const ALL_TOKENS: u32 = 0x502868;
+
+/// A slot's touch flag (0x200), taken.
+pub fn touched(cr: &mut Creatures, slot: usize) -> bool {
+    cr.slots.get_mut(slot).filter(|c| c.id != 0 && c.flags & 0x200 != 0).map(|c| c.flags &= !0x200).is_some()
+}
+
+impl Common {
+    fn in_view(cr: &Creatures, slot: usize) -> Option<[i32; 3]> {
+        cr.slots.get(slot).filter(|c| c.id != 0 && c.active).map(|c| c.pos)
+    }
+
+    /// 0x4A1CE0(slot, list, Buzz's facing, Hamm's, token): until his token is given, Hamm
+    /// calls (sample 72) every 2r + 0xF0 ticks in view; touched, with 50 coins or more he
+    /// hands it over (sample 74, "well done buzz…"), else he asks for them (sample 73).
+    pub fn hamm(&mut self, cr: &mut Creatures, slot: usize, list: i16, facings: [i32; 2], token: usize, coins: i32) {
+        let given = self.given.get(token).copied().unwrap_or(true);
+        if !given && self.cutscene.is_none() && let Some(pos) = Self::in_view(cr, slot) {
+            self.timers.hamm -= 1;
+            if self.timers.hamm < 0 {
+                self.timers.hamm = self.rand() * 2 + 0xF0;
+                self.slots.push((72, 128, pos));
+            }
+        }
+        let pos = cr.slots.get(slot).map_or([0; 3], |c| c.pos);
+        if touched(cr, slot) && !given {
+            if coins > 0x31 {
+                self.slots.push((74, 128, pos));
+                self.talk(slot, list, HAMM_THANKS, Some(token), Some(facings.map(|f| f & 0xFFF)));
+            } else {
+                self.slots.push((73, 128, pos));
+                self.talk(slot, list, HAMM_ASK, None, Some(facings.map(|f| f & 0xFFF)));
+            }
+        }
+    }
+
+    /// 0x4A1E60(slot, list, hints): the hint character. In view, he calls now and then (slot
+    /// 70); touched, he gives the hint for the next token Buzz hasn't got (slot 71), starting
+    /// from a random one, or says Buzz has them all. Hints come from `story.hints`.
+    pub fn hint_character(&mut self, cr: &mut Creatures, slot: usize, list: i16) {
+        let talking = self.cutscene.is_some();
+        let Some(pos) = Self::in_view(cr, slot) else { return };
+        let touched = touched(cr, slot);
+        if self.timers.hint == -1 {
+            self.timers.hint = self.rand() & 3;
+        }
+        if !talking {
+            self.timers.hint_call -= 1;
+            if self.timers.hint_call < 0 {
+                self.timers.hint_call = self.rand() * 2 + 0xF0;
+                self.slots.push((70, 128, pos));
+            }
+        }
+        if !touched || talking {
+            return;
+        }
+        let text = if self.tokens & 0x1F != 0x1F {
+            self.slots.push((71, 128, pos));
+            let t = &mut self.timers.hint;
+            while self.tokens >> *t & 1 != 0 {
+                *t += 1;
+                if *t > 4 {
+                    *t = 0;
+                }
+            }
+            *t += 1;
+            let k = *t as usize - 1;
+            if *t > 4 {
+                *t = 0;
+            }
+            self.story.hints.get(k).copied().unwrap_or(ALL_TOKENS)
+        } else {
+            ALL_TOKENS
+        };
+        self.talk(slot, list, text, None, None);
+    }
+
+    /// 0x4A26F0(slot, sound): a character calling out every 2r + 0xF0 ticks in view, while
+    /// its challenge is open (`open`).
+    pub fn call(&mut self, cr: &Creatures, slot: usize, sound: u16, open: bool) {
+        if !open || self.cutscene.is_some() {
+            return;
+        }
+        let Some(pos) = Self::in_view(cr, slot) else { return };
+        self.timers.finder -= 1;
+        if self.timers.finder < 0 {
+            self.timers.finder = self.rand() * 2 + 0xF0;
+            self.sounds.push((sound, pos));
+        }
+    }
+
+    /// A "find my five …" character (inline in the level scripts): touched while the count
+    /// (0x52B7D8) is open, with all five found he thanks Buzz (voice 0xB4, `thanks`, the
+    /// token) and the count closes (−1); otherwise he asks (voice 0xB3, `ask`).
+    pub fn finder(&mut self, cr: &mut Creatures, slot: usize, list: i16, ask: u32, thanks: u32, facings: Option<[i32; 2]>, token: usize) {
+        if !touched(cr, slot) || cr.sheep < 0 {
+            return;
+        }
+        if cr.sheep == 5 {
+            self.voices.push(0xB4);
+            self.talk(slot, list, thanks, Some(token), facings);
+            cr.sheep = -1;
+        } else {
+            self.voices.push(0xB3);
+            self.talk(slot, list, ask, None, facings);
+        }
+    }
+
+    /// 0x4A2480(slot, list, ask, thanks, after, facings): Mr Potato Head. He calls (slot 75)
+    /// in view; touched: the item still lost → he asks (slot 76); found (`item` < 0) → he
+    /// takes it (slot 77), thanks Buzz and gives the level's ability (`gift`, 0x503A23);
+    /// after that, his last line.
+    pub fn potato(&mut self, cr: &mut Creatures, slot: usize, list: i16, texts: [u32; 3], facings: [i32; 2], gift: u8) {
+        if self.cutscene.is_none() && let Some(pos) = Self::in_view(cr, slot) {
+            self.timers.potato -= 1;
+            if self.timers.potato < 0 {
+                self.timers.potato = self.rand() * 2 + 0xF0;
+                self.slots.push((75, 128, pos));
+            }
+        }
+        let pos = cr.slots.get(slot).map_or([0; 3], |c| c.pos);
+        if !touched(cr, slot) {
+            return;
+        }
+        let f = Some(facings);
+        match self.item.signum() {
+            0 => self.talk(slot, list, texts[2], None, f),
+            1 => {
+                self.talk(slot, list, texts[0], None, f);
+                self.slots.push((76, 128, pos));
+            }
+            _ => {
+                self.slots.push((77, 128, pos));
+                self.talk(slot, list, texts[1], None, f);
+                self.item = 0;
+                self.abilities |= gift;
+            }
+        }
     }
 }
 
