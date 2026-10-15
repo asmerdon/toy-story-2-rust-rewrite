@@ -68,6 +68,8 @@ The user asked for first-person mode (with the crib in level 1) and to carry on 
 
 - **Hint Hamm** (slot 0x23, list 0x27, 0x4A1E60): calls now and then (slot 70); touched, gives the hint for the next token not yet collected (texts via pointers at 0x4F0F7C), or "you have all the tokens". `Level1::tokens` is set by the viewer from `Pickups::tokens`. Bo Peep calls out (sound 0xB2, 0x4A26F0) until she has her sheep. No dedicated test yet (builds, suite passes).
 
+- **Info pickups** (the 9 tutorial signposts, 0x402610): touching one plays its scene with the tutorial text. **Cosmic shield cage**: the shield pickup (id 0x31) is caged and can't be taken until Mr Potato Head gets his ear; then the cage (special 0x19, mover 10) goes and it shows at double size. Tests in `tests/rooms.rs`.
+
 Ask the user to try (none of round 5 is user-tested yet):
 - Tin Man: climb the plant and rope to the attic (room 5), get challenged, shoot him while he's open; health bar at the top, token 4 when he dies.
 - Room 5 see-saw: stand / land on either end.
@@ -95,7 +97,7 @@ Ask the user to try (none of round 5 is user-tested yet):
 6. **Laser thickness wrong.** Ribbon UVs were transposed: the sprite's 31-px axis runs along the beam, the 8-px axis across (0x4B9100). Fixed, with cell 2 at the muzzle end. Position was confirmed good.
 
 ## Next steps (in priority order)
-1. **Where I stopped (2026-10-14):** level 1 script 0x417680 is ported except the items below. Next: a test for the hint Hamm, cutscene pickups 0x402610, the stairs camera limits (state 0x3C part of 0x417680), reward sparkles 0x49FB40, using the cosmic shield (0x52F2D8 bit 1, 0x52F398). ("Room 1 falling toys" from earlier notes isn't in 0x417680.)
+1. **Where I stopped (2026-10-14):** level 1 script 0x417680 is ported except the items below. Remaining small level 1 items: a test for the hint Hamm, the camera-height limits while on pole 10 (0x53C5E4 = 0x3C), reward sparkles 0x49FB40, the spring's camera lag. Then move on to the other levels (user: "once you have finished with level 1, proceed with rest"). ("Room 1 falling toys" from earlier notes isn't in 0x417680.)
 2. Particles still to do: homing (flag 8, kinds 0x1D/0x26), 0x410850 explosions (death actions 1/2/4), lights 0x44F200, floor shadows (0x54F098), Buzz's footstep dust 0x4A2D80.
 3. Token sequence / menu (0x49FD40 with 0x830CC4 = 9), rocket/hover boots (0x4A4D60 / 0x4A4F80 / 0x4A4EC0, 0x4A4BB0; level 1 has no boots pickup), grappling hook in first person (0x4A5370, list 59).
 4. Original collision resolver if gaps persist; slippery surface 13; riding movers 0x488E10.

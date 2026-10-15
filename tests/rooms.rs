@@ -73,3 +73,43 @@ fn spring_throws_buzz() {
     assert!(y - top > 800.0, "high");
     assert!(moved > 500.0, "far");
 }
+
+/// Each of level 1's nine info pickups (ids 0x3E–0x47) has a scene: its camera list and text
+/// load and the scene starts, Buzz standing at the list's first point.
+#[test]
+fn info_pickups_play_their_scenes() {
+    let Some(mut l) = load() else { return };
+    let mut n = 0;
+    for id in 0x3E..=0x47u8 {
+        l.level.cutscene = None;
+        l.level.staging = None;
+        if !l.level.info(id) {
+            continue;
+        }
+        n += 1;
+        let (at, facing, _) = l.level.staging.expect("Buzz placed");
+        assert_ne!(at[0], [0; 3], "pickup {id:#x}: camera list loaded");
+        eprintln!("info {id:#x}: Buzz at {:?} facing {:#x}", at[0].map(|v| v >> 5), facing[0]);
+    }
+    assert_eq!(n, 9);
+}
+
+/// The cosmic shield (pickup 0x31) sits caged until Mr Potato Head gives the ability: then
+/// the cage (mover 10) goes and the shield can be taken.
+#[test]
+fn shield_cage_opens_with_the_ability() {
+    let Some(mut l) = load() else { return };
+    let game = env::var_os("TS2_GAME_DIR").map(PathBuf::from).unwrap();
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let dat = fs::read(game.join("data/level01/level.dat")).unwrap();
+    let mut pk = ts2::pickups::Pickups::new(1, &dat, Some(&e)).unwrap();
+    let shield = pk.items.iter().position(|p| p.id == 0x31).expect("pickup 0x31");
+    assert_eq!(pk.items[shield].kind, ts2::pickups::Kind::Shield);
+    l.level.shield_gate(&l.world, &mut l.specials, &mut pk);
+    assert_eq!(pk.items[shield].radius & 0x7F, 0);
+    assert!(l.world.mover_enabled(10), "caged");
+    l.level.abilities |= 1;
+    l.level.shield_gate(&l.world, &mut l.specials, &mut pk);
+    assert_ne!(pk.items[shield].radius & 0x7F, 0);
+    assert!(!l.world.mover_enabled(10), "cage gone");
+}

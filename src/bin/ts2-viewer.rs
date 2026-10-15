@@ -284,6 +284,8 @@ struct Viewer {
     cam: Camera,
     /// The original follow camera (play mode) and whether it drives the view (V toggles).
     orig_cam: Option<ts2::camera::Camera>,
+    /// The abilities the level's gates were last set up for (0x4A2080).
+    abilities_shown: u8,
     use_orig_cam: bool,
     keys: std::collections::HashSet<KeyCode>,
     looking: bool,
@@ -962,6 +964,13 @@ impl Viewer {
                         }
                     }
                     cr.sounds.append(&mut l.sounds);
+                    // Mr Potato Head's gift: the shield's cage opens.
+                    if l.abilities != self.abilities_shown
+                        && let Some(pk) = self.pickups.as_mut()
+                    {
+                        l.shield_gate(&self.world, &mut self.specials, pk);
+                        self.abilities_shown = l.abilities;
+                    }
                     for k in l.reveals.drain(..) {
                         if let Some(pk) = self.pickups.as_mut() {
                             pk.reveal_token(k);
@@ -1081,7 +1090,15 @@ impl Viewer {
                     player.shield = pk.shield;
                     for ev in evs {
                         match ev {
-                            ts2::pickups::Event::Collected { kind, pos, .. } => {
+                            ts2::pickups::Event::Collected { index, kind, pos } => {
+                                // Info pickups stay; touching one plays its scene (0x402610), and
+                                // while it runs (or without one) touching does nothing.
+                                if kind == ts2::pickups::Kind::Cutscene {
+                                    let id = pk.items.get(index).map(|i| i.id);
+                                    if !self.level1.as_mut().zip(id).is_some_and(|(l, id)| l.info(id)) {
+                                        continue;
+                                    }
+                                }
                                 println!("picked up {kind:?}: {}", pk.summary());
                                 // Every pickup plays jingle −1 (PICKUP5 with echoes) from where it was.
                                 if let Some(a) = self.audio.as_ref() {
@@ -1700,6 +1717,7 @@ fn main() {
         gfx: None,
         cam: Camera { pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0 },
         orig_cam: None,
+        abilities_shown: u8::MAX,
         use_orig_cam: true,
         keys: Default::default(),
         looking: false,

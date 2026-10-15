@@ -29,8 +29,10 @@
 //!
 //! - The hint Hamm (0x4A1E60) and Bo Peep's calls (0x4A26F0).
 //!
-//! Not ported yet: the reward sparkles, the camera-height
-//! limits on the stairs (Buzz state 0x3C) and the cosmic shield's use.
+//! - Info pickups (0x402610, table 0x4F0EE8) and the cosmic shield's cage (0x4A27A0).
+//!
+//! Not ported yet: the reward sparkles (0x49FB40), the camera-height limits while on pole 10
+//! (0x53C5E4 = 0x3C) and the spring's camera lag.
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
@@ -133,7 +135,14 @@ struct Story {
     lists: std::collections::HashMap<i16, Vec<[i32; 3]>>,
     /// The hint texts' addresses, by token.
     hints: Vec<u32>,
+    /// The info pickups' scenes (0x4025C0's table): pickup id, camera list, text address,
+    /// Buzz's facing.
+    infos: Vec<(u8, i16, u32, i32)>,
 }
+
+/// Level 1's info-pickup table (registered by 0x4171D0 through 0x4025C0): 16-byte entries
+/// up to a negative id.
+const INFO_TABLE: u32 = 0x4F0EE8;
 
 /// Conversation texts (exe addresses).
 const BO_PEEP_THANKS: u32 = 0x4F03E0;
@@ -240,9 +249,19 @@ impl Level1 {
 
     /// The conversations' texts (from the exe) and camera lists (from level.dat).
     pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
+        // The info pickups.
+        for k in 0..10 {
+            let Ok(b) = exe.at(INFO_TABLE + 16 * k, 16) else { break };
+            let w = |i: usize| i32::from_le_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]]);
+            if w(0) < 0 {
+                break;
+            }
+            self.story.infos.push((w(0) as u8, w(1) as i16, w(2) as u32, w(3)));
+        }
+        let infos: Vec<u32> = self.story.infos.iter().map(|i| i.2).collect();
         let hints: Vec<u32> = (0..5).filter_map(|k| exe.at(HINTS + 4 * k, 4).ok().map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))).collect();
         self.story.hints = hints.clone();
-        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK, TIN_MAN_TEXT, ALL_TOKENS].into_iter().chain(hints) {
+        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK, TIN_MAN_TEXT, ALL_TOKENS].into_iter().chain(hints).chain(infos) {
             let mut s = Vec::new();
             while let Ok(b) = exe.at(va + s.len() as u32, 1) {
                 if b[0] == 0 || s.len() > 400 {
@@ -252,7 +271,7 @@ impl Level1 {
             }
             self.story.texts.insert(va, String::from_utf8_lossy(&s).into_owned());
         }
-        for l in lists.iter().filter(|l| matches!(l.kind, 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | RC_TRACK | FOUNTAIN | 0x27)) {
+        for l in lists.iter().filter(|l| !l.points.is_empty()) {
             self.story.lists.insert(l.kind, l.points.clone());
         }
     }
@@ -268,6 +287,41 @@ impl Level1 {
         let (c, at, f) = Cutscene::new(&points, &text, token);
         self.staging = Some((at, facings.unwrap_or(f), slot));
         self.cutscene = Some(c);
+    }
+
+    /// 0x4A2080 / 0x4A27A0 for level 1's ability (bit 1, the cosmic shield; table 0x503A44
+    /// entry (1, 0x19, 0x31, 10)): without it the shield pickup (id 0x31) sits in its cage and
+    /// can't be taken; with it the cage (special 0x19, mover 10) goes and the shield shows at
+    /// double size, collectable.
+    pub fn shield_gate(&self, world: &World, specials: &mut Specials, pickups: &mut crate::pickups::Pickups) {
+        const CAGE: i32 = 0x19;
+        const SHIELD: u8 = 0x31;
+        const CAGE_MOVER: i32 = 10;
+        let has = self.abilities & 1 != 0;
+        for p in pickups.items.iter_mut().filter(|p| p.id == SHIELD) {
+            if has {
+                p.radius = 0x1F;
+                p.scale = 2.0;
+            } else {
+                p.radius = 0;
+            }
+        }
+        if has {
+            specials.set_scale(CAGE, [0; 3]);
+            world.set_mover(CAGE_MOVER, false);
+        }
+    }
+
+    /// 0x402610: touching an info pickup (id `id`) plays its scene: Buzz stands at the first
+    /// point of its camera list facing the table's way while the text is shown. Nothing if
+    /// the pickup has no scene or one is already running.
+    pub fn info(&mut self, id: u8) -> bool {
+        let Some(&(_, list, text, facing)) = self.story.infos.iter().find(|i| i.0 == id) else { return false };
+        if self.cutscene.is_some() {
+            return false;
+        }
+        self.talk(usize::MAX, list, text, None, Some([facing & 0xFFF, 0]));
+        true
     }
 
     /// Both crib bars are down and the crib has opened (0x52F56C set).
