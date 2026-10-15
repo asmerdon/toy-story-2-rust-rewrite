@@ -104,7 +104,7 @@ impl Level4 {
             lanes: 0,
             in_water: false,
             // 0x503A2A: level 4's missing item (9) and gift (bit 4, the disk launcher).
-            common: Common { given: [false, false, false, true, false], item: 9, ..Default::default() },
+            common: Common { given: [false, false, false, true, false], item: 9, show_collectables: Some(false), ..Default::default() },
         }
     }
 
@@ -446,7 +446,7 @@ impl Script for Level4 {
         self.challenge(cr, collected);
         // Level 4's gift (0x503A2B): the disk launcher.
         self.potato(cr, POTATO.0, POTATO.1, POTATO_TEXTS, [0x440, 0xC40], 4);
-        self.hamm(cr, HAMM.0, HAMM.1, [0xE10, 0x6E0], 0, coins);
+        self.hamm(cr, HAMM.0, HAMM.1, Some([0xE10, 0x6E0]), 0, coins);
         self.hint_character(cr, HINT.0, HINT.1);
         if touched(cr, FINDER.0) && cr.sheep >= 0 {
             if cr.sheep == 5 {

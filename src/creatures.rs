@@ -638,6 +638,7 @@ impl Creatures {
             0x13 => self.friend(c, 0x6B, 0x6C, 0x5A, false),
             0x14 => self.zurg_pod(slot, c, s, world),
             0x16 => self.drill(slot, c),
+            0x20 => self.clown(c),
             0x17 => {
                 self.friend(c, 0x8E, 0x8E, 0x5A, true);
                 // Upside down in its record's pose (0x4259B0).
@@ -1116,6 +1117,33 @@ impl Creatures {
                 }
             }
             self.boss.bar = c.health * 0x36 / 0x1E;
+        }
+    }
+
+    /// 0x41DDB0, the clown (0x20), level 5's boss; `boss.state` is the script's 0x52F8E8. A
+    /// hit (health changed) flashes it for 60 ticks during which it can't be hurt (record
+    /// state 4, then 7); touched, sound 0xA1.
+    fn clown(&mut self, c: &mut Creature) {
+        let b = &mut self.boss;
+        b.blink = !b.blink;
+        if c.health != b.last {
+            b.flash = 0x3C;
+            b.last = c.health;
+            c.rec.state = 4;
+        }
+        if c.flags & 0x200 != 0 {
+            c.flags &= !0x200;
+            self.sounds.push((0xA1, c.pos));
+        }
+        c.lit = false;
+        if b.state >= 2 {
+            b.flash -= 1;
+            if b.flash < 0 {
+                b.flash = 0;
+                c.rec.state = 7;
+            } else {
+                c.lit = b.blink;
+            }
         }
     }
 

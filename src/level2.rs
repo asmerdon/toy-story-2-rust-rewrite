@@ -282,7 +282,7 @@ impl Script for Level2 {
     }
 
     fn step_creatures(&mut self, _world: &World, _specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
-        self.hamm(cr, HAMM.0, HAMM.1, [0xC00, 0x400], 0, coins);
+        self.hamm(cr, HAMM.0, HAMM.1, Some([0xC00, 0x400]), 0, coins);
         self.hint_character(cr, HINT.0, HINT.1);
         self.call(cr, SARGE.0, 0xB2, cr.sheep >= 0);
         self.finder(cr, SARGE.0, SARGE.1, SARGE_ASK, SARGE_THANKS, Some([0x700, 0x200]), 1);

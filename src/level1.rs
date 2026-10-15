@@ -186,7 +186,7 @@ impl Level1 {
             self.finder(cr, BO_PEEP.0, BO_PEEP.1, BO_PEEP_ASK, BO_PEEP_THANKS, None, 1);
         }
         if room == Some(3) {
-            self.hamm(cr, HAMM.0, HAMM.1, [0xE10, 0x6E0], 0, coins);
+            self.hamm(cr, HAMM.0, HAMM.1, Some([0xE10, 0x6E0]), 0, coins);
         }
         self.race(room, player, cr);
         self.tin_man(room, player, cr);

@@ -354,7 +354,7 @@ impl Common {
     /// 0x4A1CE0(slot, list, Buzz's facing, Hamm's, token): until his token is given, Hamm
     /// calls (sample 72) every 2r + 0xF0 ticks in view; touched, with 50 coins or more he
     /// hands it over (sample 74, "well done buzz…"), else he asks for them (sample 73).
-    pub fn hamm(&mut self, cr: &mut Creatures, slot: usize, list: i16, facings: [i32; 2], token: usize, coins: i32) {
+    pub fn hamm(&mut self, cr: &mut Creatures, slot: usize, list: i16, facings: Option<[i32; 2]>, token: usize, coins: i32) {
         let given = self.given.get(token).copied().unwrap_or(true);
         if !given && self.cutscene.is_none() && let Some(pos) = Self::in_view(cr, slot) {
             self.timers.hamm -= 1;
@@ -367,10 +367,10 @@ impl Common {
         if touched(cr, slot) && !given {
             if coins > 0x31 {
                 self.slots.push((74, 128, pos));
-                self.talk(slot, list, HAMM_THANKS, Some(token), Some(facings.map(|f| f & 0xFFF)));
+                self.talk(slot, list, HAMM_THANKS, Some(token), facings.map(|f| f.map(|a| a & 0xFFF)));
             } else {
                 self.slots.push((73, 128, pos));
-                self.talk(slot, list, HAMM_ASK, None, Some(facings.map(|f| f & 0xFFF)));
+                self.talk(slot, list, HAMM_ASK, None, facings.map(|f| f.map(|a| a & 0xFFF)));
             }
         }
     }
@@ -568,6 +568,13 @@ pub fn for_level(level: usize, world: &World, specials: &mut Specials, exe: Opti
             Box::new(l)
         }
         3 => Box::new(crate::level3::Level3::new(specials)),
+        5 => {
+            let mut l = crate::level5::Level5::new(specials, world);
+            if let Some(e) = exe {
+                l.set_story(e, lists);
+            }
+            Box::new(l)
+        }
         4 => {
             let mut l = crate::level4::Level4::new(world, specials, exe);
             if let Some(e) = exe {

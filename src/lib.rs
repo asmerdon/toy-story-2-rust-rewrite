@@ -20,6 +20,7 @@ pub mod level1;
 pub mod level2;
 pub mod level3;
 pub mod level4;
+pub mod level5;
 pub mod look;
 pub mod particles;
 pub mod pickups;
