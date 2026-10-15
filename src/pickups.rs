@@ -322,6 +322,14 @@ impl Pickups {
         }
     }
 
+    /// Hides pickup `i` (y = 0x80000000, as scripts do) or brings it back.
+    pub fn show_item(&mut self, i: usize, shown: bool) {
+        if let Some(p) = self.items.get_mut(i) {
+            p.removed = !shown;
+            p.scale = if shown { 1.0 } else { 0.0 };
+        }
+    }
+
     /// 0x4A27A0 for the abilities Buzz has: their gated pickups can be taken (radius 0x1F,
     /// scaled); returns the cages (special, mover) to take away.
     pub fn open_gates(&mut self, abilities: u8) -> Vec<(i32, i32)> {

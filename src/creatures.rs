@@ -88,7 +88,7 @@ pub struct Creature {
     /// +0x6E / +0x6F: animation rate on the ground / in the air (< 0: fixed).
     rates: [i8; 2],
     /// +0x78: script wait, +0x80: script position.
-    wait: i32,
+    pub wait: i32,
     pc: usize,
     /// +0x7A respawn ticks, +0x7E health, +0x70 hurt (> 0) / dying (< 0) timer.
     pub respawn: i32,
@@ -108,6 +108,11 @@ pub struct Creature {
     dying_script: bool,
     /// +0x34: drawn lit up (the Tin Man's flash when hurt).
     pub lit: bool,
+    /// +0x2C–0x30: the model's scale (0x1000 = as built).
+    pub scale: i32,
+    /// A script's override of its hit ellipsoid (offset y, radius), as level 3 grows and
+    /// shrinks the slime's table.
+    pub hit_size: Option<(i32, i32)>,
 }
 
 /// The Tin Man fight (level 1, room 5): the boss's routine 0x416AB0 and the room script's
@@ -376,6 +381,8 @@ impl Creatures {
                 active: false,
                 dying_script: false,
                 lit: false,
+                scale: 0x1000,
+                hit_size: None,
             };
             c.reset(&mut cr, true);
             c.slots.push(cr);
@@ -410,10 +417,20 @@ impl Creatures {
         self.shapes.get(&id).unwrap_or(&self.default_shape)
     }
 
+    /// A creature's ellipsoid for its current animation, with any script override.
+    fn ellipsoid_of(&self, c: &Creature) -> Ellipsoid {
+        let mut e = self.shape(c.id).ellipsoid(c.anim as usize);
+        if let Some((oy, r)) = c.hit_size {
+            e.offset[1] = oy.clamp(-0x8000, 0x7FFF) as i16;
+            e.radius = r.clamp(1, 0x7FFF) as i16;
+        }
+        e
+    }
+
     /// Centre of slot `i`'s ellipsoid for its current animation, object units, and the ellipsoid.
     pub fn ellipsoid_at(&self, i: usize) -> ([i32; 3], Ellipsoid) {
         let c = &self.slots[i];
-        let e = self.shape(c.id).ellipsoid(c.anim as usize);
+        let e = self.ellipsoid_of(c);
         let (s, k) = (sin(c.angles[1] - 0x800) >> 2, sin(c.angles[1] - 0x400) >> 2);
         let (ox, oy, oz) = (e.offset[0] as i32, e.offset[1] as i32, e.offset[2] as i32);
         ([((ox * k + oz * s) >> 12) + c.pos[0], oy + c.pos[1], ((oz * k - ox * s) >> 12) + c.pos[2]], e)
@@ -1058,6 +1075,13 @@ impl Creatures {
         }
     }
 
+    /// 0x405D20 mode 1 on slot `i`: its death (animation, coin, burst).
+    pub fn kill_slot(&mut self, i: usize) {
+        let Some(mut c) = self.slots.get(i).cloned() else { return };
+        self.kill(i, &mut c);
+        self.slots[i] = c;
+    }
+
     /// Starts slot `i` again from its record (0x406CD0 with 0: keeps a dead one dead).
     pub fn restart(&mut self, i: usize) {
         let mut c = self.slots[i].clone();
@@ -1337,7 +1361,7 @@ impl Creatures {
     /// 0x405D20 mode 1: the death animation (types 3 / 0xE / 0x18: animation 2 for 94 ticks,
     /// type 4: 62 ticks; others go at once), a coin dropped.
     fn kill(&mut self, slot: usize, c: &mut Creature) {
-        let e = self.shape(c.id).ellipsoid(c.anim as usize);
+        let e = self.ellipsoid_of(c);
         let (s, k) = (sin(c.angles[1] - 0x800) >> 2, sin(c.angles[1] - 0x400) >> 2);
         let (ox, oz) = (e.offset[0] as i32, e.offset[2] as i32);
         let centre = [((ox * k + oz * s) >> 12) + c.pos[0], e.offset[1] as i32 + c.pos[1], ((oz * k - ox * s) >> 12) + c.pos[2]];
@@ -1428,7 +1452,7 @@ impl Creatures {
             let sh = self.shape(c.id);
             let sp = [0, 1, 2].map(|j| (sh.sphere[j] as i32 + c.pos[j] - chest[j]) >> 5);
             let rr = sh.sphere[3] as i32 + reach;
-            if sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2] >= rr * rr {
+            if c.hit_size.is_none() && sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2] >= rr * rr {
                 continue;
             }
             let (centre, e) = self.ellipsoid_at(i);

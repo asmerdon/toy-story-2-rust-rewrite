@@ -61,6 +61,15 @@ pub struct Common {
     pub put_out: Vec<(usize, usize)>,
     /// Ticks run, behind the every-n-ticks flags (0x4A2960).
     pub clock: u32,
+    /// A look-at scene (0x4020F0): the camera at `from` looking at `at` (object units) for
+    /// `ticks` (0x50A1F4) while play stands still.
+    pub look: Option<Look>,
+    /// The level is over (0x830CC4 = 1: the token screen).
+    pub done: bool,
+    /// Pickups (by index in list 63) to hide (false) or bring back (true).
+    pub pickups: Vec<(usize, bool)>,
+    /// Particle types whose live particles end now (the game sets their life to 1).
+    pub pop: Vec<u8>,
     /// The characters' call timers, as 0x4A2080 sets them at the start: Hamm (0x830C98),
     /// the hint character (0x830CA4) and its next hint (0x830D24, −1 until first in play),
     /// the finder (0x830D40), Mr Potato Head (0x830D34).
@@ -143,6 +152,39 @@ impl Common {
         }
         self.talk(usize::MAX, list, text, None, Some([facing & 0xFFF, 0]));
         true
+    }
+}
+
+/// See [`Common::look`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Look {
+    pub from: [i32; 3],
+    pub at: [i32; 3],
+    pub ticks: i32,
+}
+
+impl Common {
+    /// 0x4020F0(target, ticks, distance): leaves first person and holds the camera
+    /// `distance` × 0x400 out from `target` on Buzz's side, looking at it.
+    pub fn look_at(&mut self, target: [i32; 3], buzz: [i32; 3], ticks: i32, distance: i32) {
+        let a = crate::boxes::angle12((target[0] - buzz[0]) as f32, (target[2] - buzz[2]) as f32);
+        let from = [target[0] + (sin_table(a - 0x800) >> 4) * distance, target[1], target[2] + (sin_table(a - 0x400) >> 4) * distance];
+        self.look = Some(Look { from, at: target, ticks });
+    }
+
+    /// The scene's remaining ticks (0x50A1F4), 0 without one.
+    pub fn look_ticks(&self) -> i32 {
+        self.look.map_or(0, |l| l.ticks)
+    }
+
+    /// 0x402A10's countdown: one tick of the scene, ending it at 0.
+    pub fn tick_look(&mut self) {
+        if let Some(l) = self.look.as_mut() {
+            l.ticks -= 1;
+            if l.ticks < 1 {
+                self.look = None;
+            }
+        }
     }
 }
 
@@ -393,6 +435,7 @@ pub fn for_level(level: usize, world: &World, specials: &mut Specials, exe: Opti
             }
             Box::new(l)
         }
+        3 => Box::new(crate::level3::Level3::new(specials)),
         2 => {
             let mut l = crate::level2::Level2::new(world, specials);
             if let Some(e) = exe {

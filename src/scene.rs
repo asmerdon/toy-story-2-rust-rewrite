@@ -256,6 +256,17 @@ pub fn creature_batches_turned(ngn: &Ngn, c: &Creature, origin: [f32; 3], angles
     creature_batches_placed(ngn, c, Place::turned(origin, angles), anim, None)
 }
 
+/// As `creature_batches_turned`, scaled by `scale` (1 = as built) in its own frame.
+pub fn creature_batches_scaled(ngn: &Ngn, c: &Creature, origin: [f32; 3], angles: [f32; 3], scale: f32, anim: Option<(&Animation, f32)>) -> Vec<Batch> {
+    let mut place = Place::turned(origin, angles);
+    for row in place.m.iter_mut() {
+        for v in row.iter_mut() {
+            *v *= scale;
+        }
+    }
+    creature_batches_placed(ngn, c, place, anim, None)
+}
+
 /// Point on the base layer's root node that the overlay follows (0x43BA80).
 const ROOT_ANCHOR: [f32; 3] = [0.0, -200.0, 0.0];
 

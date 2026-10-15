@@ -18,6 +18,7 @@ pub mod hud;
 pub mod laser;
 pub mod level1;
 pub mod level2;
+pub mod level3;
 pub mod look;
 pub mod particles;
 pub mod pickups;

@@ -707,7 +707,7 @@ impl Viewer {
                 [r.sin(), r.cos()]
             });
             // In a conversation Buzz stands still; jump and Square go to the speech box.
-            let talking = self.script.as_ref().is_some_and(|l| l.cutscene.is_some());
+            let talking = self.script.as_ref().is_some_and(|l| l.cutscene.is_some() || l.look.is_some());
             let (talk_jump, talk_square) = if talking { (std::mem::take(&mut self.jump_pressed), std::mem::take(&mut self.fire_pressed)) } else { (false, false) };
             let move_xz = if talking { [0.0; 2] } else { move_xz };
             let input = game::Input {
@@ -787,6 +787,16 @@ impl Viewer {
             // Follow camera: orbit behind the player at chest height.
             let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
             match self.orig_cam.as_ref().filter(|_| self.use_orig_cam && player.first_person == 0) {
+                _ if self.script.as_ref().is_some_and(|l| l.look.is_some()) => {
+                    let lk = self.script.as_ref().and_then(|l| l.look).unwrap();
+                    let p = Vec3::from(lk.from.map(|v| v as f32 / 32.0));
+                    let q = Vec3::from(lk.at.map(|v| v as f32 / 32.0));
+                    self.cam.pos = game_to_world(p.to_array());
+                    let g = (q - p).normalize_or_zero();
+                    let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
+                    self.cam.yaw = w.x.atan2(-w.z);
+                    self.cam.pitch = w.y.clamp(-1.0, 1.0).asin();
+                }
                 _ if self.script.as_ref().is_some_and(|l| l.cutscene.is_some()) => {
                     let (pos, look) = self.script.as_ref().and_then(|l| l.cutscene.as_ref()).map(|c| c.camera()).unwrap();
                     let p = Vec3::from(pos.map(|v| v as f32 / 32.0));
@@ -871,6 +881,19 @@ impl Viewer {
                 if let Some(l) = self.script.as_mut() {
                     for (k, g) in l.put_out.drain(..) {
                         self.rewards.put_out(k, g, &mut self.particles);
+                    }
+                    for t in l.pop.drain(..) {
+                        for p in self.particles.slots.iter_mut().filter(|p| p.life > 0 && p.typ == t) {
+                            p.life = 1;
+                        }
+                    }
+                    for (i, shown) in l.pickups.drain(..) {
+                        if let Some(pk) = self.pickups.as_mut() {
+                            pk.show_item(i, shown);
+                        }
+                    }
+                    if std::mem::take(&mut l.done) {
+                        println!("level complete! (the original shows the token screen here)");
                     }
                 }
                 self.particles.touch(player.pos_obj(), player.spin > 0x14 || player.super_spinning());
@@ -1206,7 +1229,11 @@ impl Viewer {
                         let t = anim.map_or(0.0, |a| (c.time as f32 / 65536.0).min((a.frame_count.max(1) - 1) as f32));
                         let r = |a: i32| a as f32 / 4096.0 * std::f32::consts::TAU;
                         let angles = [r(c.angles[0]), r(c.angles[1]) + self.player_yaw_offset, r(c.angles[2])];
-                        let mut cb = scene::creature_batches_turned(&self.ngn, &self.ngn.creatures[ci], pos, angles, anim.map(|a| (a, t)));
+                        let mut cb = if c.scale == 0x1000 {
+                            scene::creature_batches_turned(&self.ngn, &self.ngn.creatures[ci], pos, angles, anim.map(|a| (a, t)))
+                        } else {
+                            scene::creature_batches_scaled(&self.ngn, &self.ngn.creatures[ci], pos, angles, c.scale as f32 / 4096.0, anim.map(|a| (a, t)))
+                        };
                         // +0x34: lit up (a hurt boss's flash), colours at double strength.
                         if c.lit {
                             for v in cb.iter_mut().flat_map(|b| b.vertices.iter_mut()) {
