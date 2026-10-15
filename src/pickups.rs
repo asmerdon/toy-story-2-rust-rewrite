@@ -154,6 +154,16 @@ struct LevelSetup {
 fn level_setup(level: usize) -> Option<LevelSetup> {
     match level {
         1 => Some(LevelSetup { token_list: 0x4F0EDC, reward_start: 0x48, revealed: &[3] }),
+        // The other levels' start-ups (0x4A1A50's table): the same call, token 3 shown.
+        2 => Some(LevelSetup { token_list: 0x4F154C, reward_start: 0x41, revealed: &[3] }),
+        4 => Some(LevelSetup { token_list: 0x4F1C98, reward_start: 0x75, revealed: &[] }),
+        5 => Some(LevelSetup { token_list: 0x4F2178, reward_start: 0x41, revealed: &[3] }),
+        7 => Some(LevelSetup { token_list: 0x4F2A48, reward_start: 0x41, revealed: &[3] }),
+        8 => Some(LevelSetup { token_list: 0x4F2F0C, reward_start: 0x41, revealed: &[3] }),
+        10 => Some(LevelSetup { token_list: 0x4F3798, reward_start: 0x73, revealed: &[3] }),
+        11 => Some(LevelSetup { token_list: 0x4F3F18, reward_start: 0x71, revealed: &[3] }),
+        13 => Some(LevelSetup { token_list: 0x4F46C0, reward_start: 0x40, revealed: &[3] }),
+        14 => Some(LevelSetup { token_list: 0x4F4C68, reward_start: 0x78, revealed: &[3] }),
         _ => None,
     }
 }
