@@ -30,6 +30,7 @@ pub struct Special {
     pub hidden: bool,
     own_angles: [u32; 3],
     own_scale: [f32; 3],
+    own_pos: [f32; 3],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,6 +52,7 @@ impl Specials {
                 hidden: false,
                 own_angles: inst.rot.map(|r| r & 0xFFFF),
                 own_scale: inst.scale,
+                own_pos: inst.pos,
             });
         }
         Specials { objects }
@@ -74,6 +76,11 @@ impl Specials {
     /// 0x4CCEF0: position in object units.
     pub fn pos_obj(&self, id: i32) -> Option<[i32; 3]> {
         self.get(id).map(|s| s.pos.map(|v| (v * 32.0) as i32))
+    }
+
+    /// 0x4CCF70: where the instance was placed in the level, object units.
+    pub fn home_obj(&self, id: i32) -> Option<[i32; 3]> {
+        self.get(id).map(|s| s.own_pos.map(|v| (v * 32.0) as i32))
     }
 
     /// 0x4CCC70: the instance's own angles plus `a` (12-bit) × 16.
@@ -128,7 +135,7 @@ mod tests {
     use super::*;
 
     fn one() -> Specials {
-        let s = Special { layer: 0, instance: 0, pos: [100.0, 0.0, 0.0], angles: [0x4000, 0, 0], scale: [2.0; 3], hidden: false, own_angles: [0x4000, 0, 0], own_scale: [2.0; 3] };
+        let s = Special { layer: 0, instance: 0, pos: [100.0, 0.0, 0.0], angles: [0x4000, 0, 0], scale: [2.0; 3], hidden: false, own_angles: [0x4000, 0, 0], own_scale: [2.0; 3], own_pos: [100.0, 0.0, 0.0] };
         Specials { objects: [(4u16, s)].into_iter().collect() }
     }
 

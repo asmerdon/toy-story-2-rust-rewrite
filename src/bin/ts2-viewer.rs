@@ -887,6 +887,15 @@ impl Viewer {
                             p.life = 1;
                         }
                     }
+                    if let Some(pk) = self.pickups.as_mut() {
+                        if std::mem::take(&mut l.collect_reset) {
+                            pk.collectables = 0;
+                        }
+                        if let Some(shown) = l.show_collectables.take() {
+                            pk.show_collectables(shown);
+                        }
+                        l.collected = pk.collectables;
+                    }
                     for (i, shown) in l.pickups.drain(..) {
                         if let Some(pk) = self.pickups.as_mut() {
                             pk.show_item(i, shown);

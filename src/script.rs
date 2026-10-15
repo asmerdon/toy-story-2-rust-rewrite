@@ -70,6 +70,11 @@ pub struct Common {
     pub pickups: Vec<(usize, bool)>,
     /// Particle types whose live particles end now (the game sets their life to 1).
     pub pop: Vec<u8>,
+    /// The challenge collectables Buzz has (0x830D4C), set by the caller; a request to zero
+    /// it, and to show or hide the challenge's collectables.
+    pub collected: i32,
+    pub collect_reset: bool,
+    pub show_collectables: Option<bool>,
     /// The characters' call timers, as 0x4A2080 sets them at the start: Hamm (0x830C98),
     /// the hint character (0x830CA4) and its next hint (0x830D24, −1 until first in play),
     /// the finder (0x830D40), Mr Potato Head (0x830D34).
@@ -184,6 +189,133 @@ impl Common {
             if l.ticks < 1 {
                 self.look = None;
             }
+        }
+    }
+}
+
+/// A mover following a path program (0x48ACC0): the program (i16 words from the exe), where
+/// it is in it, a wait count and the speed ramp (0 still, ramping up to 0x40, negative while
+/// slowing for the next point).
+#[derive(Debug, Clone, Default)]
+pub struct PathRunner {
+    pub program: Vec<i16>,
+    pub pc: usize,
+    wait: i32,
+    ramp: i32,
+}
+
+impl PathRunner {
+    /// Reads a program from the exe (it loops with command 0, so 256 words are plenty).
+    pub fn load(exe: &Exe, va: u32) -> PathRunner {
+        let program = (0..256).map_while(|k| exe.at(va + 2 * k, 2).ok().map(|b| i16::from_le_bytes([b[0], b[1]]))).collect();
+        PathRunner { program, ..Default::default() }
+    }
+
+    /// One tick for mover `mover` carrying special `special`. Commands: 0 n — back n words;
+    /// 1 dx dy dz speed — to the special's home plus (dx, dy, dz), easing in and out; 2 n — wait
+    /// n ticks; 3 mask base — wait (r & mask) + base; 4 list point speed — to a level.dat
+    /// point, easing; 6 / 7 mask — wait until the shared flags have / lack it; 8 / 9 mask —
+    /// set / clear flags; 10 list point speed — to a point at a steady speed. Speeds are in
+    /// level units a tick. The special is put where the mover is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(&mut self, world: &World, specials: &mut Specials, mover: i32, special: i32, flags: &mut u16, lists: &std::collections::HashMap<i16, Vec<[i32; 3]>>, rand: &mut dyn FnMut() -> i32) {
+        let w = |k: usize| self.program.get(k).copied().unwrap_or(0) as i32;
+        let at = self.pc;
+        let here = || world.mover_pos(mover).map(|p| [p.x as i32, p.y as i32, p.z as i32]);
+        match w(at) {
+            0 => {
+                self.pc = at.saturating_sub(w(at + 1) as usize);
+                self.wait = 0;
+            }
+            1 | 4 | 10 => {
+                let Some(cur) = here() else { return };
+                specials.set_pos(special, cur);
+                let (target, speed, len) = match w(at) {
+                    1 => {
+                        let h = specials.home_obj(special).unwrap_or_default();
+                        ([(h[0] >> 5) + w(at + 1), (h[1] >> 5) + w(at + 2), (h[2] >> 5) + w(at + 3)], w(at + 4), 5)
+                    }
+                    k => {
+                        let p = lists.get(&(w(at + 1) as i16)).and_then(|l| l.get(w(at + 2) as usize)).copied().unwrap_or(cur);
+                        (p, w(at + 3), if k == 4 { 4 } else { 4 })
+                    }
+                };
+                let d = [0, 1, 2].map(|k| (cur[k] - target[k]).abs());
+                let near = |r: i32| d.iter().all(|&v| v < r);
+                let v = if w(at) == 10 {
+                    if near(speed + 8) {
+                        None
+                    } else {
+                        Some(speed)
+                    }
+                } else {
+                    if near(speed * 4 + 0x30) && self.ramp > 0 {
+                        self.ramp = -0x40;
+                    }
+                    if self.ramp < 0 {
+                        self.ramp = (self.ramp + 2).min(0);
+                    } else if self.ramp < 0x40 {
+                        self.ramp += 2;
+                    }
+                    if self.ramp != 0 && !near(speed + 8) {
+                        let s = if self.ramp < 0 {
+                            (-self.ramp * speed) >> 6
+                        } else if self.ramp < 0x40 {
+                            (self.ramp * speed) >> 6
+                        } else {
+                            speed
+                        };
+                        Some(s.max(1))
+                    } else {
+                        None
+                    }
+                };
+                match v {
+                    Some(s) => {
+                        let dir = glam::Vec3::new((target[0] - cur[0]) as f32, (target[1] - cur[1]) as f32, (target[2] - cur[2]) as f32).normalize_or_zero();
+                        let step = dir * s as f32;
+                        world.move_mover(mover, step);
+                    }
+                    None => {
+                        self.ramp = 0;
+                        self.wait = 0;
+                        self.pc = at + len;
+                    }
+                }
+            }
+            2 => {
+                if self.wait == 0 {
+                    self.wait = w(at + 1);
+                } else {
+                    self.wait -= 1;
+                    if self.wait < 1 {
+                        self.wait = 0;
+                        self.pc = at + 2;
+                    }
+                }
+            }
+            3 => {
+                if self.wait == 0 {
+                    self.wait = (w(at + 1) & rand()) + w(at + 2);
+                } else {
+                    self.wait -= 1;
+                    if self.wait < 1 {
+                        self.wait = 0;
+                        self.pc = at + 3;
+                    }
+                }
+            }
+            6 if *flags & w(at + 1) as u16 != 0 => self.pc = at + 2,
+            7 if *flags & w(at + 1) as u16 == 0 => self.pc = at + 2,
+            8 => {
+                *flags |= w(at + 1) as u16;
+                self.pc = at + 2;
+            }
+            9 => {
+                *flags &= !(w(at + 1) as u16);
+                self.pc = at + 2;
+            }
+            _ => {}
         }
     }
 }
@@ -436,6 +568,13 @@ pub fn for_level(level: usize, world: &World, specials: &mut Specials, exe: Opti
             Box::new(l)
         }
         3 => Box::new(crate::level3::Level3::new(specials)),
+        4 => {
+            let mut l = crate::level4::Level4::new(world, specials, exe);
+            if let Some(e) = exe {
+                l.set_story(e, lists);
+            }
+            Box::new(l)
+        }
         2 => {
             let mut l = crate::level2::Level2::new(world, specials);
             if let Some(e) = exe {

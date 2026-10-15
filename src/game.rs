@@ -137,6 +137,9 @@ struct ObjectInfo {
     offset: std::cell::Cell<Vec3>,
     /// Turned about its position (mover table +0x2C, 12-bit angles about X, Y, Z; 0x488AA0).
     turn: std::cell::Cell<[i32; 3]>,
+    /// How far it moved this tick (its velocity, mover table +0x34), level units: what
+    /// carries Buzz standing on it.
+    moved: std::cell::Cell<Vec3>,
 }
 
 /// The rotation of 12-bit angles about X, then Y, then Z (the order `scene` draws specials
@@ -219,6 +222,7 @@ impl World {
                 enabled: std::cell::Cell::new(o.kind == 8 || (matches!(o.kind, 6 | 7) && o.flags & 0x100 == 0)),
                 offset: std::cell::Cell::new(Vec3::ZERO),
                 turn: std::cell::Cell::new([0; 3]),
+                moved: std::cell::Cell::new(Vec3::ZERO),
             });
             let to = if o.flags & 0x400 != 0 {
                 &mut rooms
@@ -262,6 +266,38 @@ impl World {
     pub fn place_mover(&self, id: i32, pos: Vec3) {
         if let Some(i) = self.mover(id) {
             self.objects[i].offset.set(pos - self.mover_home[i]);
+        }
+    }
+
+    /// A mover moving by `d` (level units) this tick: its velocity (0x48ACC0 sets mover
+    /// table +0x34 and the collision code moves it).
+    pub fn move_mover(&self, id: i32, d: Vec3) {
+        if let Some(i) = self.mover(id) {
+            let o = &self.objects[i];
+            o.offset.set(o.offset.get() + d);
+            o.moved.set(o.moved.get() + d);
+        }
+    }
+
+    /// A mover's angles (12-bit), as `turn_mover` left them.
+    pub fn mover_turn(&self, id: i32) -> [i32; 3] {
+        self.mover(id).map_or([0; 3], |i| self.objects[i].turn.get())
+    }
+
+    /// Where a mover is now (its load position plus how far it has moved), level units.
+    pub fn mover_pos(&self, id: i32) -> Option<Vec3> {
+        self.mover_pivot(id)
+    }
+
+    /// How far a mover moved this tick.
+    pub fn mover_motion(&self, id: i32) -> Vec3 {
+        self.mover(id).map_or(Vec3::ZERO, |i| self.objects[i].moved.get())
+    }
+
+    /// A new tick: no mover has moved yet.
+    pub fn clear_motion(&self) {
+        for o in &self.objects {
+            o.moved.set(Vec3::ZERO);
         }
     }
 
@@ -1203,7 +1239,14 @@ impl Player {
             self.vel[0] = 0;
             self.vel[2] = 0;
         }
+        world.clear_motion();
         pre_move(self, world);
+        // Standing on a mover that moved this tick: carried with it (0x488E10).
+        if self.on_floor
+            && let Some((m, _)) = self.floor_mover
+        {
+            self.pos += world.mover_motion(m);
+        }
         self.last_pos = self.pos;
         self.move_and_collide(world);
 

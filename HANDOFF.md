@@ -78,7 +78,10 @@ The user asked for first-person mode (with the crib in level 1) and to carry on 
 - Creature routines for levels 2–10: lawnmower 0xC, army man 0xD, Zurg car 0xE, kite 0xF (level 2 boss), pod 0x14 (ground laser, ribbons via `Lasers::ribbons`, hurts via `Creatures::hurts`), plane 0x18 / box 0x19, boat 0x1B, the find-them characters 0x13 / 0x17 / 0x1C / 0x26 / 0x2B.
 - Water (`Player::water`, flag 0x100: quarter-scale airborne step).
 - Level 2 (`src/level2.rs`): see-saws, water, Hamm, hint Hamm, the sarge and his troops (troop 4 starts untouchable: something in the level frees it, not found yet), stomp switches → door → spring, the rope lift, the kite boss. Tests `tests/level2.rs`.
-- Next: level 3 (boss level, 0x41AA10 frame / 0x41A8A0 start, creature 16 SLIME), then 4 (0x41C640), 5, 6 (boss, 0x420060), 7, 8, 9 (boss), 10. Each: read the start (scratchpad `starts.py` lists its calls) and frame script, port characters with the shared routines, then the level's bosses/gadgets, a test file per level.
+- Level 3 (`src/level3.rs`): the slime boss (rounds, regrowth, look-at scenes; `Common::look`, creature `scale` / `hit_size`). Test `tests/level3.rs`.
+- Moving platforms: `script::PathRunner` (0x48ACC0 path programs), `World::move_mover` / `mover_motion`, Buzz rides movers.
+- Level 4 (`src/level4.rs`): hanging platforms and rigs, shuttles, presses, drawbridge, button lift, water, characters, timed challenge, the drill boss (creature 0x16). The crane combination puzzle (token 3) is not ported. Tests `tests/level4.rs`.
+- Next: level 5 (0x41E390 / 0x41E880), 6 (boss, 0x41FFB0 / 0x420060), 7, 8, 9 (boss), 10. Each: read the start (scratchpad `starts.py` lists its calls) and frame script, port characters with the shared routines, then the level's bosses/gadgets, a test file per level.
 
 Ask the user to try (none of round 5 is user-tested yet):
 - Tin Man: climb the plant and rope to the attic (room 5), get challenged, shoot him while he's open; health bar at the top, token 4 when he dies.

@@ -637,6 +637,7 @@ impl Creatures {
             0xF => self.kite(slot, c, s),
             0x13 => self.friend(c, 0x6B, 0x6C, 0x5A, false),
             0x14 => self.zurg_pod(slot, c, s, world),
+            0x16 => self.drill(slot, c),
             0x17 => {
                 self.friend(c, 0x8E, 0x8E, 0x5A, true);
                 // Upside down in its record's pose (0x4259B0).
@@ -1061,6 +1062,61 @@ impl Creatures {
             c.pos[1] = (sin(self.boss.wave) >> 3) - 0x7C000;
         }
         c.pos[1] = c.pos[1].min(-0x741AD);
+    }
+
+    /// 0x41B780, the drill (0x16), level 4's boss; `boss.state` is the script's 0x52F804. It
+    /// rumbles (0x99, owned; 0x9A when touched) and shakes the camera near Buzz (not ported).
+    /// Fighting, it flashes for 60 ticks after a hit (then hurtable again: record state 7,
+    /// else 4); the laser hurts it (state 5) unless Buzz has the disk launcher out. It kicks
+    /// up dust (0x04 mode 9) every 4 ticks before it's beaten; while Buzz is up on the rim
+    /// (y < −0x7DE25) it throws rocks at him (0x54, every 32 ticks, one in four aimed), and
+    /// its bar is health × 54 / 30.
+    fn drill(&mut self, slot: usize, c: &mut Creature) {
+        self.owned_sounds.push((0x99, c.pos, slot));
+        if c.flags & 0x200 != 0 {
+            c.flags &= !0x200;
+            self.sounds.push((0x9A, c.pos));
+        }
+        let b = &mut self.boss;
+        b.blink = !b.blink;
+        if b.state > 1 {
+            b.flash -= 1;
+            if b.flash < 0 {
+                b.flash = 0;
+                c.rec.state = 7;
+                c.lit = false;
+            } else {
+                c.lit = b.blink;
+            }
+        }
+        if c.health != b.last {
+            b.flash = 0x3C;
+            b.last = c.health;
+            c.rec.state = 4;
+        }
+        c.rec.state = if b.state < 2 { 4 } else { 5 };
+        if b.state < 3 && self.clock.is_multiple_of(4) {
+            self.spawns.push((c.pos, 4, 9, 0));
+        }
+        if b.state == 2 && self.buzz[1] < -0x7DE25 {
+            if self.clock.is_multiple_of(32) {
+                if self.rand() & 3 == 0 {
+                    let buzz = self.buzz;
+                    let (dx, dz) = ((c.pos[0] - buzz[0]) >> 5, (c.pos[2] - buzz[2]) >> 5);
+                    let u = atan(dx, dz) & 0xFFF;
+                    let d = (((dx * dx + dz * dz) as f64).sqrt() as i32).max(4);
+                    let reach = (d * 3 / 4).max(1);
+                    let t = ((d << 12) / reach).max(1);
+                    let vy = ((t * -0x80) >> 8) - ((c.pos[1] - buzz[1]) * 0x80) / t;
+                    let spin = self.rand() as i32 - 0x80;
+                    self.particles.push(ParticleRequest { pos: c.pos, vel: [sin(u - 0x800) * reach >> 14, vy, sin(u - 0x400) * reach >> 14], gravity: 0x80, angle: 0, spin, typ: 0x54 });
+                } else {
+                    let spin = self.rand() as i32 - 0x80;
+                    self.spawns.push((c.pos, 0x54, 0xE, spin));
+                }
+            }
+            self.boss.bar = c.health * 0x36 / 0x1E;
+        }
     }
 
     /// 0x41DF70, Zurg's boat (0x1B): every 200 ticks it lobs a shot (0x5C) ahead from its

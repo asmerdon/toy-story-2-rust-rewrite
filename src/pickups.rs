@@ -322,6 +322,15 @@ impl Pickups {
         }
     }
 
+    /// Shows or hides every challenge collectable (the level scripts' 0x52F814 table).
+    pub fn show_collectables(&mut self, shown: bool) {
+        for i in 0..self.items.len() {
+            if self.items[i].kind == Kind::Collectable {
+                self.show_item(i, shown);
+            }
+        }
+    }
+
     /// Hides pickup `i` (y = 0x80000000, as scripts do) or brings it back.
     pub fn show_item(&mut self, i: usize, shown: bool) {
         if let Some(p) = self.items.get_mut(i) {
