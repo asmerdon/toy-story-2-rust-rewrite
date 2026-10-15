@@ -69,8 +69,7 @@ pub struct Level1 {
     armed: bool,
     /// Room 5's see-saw (mover / special 0xF): its swing speed (0x52F58C) and tilt about Z
     /// (mover table units, 0x4000 a turn).
-    tilt: i32,
-    tilt_z: i32,
+    saw: crate::script::Tilt,
     /// Room 3's spring (0x52F4FC): 0 idle, counting up once stomped (throws Buzz at 7), then
     /// −0x20 counting back up to 0.
     spring: i32,
@@ -148,8 +147,7 @@ impl Level1 {
             rc_laps: 0,
             quarter: 0,
             armed: false,
-            tilt: 0,
-            tilt_z: 0,
+            saw: Default::default(),
             spring: 0,
             lift_v: 0,
             lift,
@@ -409,43 +407,7 @@ impl Level1 {
     /// a tick, the tilt changes by an eighth of it, and it bounces back at the limits with
     /// three quarters of its speed. The special follows the mover.
     fn see_saw(&mut self, world: &World, specials: &mut Specials, player: &mut Player) {
-        const SAW: i32 = 0xF;
-        let mut v = self.tilt;
-        let riding = player.on_floor && player.floor_mover.is_some_and(|(m, _)| m == SAW);
-        let before = [0, 0, self.tilt_z >> 2];
-        if riding {
-            let Some(p) = specials.pos_obj(SAW) else { return };
-            let b = player.pos_obj();
-            // Along the plank (its yaw is 0: x), and the distance from its pivot.
-            let along = ((b[0] - p[0]) >> 5) * 0x1000 / 0x1000;
-            let dy = (b[1] - p[1]) >> 5;
-            let d = (((dy * dy + along * along) as f64).sqrt() as i32) >> 5;
-            let push = ((player.fall_speed * d >> 9) + d) / 2;
-            v += if along > 0 { push } else { -push };
-        } else {
-            v += 4;
-        }
-        if v > 0 {
-            v = (v - 2).max(0);
-        } else if v < 0 {
-            v = (v + 2).min(0);
-        }
-        self.tilt_z += v / 8;
-        if self.tilt_z < -0x700 {
-            v = (v * 3 / 4).abs();
-            self.tilt_z = -0x700;
-        } else if self.tilt_z > 0x700 {
-            v = -(v * 3 / 4).abs();
-            self.tilt_z = 0x700;
-        }
-        self.tilt = v;
-        let a = [0, 0, self.tilt_z >> 2];
-        world.turn_mover(SAW, a);
-        specials.set_angles(SAW, a);
-        // Standing on it, Buzz turns with it.
-        if riding && a != before {
-            player.pos = world.ride_turn(SAW, before, a, player.pos);
-        }
+        self.saw.step(world, specials, player, 0xF, 0xF, 0, 1, -0x1C0, 0x1C0, 8);
     }
 
     /// Room 5's Tin Man (0x417680 with the boss's routine). Coming up to his level in his zone

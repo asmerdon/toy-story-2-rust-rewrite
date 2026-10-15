@@ -788,6 +788,12 @@ pub struct Player {
     pub pushing: bool,
     /// 0x53C810: his vertical speed going into this tick's move (how hard he lands).
     pub fall_speed: i32,
+    /// Water (0x53C5E8 mode, 0x53C628 surface height, object units), set by level scripts:
+    /// mode 1 counts from 0x2000 below the surface, modes 2 / 3 from the surface. In it
+    /// (flag 0x100) the airborne step works at a quarter scale (k = 4) and falls are capped
+    /// at 0x400 (mode 1) or 0x40.
+    pub water: (u8, i32),
+    pub in_water: bool,
     /// Flag 0x40 of +0x40: thrown by something (room 3's spring). Until he lands, no friction
     /// and speeds up to 0xB80 each way (0x436220's profile).
     pub launched: bool,
@@ -877,6 +883,8 @@ impl Player {
             pushing: false,
             fall_speed: 0,
             launched: false,
+            water: (0, 0),
+            in_water: false,
         }
     }
 
@@ -899,6 +907,21 @@ impl Player {
     pub fn move_pole(&mut self, i: usize, y: i32) {
         if let Some(p) = self.poles.get_mut(i) {
             p.pos[1] = y;
+        }
+    }
+
+    /// Sets pole `i`'s kind (0 / 1 climbable, 2 slide-only).
+    pub fn set_pole_kind(&mut self, i: usize, kind: i32) {
+        if let Some(p) = self.poles.get_mut(i) {
+            p.kind = kind;
+        }
+    }
+
+    /// Lowers pole `i`'s bottom by `dy` (object units), its top staying put.
+    pub fn stretch_pole(&mut self, i: usize, dy: i32) {
+        if let Some(p) = self.poles.get_mut(i) {
+            p.pos[1] += dy;
+            p.length += dy;
         }
     }
 
@@ -1070,6 +1093,12 @@ impl Player {
         if self.launched && self.on_floor {
             self.launched = false;
         }
+        let y = self.y_obj();
+        self.in_water = match self.water {
+            (1, s) => y > s + 0x2000,
+            (2 | 3, s) => y > s,
+            _ => false,
+        };
         let magnitude = stick[0].hypot(stick[1]).min(1.0);
         let pushing = magnitude > 0.0;
         // Movement profile.
@@ -1390,6 +1419,13 @@ impl Player {
     /// 0x4340D0: jump start, variable height, double jump, gravity.
     fn airborne(&mut self, held: bool) {
         let y = self.y_obj();
+        // In water the whole step works at a quarter scale instead of a half.
+        let k = if self.in_water { 4 } else { K };
+        let terminal = match (self.in_water, self.water.0) {
+            (false, _) => TERMINAL_FALL,
+            (true, 1) => 0x400,
+            _ => 0x40,
+        };
         let vy = &mut self.vel[1];
         if !held {
             if self.on_floor {
@@ -1398,10 +1434,10 @@ impl Player {
             if self.jump == JumpPhase::Holding {
                 // Letting go while rising cuts the jump short.
                 if *vy < 0 {
-                    if *vy < -800 / K {
-                        *vy += 0x180 / (K * K);
+                    if *vy < -800 / k {
+                        *vy += 0x180 / (k * k);
                     }
-                    *vy = *vy / 2 - 0x100 / (K * K);
+                    *vy = *vy / 2 - 0x100 / (k * k);
                 }
                 self.jump = JumpPhase::Released;
             }
@@ -1416,7 +1452,7 @@ impl Player {
                 self.fall_timer = 0;
                 *vy = match self.jump_start.map(|s| s - y) {
                     Some(h) if h > 0 => -double_jump_speed_high(h),
-                    _ => -0x900 / K,
+                    _ => -0x900 / k,
                 };
                 self.jump = JumpPhase::Double;
                 self.state = state::DOUBLE_JUMP;
@@ -1441,7 +1477,7 @@ impl Player {
                     self.on_floor = false;
                     self.coyote = 0;
                     self.state = state::JUMP;
-                    *vy = JUMP_VY;
+                    *vy = JUMP_VY * K / k;
                     self.skid = 0;
                     self.jump_start = Some(y);
                     self.sounds.push(Sound { id: 0x19, voice: true });
@@ -1450,9 +1486,9 @@ impl Player {
         }
         let vy = &mut self.vel[1];
         if !self.on_floor {
-            *vy += GRAVITY;
+            *vy += 0x100 / (k * k);
         }
-        *vy = (*vy).min(TERMINAL_FALL);
+        *vy = (*vy).min(terminal);
     }
 
     /// 0x4346C0: turn towards the stick (`stick` = its 12-bit direction, if pushed).

@@ -71,6 +71,15 @@ The user asked for first-person mode (with the crib in level 1) and to carry on 
 - **Reward sparkles** (`src/rewards.rs`, 0x49FB40, all levels): list 58's box spots (0x71) and challenge rewards (0x73) twinkle near the camera; level 1 puts out reward 1 at the start and on the trampoline, reward 0 on the spring.
 - **Info pickups** (the 9 tutorial signposts, 0x402610): touching one plays its scene with the tutorial text. **Cosmic shield cage**: the shield pickup (id 0x31) is caged and can't be taken until Mr Potato Head gets his ear; then the cage (special 0x19, mover 10) goes and it shows at double size. Tests in `tests/rooms.rs`.
 
+### Round 6 (2026-10-15): the other levels
+- Levels 11–15 are not in the install (CD only): the playable set is 1–10.
+- `src/script.rs`: every level's script is a `Script` (deref to `Common`: conversations, info scenes, HUD bits, token reveals, sounds, particles, sparkles, the random stream) built by `script::for_level`. Shared routines: `hamm`, `hint_character`, `call`, `finder`, `potato`, `Tilt` (0x49EC00, any yaw/mode). Ability gates are generic in `Pickups::open_gates`.
+- Token setups for every level's start-up (pickups).
+- Creature routines for levels 2–10: lawnmower 0xC, army man 0xD, Zurg car 0xE, kite 0xF (level 2 boss), pod 0x14 (ground laser, ribbons via `Lasers::ribbons`, hurts via `Creatures::hurts`), plane 0x18 / box 0x19, boat 0x1B, the find-them characters 0x13 / 0x17 / 0x1C / 0x26 / 0x2B.
+- Water (`Player::water`, flag 0x100: quarter-scale airborne step).
+- Level 2 (`src/level2.rs`): see-saws, water, Hamm, hint Hamm, the sarge and his troops (troop 4 starts untouchable: something in the level frees it, not found yet), stomp switches → door → spring, the rope lift, the kite boss. Tests `tests/level2.rs`.
+- Next: level 3 (boss level, 0x41AA10 frame / 0x41A8A0 start, creature 16 SLIME), then 4 (0x41C640), 5, 6 (boss, 0x420060), 7, 8, 9 (boss), 10. Each: read the start (scratchpad `starts.py` lists its calls) and frame script, port characters with the shared routines, then the level's bosses/gadgets, a test file per level.
+
 Ask the user to try (none of round 5 is user-tested yet):
 - Tin Man: climb the plant and rope to the attic (room 5), get challenged, shoot him while he's open; health bar at the top, token 4 when he dies.
 - Room 5 see-saw: stand / land on either end.

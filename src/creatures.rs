@@ -133,6 +133,13 @@ pub struct Boss {
     pub token: bool,
     /// Jingles to play (id, where).
     pub jingles: Vec<(i32, [i32; 3])>,
+    /// Other bosses' phases: a bob, a wave and a spin angle (level 2's kite: 0x52F6EC,
+    /// 0x52F6B8, 0x52F65C).
+    pub phase: i32,
+    pub wave: i32,
+    pub spin: i32,
+    /// Its bar shows and the camera may turn to it this tick (set by the routine).
+    pub hud: bool,
 }
 
 /// The Tin Man's script entry points (word offsets into behaviour 5: the pointer
@@ -610,6 +617,7 @@ impl Creatures {
             0xC => self.lawnmower(slot, c),
             0xD => self.army_man(c),
             0xE => self.zurg_car(slot, c, s),
+            0xF => self.kite(slot, c, s),
             0x13 => self.friend(c, 0x6B, 0x6C, 0x5A, false),
             0x14 => self.zurg_pod(slot, c, s, world),
             0x17 => {
@@ -964,6 +972,78 @@ impl Creatures {
             }
         }
         c.set_script(0x76 / 2);
+    }
+
+    /// 0x4189C0, the Zurg kite (0xF), level 2's boss; `boss.state` is the level script's
+    /// 0x52F664 (0 waiting, 1 talking, 2 fighting). It bobs (lean from a 0x24-a-tick phase)
+    /// and always faces Buzz, and flashes for 60 ticks when hurt. Before the fight it hangs
+    /// high (y −0x7C000 with a wave). Fighting, while Buzz is up on the roof (y < −0x72000)
+    /// the camera turns to it and the boss bar shows; Buzz out of its zone up there, it swoops
+    /// at him spinning (faster as it weakens, engine 0x3C); in its zone it hovers 0xA000
+    /// above him and dodges every 120 ticks, and a hit (sound 0x98) restarts its script's
+    /// wait. Buzz off the roof, it goes home and can't be hurt. It never comes below
+    /// −0x741AD.
+    fn kite(&mut self, slot: usize, c: &mut Creature, s: &Step) {
+        let b = &mut self.boss;
+        b.blink = !b.blink;
+        b.flash -= 1;
+        if b.flash < 0 {
+            b.flash = 0;
+            c.lit = false;
+        } else {
+            c.lit = b.blink;
+        }
+        b.phase = (b.phase + 0x24) & 0xFFF;
+        c.angles[2] = sin(b.phase) >> 6;
+        b.wave = (b.wave + 0x40) & 0xFFF;
+        let buzz = self.buzz;
+        c.target_facing = (atan(c.pos[0] - buzz[0], c.pos[2] - buzz[2]) - 0x800) & 0xFFF;
+        if self.boss.state == 2 {
+            let high = buzz[1] < -0x71FFF;
+            if high {
+                self.boss.focus = Some(c.pos);
+                self.boss.hud = true;
+            } else {
+                c.flags = (c.flags & !8) | 4;
+                c.target[0] = c.home[0];
+                c.target[2] = c.home[2];
+                c.rec.state = 4;
+                c.wait = 0x32;
+            }
+            let by = buzz[1].min(-0x721AD);
+            let wave = sin(self.boss.wave);
+            if s.chase & 1 == 0 && high {
+                c.timer = 2;
+                c.target = [buzz[0], (wave - 0x3000 + by).min(-0x741AD), buzz[2]];
+                let spin = c.health * -0x14 + 0x108;
+                self.owned_sounds.push((0x3C, c.pos, slot));
+                self.boss.spin = (self.boss.spin + spin) & 0xFFF;
+                c.angles[1] = self.boss.spin;
+                c.vel[0] = sin(c.target_facing) >> 5;
+                c.vel[2] = cos(c.target_facing) >> 5;
+            } else {
+                if self.boss.last != c.health {
+                    self.boss.flash = 0x3C;
+                    self.boss.last = c.health;
+                    c.wait = 0;
+                    if c.health > 0 {
+                        self.sounds.push((0x98, c.pos));
+                    }
+                }
+                self.boss.spin = c.angles[1];
+                c.target[1] = wave - 0xA000 + by;
+                c.timer -= 1;
+                if c.timer < 0 {
+                    c.timer = 0x78;
+                    let a = c.angles[1] + if self.rand() < 0x80 { -0x200 } else { 0x200 };
+                    c.vel[0] = sin(a) >> 3;
+                    c.vel[2] = cos(a) >> 3;
+                }
+            }
+        } else {
+            c.pos[1] = (sin(self.boss.wave) >> 3) - 0x7C000;
+        }
+        c.pos[1] = c.pos[1].min(-0x741AD);
     }
 
     /// 0x41DF70, Zurg's boat (0x1B): every 200 ticks it lobs a shot (0x5C) ahead from its

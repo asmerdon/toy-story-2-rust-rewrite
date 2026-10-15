@@ -306,6 +306,64 @@ impl Common {
     }
 }
 
+/// 0x49EC00's state for one tilting mover: swing speed and tilt about Z (mover-table units,
+/// 0x4000 a turn).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Tilt {
+    pub v: i32,
+    pub z: i32,
+}
+
+impl Tilt {
+    /// 0x49EC00(mover, special, v, mode, lo, hi, div) for a mover turned `yaw` (12-bit, set
+    /// at the start by 0x488AA0). Buzz standing on it pushes the side he's on down, harder
+    /// the further out he is and the harder he lands; off it, mode 1 drifts towards the
+    /// positive tilt and mode 2 back towards level; mode 0 just slows. The swing slows by 2 a
+    /// tick, the tilt changes by speed / `div`, and it bounces back from `lo` / `hi` (× 4)
+    /// with three quarters of its speed. The special follows; Buzz on it turns with it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, mover: i32, special: i32, yaw: i32, mode: u8, lo: i32, hi: i32, div: i32) {
+        let mut v = self.v;
+        let riding = player.on_floor && player.floor_mover.is_some_and(|(m, _)| m == mover);
+        let before = [0, yaw, self.z >> 2];
+        if riding {
+            let Some(p) = specials.pos_obj(special) else { return };
+            let b = player.pos_obj();
+            // Along the plank (the mover's yaw), and the distance from its pivot.
+            let (s, c) = (sin_table(yaw - 0x800) >> 2, sin_table(yaw + 0x400) >> 2);
+            let along = (((b[2] - p[2]) >> 5) * s + ((b[0] - p[0]) >> 5) * c) / 0x1000;
+            let dy = (b[1] - p[1]) >> 5;
+            let d = (((dy * dy + along * along) as f64).sqrt() as i32) >> 5;
+            let push = ((player.fall_speed * d >> 9) + d) / 2;
+            v += if along > 0 { push } else { -push };
+        } else if mode == 1 {
+            v += 4;
+        } else if mode == 2 && self.z.abs() > 8 {
+            v += if self.z < 0 { 3 } else { -3 };
+        }
+        if v > 0 {
+            v = (v - 2).max(0);
+        } else if v < 0 {
+            v = (v + 2).min(0);
+        }
+        self.z += v / div;
+        if self.z < lo * 4 {
+            v = (v * 3 / 4).abs();
+            self.z = lo * 4;
+        } else if self.z > hi * 4 {
+            v = -(v * 3 / 4).abs();
+            self.z = hi * 4;
+        }
+        self.v = v;
+        let a = [0, yaw, self.z >> 2];
+        world.turn_mover(mover, a);
+        specials.set_angles(special, a);
+        if riding && a != before {
+            player.pos = world.ride_turn(mover, before, a, player.pos);
+        }
+    }
+}
+
 /// A level's own script.
 pub trait Script: std::ops::DerefMut<Target = Common> {
     /// The part of the frame script that runs just before Buzz moves (with the boxes).
@@ -330,6 +388,13 @@ pub fn for_level(level: usize, world: &World, specials: &mut Specials, exe: Opti
     let mut s: Box<dyn Script> = match level {
         1 => {
             let mut l = crate::level1::Level1::new(world, specials);
+            if let Some(e) = exe {
+                l.set_story(e, lists);
+            }
+            Box::new(l)
+        }
+        2 => {
+            let mut l = crate::level2::Level2::new(world, specials);
             if let Some(e) = exe {
                 l.set_story(e, lists);
             }

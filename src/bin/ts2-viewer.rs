@@ -893,7 +893,7 @@ impl Viewer {
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                     race: self.script.as_ref().map_or(0, |l| l.race),
                     laps: self.script.as_ref().map_or(0, |l| l.laps),
-                    boss: self.creatures.as_ref().map_or(0, |c| c.boss.bar),
+                    boss: self.script.as_ref().and_then(|l| l.boss_bar).unwrap_or_else(|| self.creatures.as_ref().map_or(0, |c| c.boss.bar)),
                     boss_on: self.script.as_ref().is_some_and(|l| l.boss_hud),
                 });
             }
@@ -1308,7 +1308,7 @@ impl Viewer {
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                     race: self.script.as_ref().map_or(0, |l| l.race),
                     laps: self.script.as_ref().map_or(0, |l| l.laps),
-                    boss: self.creatures.as_ref().map_or(0, |c| c.boss.bar),
+                    boss: self.script.as_ref().and_then(|l| l.boss_bar).unwrap_or_else(|| self.creatures.as_ref().map_or(0, |c| c.boss.bar)),
                     boss_on: self.script.as_ref().is_some_and(|l| l.boss_hud),
                 };
                 let ngn = &self.ngn;
