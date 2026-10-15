@@ -195,6 +195,9 @@ pub struct Pickups {
     respawn: Option<(usize, i32)>,
     /// The last shield picked up (it shrinks back to twice its size when another is taken).
     shield_item: Option<usize>,
+    /// This level's ability gates (0x503A44…): ability bit, cage special, pickup id, cage
+    /// mover, the pickup's scale once open.
+    gates: Vec<(u8, i32, u8, i32, f32)>,
 }
 
 impl Pickups {
@@ -264,6 +267,7 @@ impl Pickups {
             frame: 0,
             respawn: None,
             shield_item: None,
+            gates: Vec::new(),
         };
         if let Some(exe) = exe {
             p.level_setup(level, exe);
@@ -295,12 +299,17 @@ impl Pickups {
             }
         }
         // 0x4A2080 with no moves unlocked yet.
-        for table in PROGRESS_TABLES {
+        for (bit, table) in PROGRESS_TABLES.into_iter().enumerate() {
             let mut va = table;
             for _ in 0..64 {
                 let Ok(e) = exe.at(va, 4) else { break };
                 if e[0] == 0xFF {
                     break;
+                }
+                if e[0] as usize == level {
+                    // 0x4A27A0's scale argument: 8 for the first table, 4 for the rest (<< 10).
+                    let open = if bit == 0 { 2.0 } else { 1.0 };
+                    self.gates.push((1 << bit, e[1] as i32, e[2], e[3] as i32, open));
                 }
                 if e[0] as usize == level
                     && let Some(p) = self.by_id(e[2])
@@ -311,6 +320,23 @@ impl Pickups {
                 va += 4;
             }
         }
+    }
+
+    /// 0x4A27A0 for the abilities Buzz has: their gated pickups can be taken (radius 0x1F,
+    /// scaled); returns the cages (special, mover) to take away.
+    pub fn open_gates(&mut self, abilities: u8) -> Vec<(i32, i32)> {
+        let mut cages = Vec::new();
+        for (bit, cage, id, mover, scale) in self.gates.clone() {
+            if abilities & bit == 0 {
+                continue;
+            }
+            if let Some(p) = self.by_id(id) {
+                p.radius = 0x1F;
+                p.scale = scale;
+            }
+            cages.push((cage, mover));
+        }
+        cages
     }
 
     /// 0x4A0DB0 (instant form): token `k` of the level's five becomes visible and collectable.

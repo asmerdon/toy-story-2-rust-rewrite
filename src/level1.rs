@@ -36,10 +36,10 @@
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
-use crate::cutscene::Cutscene;
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
 use crate::game::{JumpPhase, Player, Sound, World};
+use crate::script::{near, sin_table, Common, Script};
 use crate::specials::Specials;
 use glam::Vec3;
 
@@ -60,22 +60,6 @@ pub struct Level1 {
     bars: [i32; 2],
     crib: i32,
     crib_v: i32,
-    /// Sounds at positions (object units) from the creature parts.
-    pub sounds: Vec<(u16, [i32; 3])>,
-    /// Voice lines on Buzz's channel (0x49EA60) and sample slots at a position (0x4A3C80:
-    /// slot, volume).
-    pub voices: Vec<u16>,
-    pub slots: Vec<(u16, i32, [i32; 3])>,
-    /// A conversation in progress.
-    pub cutscene: Option<Cutscene>,
-    /// Who stands where at its start: Buzz and the character's slot (positions, facings).
-    pub staging: Option<([[i32; 3]; 2], [i32; 2], usize)>,
-    /// Tokens handed over or shown (0x830CD0 per token).
-    pub given: [bool; 5],
-    /// 0x830D48: Mr Potato Head's missing part (8 = his ear; negative once Buzz has it, 0
-    /// once returned) and the abilities he gives (0x52F2D8).
-    pub item: i32,
-    pub abilities: u8,
     /// Hamm's and Mr Potato Head's call timers (0x830C98 / 0x830D34).
     calls: [i32; 2],
     /// The hint-giving Hamm's next hint (0x830D24, −1 until he's first in play) and call timer
@@ -83,21 +67,13 @@ pub struct Level1 {
     hint: i32,
     hint_call: i32,
     bo_call: i32,
-    /// The tokens Buzz has collected (bits, `0x52F0D7[level]`), set by the caller.
-    pub tokens: u8,
-    /// The RC race (room 2): state 0x52F2F8 (1 talked, 2 racing, 3 over), the car's waypoint
-    /// and laps (0x52F528 / 0x52F4F8), Buzz's laps (0x52AD64) and his quarter of the room
-    /// with the finish-line latch (0x52F584 / 0x52F580).
-    pub race: i32,
+    /// The RC race: the car's waypoint and laps (0x52F528 / 0x52F4F8), Buzz's quarter of the room
+    /// and the finish-line latch (0x52F584 / 0x52F580); its state and Buzz's laps are `race` /
+    /// `laps` in [`Common`].
     waypoint: usize,
     rc_laps: i32,
-    pub laps: i32,
     quarter: u32,
     armed: bool,
-    /// Tokens to show now (0x4A0DB0 outside a conversation).
-    pub reveals: Vec<usize>,
-    /// The boss's health bar is up (HUD element 7 kept at 0x5A ticks).
-    pub boss_hud: bool,
     /// Room 5's see-saw (mover / special 0xF): its swing speed (0x52F58C) and tilt about Z
     /// (mover table units, 0x4000 a turn).
     tilt: i32,
@@ -113,33 +89,11 @@ pub struct Level1 {
     lift_max: i32,
     pole_offset: Option<i32>,
     /// Room 4's fountain: its next target point (0x52F52C), the steam timer and vent
-    /// (0x52F5B0 / 0x52F598); the tick count behind the every-n-ticks flags (0x4A2960).
+    /// (0x52F5B0 / 0x52F598).
     fountain: usize,
     steam: i32,
     vent: usize,
-    clock: u32,
-    /// Particles the script makes: by type and mode (0x40FDF0) with a spin and a life, and
-    /// fully specified (0x40FAE0).
-    pub spawns: Vec<([i32; 3], u8, usize, i32, Option<i32>)>,
-    pub particles: Vec<crate::creatures::ParticleRequest>,
-    /// Reward sparkles to put out (0x49FAB0: index, group).
-    pub put_out: Vec<(usize, usize)>,
-    /// Random bytes for the effects (the game's `rand.dat` stream).
-    random: Vec<u8>,
-    rpos: usize,
-    story: Story,
-}
-
-/// Texts and camera lists of the level's conversations (from toy2.exe and level.dat).
-#[derive(Debug, Clone, Default)]
-struct Story {
-    texts: std::collections::HashMap<u32, String>,
-    lists: std::collections::HashMap<i16, Vec<[i32; 3]>>,
-    /// The hint texts' addresses, by token.
-    hints: Vec<u32>,
-    /// The info pickups' scenes (0x4025C0's table): pickup id, camera list, text address,
-    /// Buzz's facing.
-    infos: Vec<(u8, i16, u32, i32)>,
+    common: Common,
 }
 
 /// Level 1's info-pickup table (registered by 0x4171D0 through 0x4025C0): 16-byte entries
@@ -179,16 +133,7 @@ const VENTS: [[i32; 3]; 3] = [[0xB81A8, 0x29283, -0x86785], [0xB31E8, 0x29283, -
 const BARS: [usize; 2] = [0, 2];
 const BAR_REST: i32 = 0x50;
 
-/// Sine table value (round(16384 · sin)) of a 12-bit angle, as 0x4FE788 holds it.
-fn sin_table(a: i32) -> i32 {
-    ((a & 0xFFF) as f64 / 4096.0 * std::f64::consts::TAU).sin().mul_add(16384.0, 0.0).round() as i32
-}
 
-/// Within `r` (in 256-object-unit steps) of Buzz (0x49F400).
-fn near(p: [i32; 3], buzz: [i32; 3], r: i32) -> bool {
-    let d = [0, 1, 2].map(|k| (p[k] - buzz[k]) >> 8);
-    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < r * r
-}
 
 impl Level1 {
     /// 0x4171D0's part that sets up objects.
@@ -209,27 +154,14 @@ impl Level1 {
             bars: [0; 2],
             crib: 0,
             crib_v: 0,
-            sounds: Vec::new(),
-            voices: Vec::new(),
-            slots: Vec::new(),
-            cutscene: None,
-            staging: None,
-            given: [false, false, false, true, false],
-            item: 8,
-            abilities: 0,
             calls: [0; 2],
             hint: -1,
             hint_call: 0,
             bo_call: 0,
-            tokens: 0,
-            race: 0,
             waypoint: 0,
             rc_laps: 0,
-            laps: 0,
             quarter: 0,
             armed: false,
-            reveals: Vec::new(),
-            boss_hud: false,
             tilt: 0,
             tilt_z: 0,
             spring: 0,
@@ -240,92 +172,21 @@ impl Level1 {
             fountain: 0,
             steam: 0,
             vent: 0,
-            clock: 0,
-            spawns: Vec::new(),
-            particles: Vec::new(),
-            // 0x4171D0: the trampoline's reward sparkle is out from the start.
-            put_out: vec![(1, 1)],
-            random: Vec::new(),
-            rpos: 0,
-            story: Story::default(),
+            common: Common {
+                given: [false, false, false, true, false],
+                item: 8,
+                // 0x4171D0: the trampoline's reward sparkle is out from the start.
+                put_out: vec![(1, 1)],
+                ..Default::default()
+            },
         }
     }
 
     /// The conversations' texts (from the exe) and camera lists (from level.dat).
     pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
-        // The info pickups.
-        for k in 0..10 {
-            let Ok(b) = exe.at(INFO_TABLE + 16 * k, 16) else { break };
-            let w = |i: usize| i32::from_le_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]]);
-            if w(0) < 0 {
-                break;
-            }
-            self.story.infos.push((w(0) as u8, w(1) as i16, w(2) as u32, w(3)));
-        }
-        let infos: Vec<u32> = self.story.infos.iter().map(|i| i.2).collect();
-        let hints: Vec<u32> = (0..5).filter_map(|k| exe.at(HINTS + 4 * k, 4).ok().map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))).collect();
-        self.story.hints = hints.clone();
-        for va in [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK, TIN_MAN_TEXT, ALL_TOKENS].into_iter().chain(hints).chain(infos) {
-            let mut s = Vec::new();
-            while let Ok(b) = exe.at(va + s.len() as u32, 1) {
-                if b[0] == 0 || s.len() > 400 {
-                    break;
-                }
-                s.push(b[0]);
-            }
-            self.story.texts.insert(va, String::from_utf8_lossy(&s).into_owned());
-        }
-        for l in lists.iter().filter(|l| !l.points.is_empty()) {
-            self.story.lists.insert(l.kind, l.points.clone());
-        }
-    }
-
-    /// Starts a conversation (0x4027F0) on camera list `list` with `text` (an exe address).
-    fn talk(&mut self, slot: usize, list: i16, text: u32, token: Option<usize>, facings: Option<[i32; 2]>) {
-        // Only one at a time (0x4027F0 does nothing while 0x50A1F8 is set).
-        if self.cutscene.is_some() {
-            return;
-        }
-        let points = self.story.lists.get(&list).cloned().unwrap_or_default();
-        let text = self.story.texts.get(&text).cloned().unwrap_or_default();
-        let (c, at, f) = Cutscene::new(&points, &text, token);
-        self.staging = Some((at, facings.unwrap_or(f), slot));
-        self.cutscene = Some(c);
-    }
-
-    /// 0x4A2080 / 0x4A27A0 for level 1's ability (bit 1, the cosmic shield; table 0x503A44
-    /// entry (1, 0x19, 0x31, 10)): without it the shield pickup (id 0x31) sits in its cage and
-    /// can't be taken; with it the cage (special 0x19, mover 10) goes and the shield shows at
-    /// double size, collectable.
-    pub fn shield_gate(&self, world: &World, specials: &mut Specials, pickups: &mut crate::pickups::Pickups) {
-        const CAGE: i32 = 0x19;
-        const SHIELD: u8 = 0x31;
-        const CAGE_MOVER: i32 = 10;
-        let has = self.abilities & 1 != 0;
-        for p in pickups.items.iter_mut().filter(|p| p.id == SHIELD) {
-            if has {
-                p.radius = 0x1F;
-                p.scale = 2.0;
-            } else {
-                p.radius = 0;
-            }
-        }
-        if has {
-            specials.set_scale(CAGE, [0; 3]);
-            world.set_mover(CAGE_MOVER, false);
-        }
-    }
-
-    /// 0x402610: touching an info pickup (id `id`) plays its scene: Buzz stands at the first
-    /// point of its camera list facing the table's way while the text is shown. Nothing if
-    /// the pickup has no scene or one is already running.
-    pub fn info(&mut self, id: u8) -> bool {
-        let Some(&(_, list, text, facing)) = self.story.infos.iter().find(|i| i.0 == id) else { return false };
-        if self.cutscene.is_some() {
-            return false;
-        }
-        self.talk(usize::MAX, list, text, None, Some([facing & 0xFFF, 0]));
-        true
+        self.story.hints = (0..5).filter_map(|k| exe.at(HINTS + 4 * k, 4).ok().map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))).collect();
+        let texts = [BO_PEEP_THANKS, BO_PEEP_ASK, HAMM_THANKS, HAMM_ASK, POTATO_ASK, POTATO_THANKS, POTATO_AFTER, RC_ASK, TIN_MAN_TEXT, ALL_TOKENS];
+        self.load_story(exe, lists, &texts, Some(INFO_TABLE));
     }
 
     /// Both crib bars are down and the crib has opened (0x52F56C set).
@@ -540,25 +401,6 @@ impl Level1 {
         self.talk(HINT_HAMM.0, HINT_HAMM.1, text, None, None);
     }
 
-    /// Gives the script the game's random bytes for its effects.
-    pub fn set_random(&mut self, random: Vec<u8>) {
-        self.random = random;
-    }
-
-    fn rand(&mut self) -> i32 {
-        if self.random.is_empty() {
-            return 0x80;
-        }
-        let b = self.random[self.rpos % self.random.len()];
-        self.rpos = (self.rpos + 1) % 0x5DC.min(self.random.len());
-        b as i32
-    }
-
-    /// Every `n` ticks (the flags 0x52F1C2–0x52F1CB of 0x4A2960).
-    fn every(&self, n: u32) -> bool {
-        self.clock % n == 0
-    }
-
     /// Room 4 (0x417680): near the fountain (within 0x280 × 256 of it), every 64 ticks a
     /// squirt (particle 0xC) arcs from list 22's first point to one of the others, picked 1–16
     /// on; every 120 ticks the next of three vents puffs steam (0x22 mode 2) and every other
@@ -598,7 +440,8 @@ impl Level1 {
             }
             if self.every(2) {
                 let life = (self.rand() & 0xF) + 0x20;
-                self.spawns.push((VENTS[self.vent], 0x10, 10, 0, Some(life)));
+                let v = VENTS[self.vent];
+                self.spawns.push((v, 0x10, 10, 0, Some(life)));
             }
         }
         let hot = [0xB74DC, 0x23F3E, -0x6634A];
@@ -954,5 +797,29 @@ impl Level1 {
         specials.turn_from_own(id, [0, 0, angle & 0xFFF]);
         let y = (p[1] >> 5) - (sin_table(h + 0x400) >> 6) + 0x100;
         specials.set_pos(id, [p[0] >> 5, y, p[2] >> 5]);
+    }
+}
+
+impl std::ops::Deref for Level1 {
+    type Target = Common;
+    fn deref(&self) -> &Common {
+        &self.common
+    }
+}
+
+impl std::ops::DerefMut for Level1 {
+    fn deref_mut(&mut self) -> &mut Common {
+        &mut self.common
+    }
+}
+
+impl Script for Level1 {
+    fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, boxes: &Boxes) {
+        self.tick(world, specials, player, boxes);
+    }
+
+    fn step_creatures(&mut self, world: &World, specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
+        self.tick_creatures(world, specials, player, cr);
+        self.tick_characters(world, player, cr, coins);
     }
 }

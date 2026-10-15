@@ -105,11 +105,13 @@ fn shield_cage_opens_with_the_ability() {
     let mut pk = ts2::pickups::Pickups::new(1, &dat, Some(&e)).unwrap();
     let shield = pk.items.iter().position(|p| p.id == 0x31).expect("pickup 0x31");
     assert_eq!(pk.items[shield].kind, ts2::pickups::Kind::Shield);
-    l.level.shield_gate(&l.world, &mut l.specials, &mut pk);
+    assert!(pk.open_gates(0).is_empty());
     assert_eq!(pk.items[shield].radius & 0x7F, 0);
     assert!(l.world.mover_enabled(10), "caged");
-    l.level.abilities |= 1;
-    l.level.shield_gate(&l.world, &mut l.specials, &mut pk);
+    for (cage, mover) in pk.open_gates(1) {
+        l.specials.set_scale(cage, [0; 3]);
+        l.world.set_mover(mover, false);
+    }
     assert_ne!(pk.items[shield].radius & 0x7F, 0);
     assert!(!l.world.mover_enabled(10), "cage gone");
 }

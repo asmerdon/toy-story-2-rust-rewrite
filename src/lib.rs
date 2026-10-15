@@ -21,5 +21,6 @@ pub mod look;
 pub mod particles;
 pub mod pickups;
 pub mod rewards;
+pub mod script;
 pub mod scene;
 pub mod specials;

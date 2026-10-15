@@ -333,7 +333,7 @@ struct Viewer {
     /// Special objects (moved, turned and hidden by pickups and level scripts), drawn each frame.
     specials: ts2::specials::Specials,
     boxes: Option<ts2::boxes::Boxes>,
-    level1: Option<ts2::level1::Level1>,
+    script: Option<Box<dyn ts2::script::Script>>,
     creatures: Option<ts2::creatures::Creatures>,
     jingles: Vec<Jingle>,
     hud: String,
@@ -707,7 +707,7 @@ impl Viewer {
                 [r.sin(), r.cos()]
             });
             // In a conversation Buzz stands still; jump and Square go to the speech box.
-            let talking = self.level1.as_ref().is_some_and(|l| l.cutscene.is_some());
+            let talking = self.script.as_ref().is_some_and(|l| l.cutscene.is_some());
             let (talk_jump, talk_square) = if talking { (std::mem::take(&mut self.jump_pressed), std::mem::take(&mut self.fire_pressed)) } else { (false, false) };
             let move_xz = if talking { [0.0; 2] } else { move_xz };
             let input = game::Input {
@@ -726,12 +726,12 @@ impl Viewer {
             };
             // Boxes and the level script run inside each tick, just before Buzz moves (0x433700
             // is called from 0x436220 there).
-            let (boxes, specials, script) = (&mut self.boxes, &mut self.specials, &mut self.level1);
+            let (boxes, specials, script) = (&mut self.boxes, &mut self.specials, &mut self.script);
             let ticks = player.update_with(&self.world, input, dt, &mut |p, w| {
                 if let Some(b) = boxes.as_mut() {
                     b.tick(p, w, specials);
                     if let Some(l) = script.as_mut() {
-                        l.tick(w, specials, p, b);
+                        l.step(w, specials, p, b);
                     }
                 }
             });
@@ -787,8 +787,8 @@ impl Viewer {
             // Follow camera: orbit behind the player at chest height.
             let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
             match self.orig_cam.as_ref().filter(|_| self.use_orig_cam && player.first_person == 0) {
-                _ if self.level1.as_ref().is_some_and(|l| l.cutscene.is_some()) => {
-                    let (pos, look) = self.level1.as_ref().and_then(|l| l.cutscene.as_ref()).map(|c| c.camera()).unwrap();
+                _ if self.script.as_ref().is_some_and(|l| l.cutscene.is_some()) => {
+                    let (pos, look) = self.script.as_ref().and_then(|l| l.cutscene.as_ref()).map(|c| c.camera()).unwrap();
                     let p = Vec3::from(pos.map(|v| v as f32 / 32.0));
                     let q = Vec3::from(look.map(|v| v as f32 / 32.0));
                     self.cam.pos = game_to_world(p.to_array());
@@ -868,7 +868,7 @@ impl Viewer {
             for _ in 0..ticks {
                 self.particles.tick(&self.world, (player.pos_obj(), player.facing));
                 self.rewards.tick(self.particles.camera, &mut self.particles);
-                if let Some(l) = self.level1.as_mut() {
+                if let Some(l) = self.script.as_mut() {
                     for (k, g) in l.put_out.drain(..) {
                         self.rewards.put_out(k, g, &mut self.particles);
                     }
@@ -891,10 +891,10 @@ impl Viewer {
                     laser: player.laser,
                     laser_charge: player.laser_charge,
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
-                    race: self.level1.as_ref().map_or(0, |l| l.race),
-                    laps: self.level1.as_ref().map_or(0, |l| l.laps),
+                    race: self.script.as_ref().map_or(0, |l| l.race),
+                    laps: self.script.as_ref().map_or(0, |l| l.laps),
                     boss: self.creatures.as_ref().map_or(0, |c| c.boss.bar),
-                    boss_on: self.level1.as_ref().is_some_and(|l| l.boss_hud),
+                    boss_on: self.script.as_ref().is_some_and(|l| l.boss_hud),
                 });
             }
             // Creatures (0x4086F0) near the camera.
@@ -918,7 +918,7 @@ impl Viewer {
                         .map(|(start, end, color, width)| ts2::laser::Beam { start, end, step: [0; 3], life: 0x20, steps: 1, color, width })
                         .collect();
                 }
-                if let Some(l) = self.level1.as_mut() {
+                if let Some(l) = self.script.as_mut() {
                     for r in l.particles.drain(..) {
                         self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);
                     }
@@ -936,12 +936,11 @@ impl Viewer {
                         self.particles.slots[k].spin = spin;
                     }
                 }
-                if let Some(l) = self.level1.as_mut() {
+                if let Some(l) = self.script.as_mut() {
                     let coins = self.pickups.as_ref().map_or(0, |p| p.coins);
                     l.tokens = self.pickups.as_ref().map_or(0, |p| p.tokens);
                     for t in 0..ticks {
-                        l.tick_creatures(&self.world, &mut self.specials, player, cr);
-                        l.tick_characters(&self.world, player, cr, coins);
+                        l.step_creatures(&self.world, &mut self.specials, player, cr, coins);
                         // A conversation starting: Buzz and the character take their places.
                         if let Some((at, facing, slot)) = l.staging.take() {
                             let g = Vec3::from(at[0].map(|v| v as f32 / 32.0));
@@ -987,7 +986,11 @@ impl Viewer {
                     if l.abilities != self.abilities_shown
                         && let Some(pk) = self.pickups.as_mut()
                     {
-                        l.shield_gate(&self.world, &mut self.specials, pk);
+                        // 0x4A27A0: the gates of the abilities now held open.
+                        for (cage, mover) in pk.open_gates(l.abilities) {
+                            self.specials.set_scale(cage, [0; 3]);
+                            self.world.set_mover(mover, false);
+                        }
                         self.abilities_shown = l.abilities;
                     }
                     for k in l.reveals.drain(..) {
@@ -1114,7 +1117,7 @@ impl Viewer {
                                 // while it runs (or without one) touching does nothing.
                                 if kind == ts2::pickups::Kind::Cutscene {
                                     let id = pk.items.get(index).map(|i| i.id);
-                                    if !self.level1.as_mut().zip(id).is_some_and(|(l, id)| l.info(id)) {
+                                    if !self.script.as_mut().zip(id).is_some_and(|(l, id)| l.info(id)) {
                                         continue;
                                     }
                                 }
@@ -1129,7 +1132,7 @@ impl Viewer {
                                     self.jingles.push(Jingle { steps: a.bank.jingle(-1).iter().take(1).copied().collect(), next: 0, timer: 0, pos });
                                 }
                                 if kind == ts2::pickups::Kind::Other
-                                    && let Some(l) = self.level1.as_mut()
+                                    && let Some(l) = self.script.as_mut()
                                     && l.item > 0
                                 {
                                     l.item = -l.item;
@@ -1303,10 +1306,10 @@ impl Viewer {
                     laser: p.laser,
                     laser_charge: p.laser_charge,
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
-                    race: self.level1.as_ref().map_or(0, |l| l.race),
-                    laps: self.level1.as_ref().map_or(0, |l| l.laps),
+                    race: self.script.as_ref().map_or(0, |l| l.race),
+                    laps: self.script.as_ref().map_or(0, |l| l.laps),
                     boss: self.creatures.as_ref().map_or(0, |c| c.boss.bar),
-                    boss_on: self.level1.as_ref().is_some_and(|l| l.boss_hud),
+                    boss_on: self.script.as_ref().is_some_and(|l| l.boss_hud),
                 };
                 let ngn = &self.ngn;
                 let texture = |slot: i16| {
@@ -1316,7 +1319,7 @@ impl Viewer {
                     Some((i, [(w as f32).abs(), (h as f32).abs()]))
                 };
                 let mut q = self.hud_state.quads(&status, &self.hud_sprites);
-                if let Some(c) = self.level1.as_ref().and_then(|l| l.cutscene.as_ref()) {
+                if let Some(c) = self.script.as_ref().and_then(|l| l.cutscene.as_ref()) {
                     q.extend(c.dialog.quads());
                 }
                 ts2::hud::batches(&q, &self.hud_sprites, &texture)
@@ -1656,13 +1659,7 @@ fn main() {
     let level_lists = fs::read(level_path.with_extension("dat")).ok().and_then(|b| ts2::formats::leveldat::parse(&b).ok()).unwrap_or_default();
     let level_no = exe::level_number(level_path);
     let boxes = level_no.map(|lv| ts2::boxes::Boxes::new(lv, &level_lists, game_exe.as_ref(), &world, &mut specials));
-    let mut level1 = (level_no == Some(1)).then(|| ts2::level1::Level1::new(&world, &mut specials));
-    if let (Some(l), Some(e)) = (level1.as_mut(), game_exe.as_ref()) {
-        l.set_story(e, &level_lists);
-    }
-    if let (Some(l), Some(r)) = (level1.as_mut(), random_table.as_ref()) {
-        l.set_random(r.clone());
-    }
+    let script = level_no.and_then(|lv| ts2::script::for_level(lv, &world, &mut specials, game_exe.as_ref(), &level_lists, random_table.clone()));
     if let Some(b) = &boxes {
         println!("{} pushable objects", b.boxes.len());
     }
@@ -1755,7 +1752,7 @@ fn main() {
         pickups,
         specials,
         boxes,
-        level1,
+        script,
         creatures,
         jingles: Vec::new(),
         hud: String::new(),
