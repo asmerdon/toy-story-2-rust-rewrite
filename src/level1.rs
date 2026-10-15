@@ -122,6 +122,8 @@ pub struct Level1 {
     /// fully specified (0x40FAE0).
     pub spawns: Vec<([i32; 3], u8, usize, i32, Option<i32>)>,
     pub particles: Vec<crate::creatures::ParticleRequest>,
+    /// Reward sparkles to put out (0x49FAB0: index, group).
+    pub put_out: Vec<(usize, usize)>,
     /// Random bytes for the effects (the game's `rand.dat` stream).
     random: Vec<u8>,
     rpos: usize,
@@ -241,6 +243,8 @@ impl Level1 {
             clock: 0,
             spawns: Vec::new(),
             particles: Vec::new(),
+            // 0x4171D0: the trampoline's reward sparkle is out from the start.
+            put_out: vec![(1, 1)],
             random: Vec::new(),
             rpos: 0,
             story: Story::default(),
@@ -658,6 +662,7 @@ impl Level1 {
             self.spring += 1;
             if self.spring < 0x21 {
                 if self.spring == 7 {
+                    self.put_out.push((0, 1));
                     player.launch(-0x1280, 0x11E);
                     player.sounds.push(Sound { id: 0x1C, voice: false });
                 }
@@ -874,6 +879,7 @@ impl Level1 {
             } else {
                 -0x980
             };
+            self.put_out.push((1, 1));
             player.start_jump(vy, JumpPhase::Released);
             player.sounds.push(Sound { id: 0x1C, voice: false });
         }

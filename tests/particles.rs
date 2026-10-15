@@ -48,3 +48,33 @@ fn particles_spawn_live_and_draw() {
     eprintln!("fireball slot {fire}: burst {burst}, {} live", p.live());
     assert!(burst, "fireball didn't burst on the floor");
 }
+
+/// Level 1's list 58 sparkles twinkle near the camera (0x71 box spots, 0x73 rewards) and a
+/// put-out reward stops.
+#[test]
+fn reward_sparkles_twinkle_near_the_camera() {
+    let Some(game) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else { return };
+    let e = ts2::formats::exe::Exe::parse(std::fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let lists = ts2::formats::leveldat::parse(&std::fs::read(game.join("data/level01/level.dat")).unwrap()).unwrap();
+    let mut r = ts2::rewards::Rewards::new(&lists);
+    let pts = &lists.iter().find(|l| l.kind == 58).unwrap().points;
+    eprintln!("list 58: {} points, split {}", pts.len(), r.split);
+    assert!(r.split > 0 && r.split < pts.len());
+    let mut parts = ts2::particles::Particles::new(Some(&e), std::fs::read(game.join("data/rand.dat")).unwrap());
+    // Camera at reward 0.
+    let at = pts[r.split + 1].map(|v| v * 32);
+    parts.camera = at;
+    for _ in 0..64 {
+        r.tick(at, &mut parts);
+    }
+    let live = |p: &ts2::particles::Particles| p.slots.iter().filter(|s| s.life > 0 && s.typ == 0x73).count();
+    assert!(live(&parts) > 0, "reward sparkles");
+    for k in 0..pts.len() - r.split - 1 {
+        r.put_out(k, 1, &mut parts);
+    }
+    for _ in 0..400 {
+        parts.slots.iter_mut().for_each(|s| s.life = (s.life - 1).max(0));
+        r.tick(at, &mut parts);
+    }
+    assert_eq!(live(&parts), 0, "all put out");
+}

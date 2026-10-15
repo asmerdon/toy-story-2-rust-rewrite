@@ -23,7 +23,7 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x4A0F80 | `UpdatePickups` ✔ | See Pickups below |
 | 0x4011D0 | `UpdateBuzzAnimState` ✔ | |
 | 0x4A2D80 | `BuzzFootEffects` ✔ | |
-| 0x49FB40 | `RewardSparkles` ✔ | Spawns sparkle particles 0x71/0x73 at `level.dat` list 58 points within 600 (>> 8) of the camera, four points per frame. List 58 is split by a (0,0,0) point: group 0 (count `0x830E28`) for pushable-box spots (0x433700), group 1 for challenge rewards; 0x49FAB0 kills a point's sparkle |
+| 0x49FB40 | `RewardSparkles` ✔ (`src/rewards.rs`) | Spawns sparkle particles 0x71/0x73 at `level.dat` list 58 points within 600 (>> 8) of the camera, four points per frame. List 58 is split by a (0,0,0) point: group 0 (count `0x830E28`) for pushable-box spots (0x433700), group 1 for challenge rewards; 0x49FAB0 kills a point's sparkle |
 | 0x410F40 | `UpdateParticles` ✔ | 64 particles × 0x3C bytes at 0x529E58 (earlier mislabelled as level objects; "GRAPHOOK" is the sine table aliasing a string). 53-case switch on the particle's update kind (+0x2F) |
 | 0x49FD40 | `TokenMessages` ~ | "you have collected a token" |
 | 0x4A3EF0 | `FlushSoundVoices` ✔ | debug string |
@@ -207,7 +207,8 @@ Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when dra
 | 0x486520 | `FloorHeight(point, range)` ✔ | From the gathered polygons (type-8 movers rotated): the nearest upward floor above the point within `range` (0x10000 from 0x486280) if any, else the nearest at or below; floor normal to 0x728698 |
 | 0x486280 / 0x4863A0 | `FloorBelow` / `PlayerFloor` ✔ | Wrappers: gather + 0x486520; the player version probes from y − 0x400 and handles standing on movers |
 | 0x484380 | `MoveAndCollideCore` ~ | Swept resolve: 0x482A00 (polygons) + 0x483EF0 (floor), 3–4 passes; writes floor contact to `+0x8E` |
-| 0x49FAB0 | `SpawnChallengeReward` ~ | Matches type-58 positions to objects 0x71/0x73 |
+| 0x49FAB0 | `PutOutSparkle(k, group)` ✔ | Point k of group 0 (box spots) or 1 (rewards, + 0x830E28) gets y = 0x80000000 and its live sparkle (same position, type 0x71 + 2 × group) life 1. Level 1: (1, 1) at the start and on the trampoline, (0, 1) on the spring |
+| 0x414550 | `ConvertLists` ✔ | List 58: drops the (0, 0, 0) split point (index kept in 0x830E28) and scales to object units; lists 60 / 62 scaled; list 61 converted to poles {x, y, z, kind, length} |
 
 ## Level rendering
 | Address | Name | Notes |

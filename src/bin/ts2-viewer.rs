@@ -350,6 +350,8 @@ struct Viewer {
     hud_sprites: Vec<Option<ts2::pickups::SpriteDef>>,
     hud_last: [i32; 3],
     particles: ts2::particles::Particles,
+    /// List 58's sparkles (0x49FB40).
+    rewards: ts2::rewards::Rewards,
     /// First-person look (Q = L1, X = R1).
     look: ts2::look::FirstPerson,
     look_pressed: bool,
@@ -865,6 +867,12 @@ impl Viewer {
             self.particles.camera = cam_game.map(|v| (v * 32.0) as i32);
             for _ in 0..ticks {
                 self.particles.tick(&self.world, (player.pos_obj(), player.facing));
+                self.rewards.tick(self.particles.camera, &mut self.particles);
+                if let Some(l) = self.level1.as_mut() {
+                    for (k, g) in l.put_out.drain(..) {
+                        self.rewards.put_out(k, g, &mut self.particles);
+                    }
+                }
                 self.particles.touch(player.pos_obj(), player.spin > 0x14 || player.super_spinning());
                 self.lasers.tick();
                 let coins = self.pickups.as_ref().map_or(0, |p| p.coins);
@@ -1749,6 +1757,7 @@ fn main() {
         hud_sprites,
         hud_last: [0; 3],
         particles,
+        rewards: ts2::rewards::Rewards::new(&level_lists),
         look: Default::default(),
         look_pressed: false,
         r1_pressed: false,
