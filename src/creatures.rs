@@ -215,10 +215,16 @@ pub struct Creatures {
     pub racing: bool,
     /// The Tin Man fight.
     pub boss: Boss,
+    /// Hits routines dealt to other slots this tick (slot, angle, kind), applied after.
+    pending_hits: Vec<(usize, i32, usize)>,
     /// Buzz this tick (object units), for the type routines.
     buzz: [i32; 3],
     /// Ticks run, for the every-n-ticks flags (0x4A2960).
     clock: u32,
+    /// Buzz hurt by a routine this tick (0x4071E0: angle, mode).
+    pub hurts: Vec<(i32, u32)>,
+    /// Ribbons to draw this frame (0x44E100: start, end, colour, half width), object units.
+    pub ribbons: Vec<([i32; 3], [i32; 3], [u8; 3], u8)>,
     /// Hit shapes by creature id, from each character's `.all` file (slot +0x38 sphere and
     /// +0x84 ellipsoid table, set by 0x43B0C0); `default_shape` for the rest.
     pub shapes: std::collections::HashMap<u8, HitShapes>,
@@ -316,8 +322,11 @@ impl Creatures {
             sheep: 0,
             racing: false,
             boss: Boss::default(),
+            pending_hits: Vec::new(),
             buzz: [0; 3],
             clock: 0,
+            hurts: Vec::new(),
+            ribbons: Vec::new(),
             shapes: Default::default(),
             default_shape: HitShapes {
                 sphere: [0, 500, 0, 500],
@@ -572,7 +581,7 @@ impl Creatures {
             }
             c.active = true;
             let s = self.think(&mut c, world, buzz);
-            self.routine(i, &mut c, &s);
+            self.routine(i, &mut c, &s, world);
             // 0x4086F0: > 0 a delayed death, < 0 dying (then removed).
             if c.hurt > 0 {
                 c.hurt -= 1;
@@ -588,13 +597,35 @@ impl Creatures {
             self.slots[i] = c;
             steps.push((i, s));
         }
+        for (slot, angle, kind) in std::mem::take(&mut self.pending_hits) {
+            self.hit(slot, angle, kind);
+        }
         steps
     }
 
     /// The creature's own routine (+0x94, set by 0x406CD0 from its type), after the shared update.
-    fn routine(&mut self, slot: usize, c: &mut Creature, s: &Step) {
+    fn routine(&mut self, slot: usize, c: &mut Creature, s: &Step, world: &World) {
         match c.id {
             4 => self.zurg3(slot, c, s),
+            0xC => self.lawnmower(slot, c),
+            0xD => self.army_man(c),
+            0xE => self.zurg_car(slot, c, s),
+            0x13 => self.friend(c, 0x6B, 0x6C, 0x5A, false),
+            0x14 => self.zurg_pod(slot, c, s, world),
+            0x17 => {
+                self.friend(c, 0x8E, 0x8E, 0x5A, true);
+                // Upside down in its record's pose (0x4259B0).
+                if c.rec.decel[0] < 0x80 {
+                    c.angles[0] = 0xC00;
+                    c.angles[2] = 0x800;
+                }
+            }
+            0x18 => self.plane(slot, c),
+            0x19 => self.plane_box(slot, c),
+            0x1B => self.zurg_boat(c),
+            0x1C => self.friend(c, 0x77, 0x77, 0x3C, false),
+            0x26 => self.friend(c, 0x80, 0xB8, 300, false),
+            0x2B => self.friend(c, 0xA2, 0xA2, 0x3C, true),
             5 => self.tin_man(slot, c, s),
             6 => self.sheep(c),
             8 => self.rc(slot, c, s),
@@ -720,6 +751,230 @@ impl Creatures {
         }
         if c.health > 9 && self.boss.hum > 0x200 {
             self.owned_sounds.push((0x35, c.pos, slot));
+        }
+    }
+
+    /// A point `local` (object units, the model's frame: −z ahead, −y up) on creature `c`, as
+    /// 0x43C1C0 turns it by the facing.
+    fn local(c: &Creature, local: [i32; 3]) -> [i32; 3] {
+        let f = c.angles[1] + 0x800;
+        let (s, k) = (sin(f), cos(f));
+        [c.pos[0] + ((local[0] * k + local[2] * s) >> 14), c.pos[1] + local[1], c.pos[2] + ((local[2] * k - local[0] * s) >> 14)]
+    }
+
+    /// 0x410410 (n = 0x32): five sparkles bursting from `at`.
+    fn sparkle_burst(&mut self, at: [i32; 3]) {
+        for _ in 0..5 {
+            let r = self.rand() as i32;
+            let o = ((r & 0x3F) - 0x20) * 0x32 * 2;
+            let spin = self.rand() as i32 - 0x80;
+            self.spawns.push(([at[0] + o, at[1] + o, at[2] + o], 0x29, 0xF, spin));
+        }
+    }
+
+    /// The "find them all" characters (health 0x66): a call (`call`) every (r & 0x7F) + `every`
+    /// ticks (`only_friendly`: while health is 0x66); touched, the level's count (0x52B7D8)
+    /// goes up with sparkles and `found`, and it's gone. 0x41BB80 (0x13), 0x4259B0 (0x17),
+    /// 0x420ED0 (0x1C), 0x422C70 (0x26), 0x41DEC0 (0x2B).
+    fn friend(&mut self, c: &mut Creature, call: u16, found: u16, every: i32, only_friendly: bool) {
+        let friendly = c.health == 0x66;
+        if !only_friendly || friendly {
+            c.timer -= 1;
+            if c.timer < 1 {
+                c.timer = (self.rand() as i32 & 0x7F) + every;
+                self.sounds.push((call, c.pos));
+            }
+        }
+        if c.flags & 0x200 != 0 && friendly {
+            self.sheep += 1;
+            self.sparkle_burst([c.pos[0], c.pos[1] - 0x2000, c.pos[2]]);
+            self.sounds.push((found, c.pos));
+            self.remove(c);
+        }
+    }
+
+    /// 0x418CE0, the lawnmower (0xC): its engine (0x4B, owned); in play, a puff (0x31 mode 2,
+    /// turned at random) every 16 ticks and grass clippings (0x32) thrown out behind it every
+    /// other tick.
+    fn lawnmower(&mut self, slot: usize, c: &mut Creature) {
+        self.owned_sounds.push((0x4B, c.pos, slot));
+        if !c.active {
+            return;
+        }
+        if self.clock.is_multiple_of(16) {
+            self.rand();
+            self.spawns.push((c.pos, 0x31, 2, 0));
+        }
+        if self.clock.is_multiple_of(2) {
+            let f = c.angles[1];
+            let at = [c.pos[0] + sin(f - 0x800), c.pos[1], c.pos[2] + sin(f - 0x400)];
+            let r0 = self.rand() as i32;
+            let r1 = self.rand() as i32;
+            self.rand();
+            self.rand();
+            let u = (f + 0x500 + r0 * 6) & 0xFFF;
+            self.particles.push(ParticleRequest { pos: at, vel: [sin(u) >> 4, r1 - 0xC00, cos(u) >> 4], gravity: 0x100, angle: r1 << 4, spin: r1 * 2 - 0x100, typ: 0x32 });
+            self.rand();
+        }
+    }
+
+    /// 0x418610, an army man (0xD, health 0x66): now and then (every 32 ticks, 1 in 4) a call
+    /// (0x48); touched, the count goes up (sparkles, 0x49) and he's gone. Every (r & 0x7F) +
+    /// 0x80 ticks in play he throws something (particle 0x79, sound 0x60).
+    fn army_man(&mut self, c: &mut Creature) {
+        if c.health != 0x66 {
+            return;
+        }
+        if self.clock.is_multiple_of(32) && self.rand() & 3 == 0 {
+            self.sounds.push((0x48, c.pos));
+        }
+        if c.flags & 0x200 != 0 {
+            self.sheep += 1;
+            self.sparkle_burst([c.pos[0], c.pos[1] - 0x2000, c.pos[2]]);
+            self.remove(c);
+            self.sounds.push((0x49, c.pos));
+            return;
+        }
+        c.timer -= 1;
+        if c.timer < 1 {
+            c.timer = (self.rand() as i32 & 0x7F) + 0x80;
+            if c.active {
+                let r = self.rand() as i32 - 0x80;
+                self.particles.push(ParticleRequest { pos: [c.pos[0], c.pos[1] - 0x1000, c.pos[2]], vel: [r * 4, -0xC00, r], gravity: 0x60, angle: 0, spin: r * 4, typ: 0x79 });
+                self.sounds.push((0x60, c.pos));
+            }
+        }
+    }
+
+    /// 0x4064A0, Zurg's car (0xE): hit (health below 0x65 changed), its script goes to its
+    /// hit reaction (behaviour entry + 0x7C) unless it's in animation 1; a horn (0x42) every 8
+    /// ticks when its record's acceleration is 0xFF; its engine (0x41) while it drives, with
+    /// dust (0x27 mode 2) from both back wheels every 4 ticks at speed.
+    fn zurg_car(&mut self, slot: usize, c: &mut Creature, s: &Step) {
+        if c.timer == 0 {
+            c.timer = c.health;
+        }
+        if c.timer != c.health && c.health < 0x65 {
+            c.timer = c.health;
+            if c.anim != 1 {
+                c.set_script(0x7C / 2);
+            }
+        }
+        if self.clock.is_multiple_of(8) && c.rec.accel == 0xFF {
+            self.sounds.push((0x42, c.pos));
+        }
+        if s.forward > 0 {
+            self.owned_sounds.push((0x41, c.pos, slot));
+        }
+        if c.active && c.hurt >= 0 && s.forward > 0x100 && self.clock.is_multiple_of(4) {
+            let f = c.angles[1];
+            for (a, b) in [(0x7A0, -0x460), (-0x7A0, -0x3A0)] {
+                let at = [c.pos[0] + (sin(f + a) * 3 >> 2), c.pos[1] - 0x1000, c.pos[2] + (sin(f + b) * 3 >> 2)];
+                self.spawns.push((at, 0x27, 2, 0));
+            }
+        }
+    }
+
+    /// 0x406620, a Zurg pod (0x14): leans into its sideways speed, hums (0x5B); while Buzz is
+    /// in its zone, every 360 ticks it dodges sideways, and from 280 down to 100 it sweeps a
+    /// laser at the ground ahead and below (green ribbon, sound 0x5C and sparks where it
+    /// lands); Buzz within 200 units of that spot is hurt.
+    fn zurg_pod(&mut self, slot: usize, c: &mut Creature, s: &Step, world: &World) {
+        let side = s.side.clamp(-0x200, 0x200);
+        c.angles[2] -= (c.angles[2] + side) / 16;
+        if c.hurt >= 0 {
+            self.owned_sounds.push((0x5B, c.pos, slot));
+        }
+        if s.chase & 1 == 0 {
+            c.timer = 0x168;
+            return;
+        }
+        c.timer -= 1;
+        if c.timer < 0 {
+            c.timer = 0x168;
+            let a = c.angles[1] + if self.rand() < 0x80 { -0x200 } else { 0x200 };
+            c.vel[0] = sin(a) >> 4;
+            c.vel[2] = cos(a) >> 4;
+        }
+        if c.timer < 0x119 && c.timer > 99 {
+            let from = Self::local(c, [0, 0, -100]);
+            let f = c.angles[1];
+            let delta = [sin(f) << 2, 96000, cos(f) << 2];
+            let o = glam::Vec3::from(from.map(|v| v as f32 / 32.0));
+            let d = glam::Vec3::from(delta.map(|v| v as f32 / 32.0));
+            let t = world.sweep(o, d, 1.0).map_or(1.0, |h| h.t);
+            let hit = [0, 1, 2].map(|k| from[k] + (delta[k] as f32 * t) as i32);
+            self.ribbons.push((from, hit, [0, 0x80, 0], 0x20));
+            self.sounds.push((0x5C, hit));
+            if self.clock.is_multiple_of(2) {
+                self.spawns.push((hit, 4, 4, 0));
+            }
+            if self.clock.is_multiple_of(4) {
+                self.spawns.push((hit, 0x46, 2, 0));
+            }
+            let b = self.buzz;
+            let d = [0, 1, 2].map(|k| (b[k] - hit[k]) >> 8);
+            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 25 * 25 {
+                self.hurts.push((atan(b[0] - hit[0], b[2] - hit[2]), 3));
+            }
+        }
+    }
+
+    /// 0x406960, a toy plane (0x18): its engine (0x5D); touched while at health 1 it takes a
+    /// spin hit; its script's timer sends it back to its box (the slot before it, or two
+    /// before) to take off again; exhaust (0x58 mode 3) behind it every 8 ticks.
+    fn plane(&mut self, slot: usize, c: &mut Creature) {
+        if c.hurt >= 0 {
+            self.owned_sounds.push((0x5D, c.pos, slot));
+        }
+        if c.flags & 0x200 != 0 && c.health == 1 {
+            self.pending_hits.push((slot, (c.angles[1] - 0x800) & 0xFFF, 1));
+        }
+        if c.timer != 0 {
+            c.timer = 0;
+            let b = if self.slots.get(slot.wrapping_sub(1)).is_some_and(|b| b.id == 0x19) { slot - 1 } else { slot.wrapping_sub(2) };
+            if let Some(bx) = self.slots.get(b) {
+                let p = bx.pos;
+                c.pos = p;
+                c.home[1] = p[1] - 0x5000;
+                c.target = [p[0], p[1] - 0x5000, p[2]];
+            }
+        }
+        if self.clock.is_multiple_of(8) && c.active {
+            let at = Self::local(c, [0, -200, 400]);
+            self.spawns.push((at, 0x58, 3, 0));
+        }
+    }
+
+    /// 0x4068E0, a plane's box (0x19): when its script's timer fires, a dead plane in the next
+    /// slot (or the one after) comes back in 30 ticks and the box's script launches it
+    /// (behaviour entry + 0x6A); with both up it goes to + 0x76.
+    fn plane_box(&mut self, slot: usize, c: &mut Creature) {
+        if c.timer == 0 {
+            return;
+        }
+        c.timer = 0;
+        for k in [slot + 1, slot + 2] {
+            if let Some(p) = self.slots.get_mut(k)
+                && p.health == 0
+            {
+                p.respawn = 0x1E;
+                c.set_script(0x6A / 2);
+                return;
+            }
+        }
+        c.set_script(0x76 / 2);
+    }
+
+    /// 0x41DF70, Zurg's boat (0x1B): every 200 ticks it lobs a shot (0x5C) ahead from its
+    /// bow.
+    fn zurg_boat(&mut self, c: &mut Creature) {
+        c.timer -= 1;
+        if c.timer < 0 {
+            c.timer = 200;
+            let at = Self::local(c, [0, -500, -300]);
+            let f = c.angles[1];
+            self.particles.push(ParticleRequest { pos: at, vel: [sin(f) >> 2, -0xC00, cos(f) >> 2], gravity: 0x80, angle: 0, spin: 0, typ: 0x5C });
         }
     }
 

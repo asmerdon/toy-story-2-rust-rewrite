@@ -189,3 +189,40 @@ fn zurg3_fires_and_shots_hurt_unless_spinning() {
     }
     assert!(batted && p2.slots[k].vel[2] < 0, "the shot should bounce back");
 }
+
+/// Level 7: a Zurg pod with Buzz under it sweeps its laser at the ground (ribbons, and Buzz
+/// hurt when it lands near him); touching a chick (health 0x66) counts it and it's gone.
+#[test]
+fn level_7_pods_fire_and_chicks_count() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let dir = game.join("data/level07");
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(dir.join("TERRAIN.ALL")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let pk = packets::parse(&fs::read(dir.join("level.raw")).unwrap()).unwrap();
+    let spawns: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
+    let mut c = Creatures::new(&spawns, Some(&e), fs::read(game.join("data/rand.dat")).unwrap());
+    c.load_shapes(&game.join("data"));
+    let pod = c.slots.iter().position(|s| s.id == 0x14).expect("a pod");
+    let under = c.slots[pod].home;
+    let (mut ribbons, mut hurts) = (0, 0);
+    for _ in 0..800 {
+        let buzz = [under[0], c.slots[pod].pos[1] + 0x8000, under[2]];
+        c.tick(&world, under, buzz);
+        ribbons += c.ribbons.drain(..).count();
+        hurts += c.hurts.drain(..).count();
+    }
+    eprintln!("pod {pod}: {ribbons} ribbon frames, {hurts} hurts");
+    assert!(ribbons > 100, "the pod fires");
+
+    let chick = c.slots.iter().position(|s| s.id == 0x1C && s.health == 0x66).expect("a chick");
+    let at = c.slots[chick].pos;
+    let mut buzz = ts2::game::Player::new(glam::Vec3::from(at.map(|v| v as f32 / 32.0)));
+    for _ in 0..3 {
+        c.tick(&world, at, at);
+        buzz.pos = glam::Vec3::from(c.slots[chick].pos.map(|v| v as f32 / 32.0));
+        c.contact(&mut buzz);
+    }
+    assert_eq!(c.sheep, 1, "found a chick");
+    assert!(c.slots[chick].health <= 0 || c.slots[chick].id == 0, "gone");
+}

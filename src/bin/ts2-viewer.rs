@@ -907,6 +907,17 @@ impl Viewer {
                 for r in cr.particles.drain(..) {
                     self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);
                 }
+                // Routines that hurt Buzz, and beams they draw this frame.
+                for (angle, mode) in cr.hurts.drain(..) {
+                    player.hurt(angle, mode);
+                }
+                if ticks > 0 {
+                    self.lasers.ribbons = cr
+                        .ribbons
+                        .drain(..)
+                        .map(|(start, end, color, width)| ts2::laser::Beam { start, end, step: [0; 3], life: 0x20, steps: 1, color, width })
+                        .collect();
+                }
                 if let Some(l) = self.level1.as_mut() {
                     for r in l.particles.drain(..) {
                         self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);

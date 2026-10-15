@@ -45,6 +45,8 @@ pub enum Event {
 #[derive(Debug, Clone, Default)]
 pub struct Lasers {
     pub beams: [Beam; 4],
+    /// Ribbons queued for this frame only (0x44E100: creatures' beams), drawn like beams.
+    pub ribbons: Vec<Beam>,
     /// The game's random bytes and read position (0x52ADAC).
     random: Vec<u8>,
     rpos: usize,
@@ -196,7 +198,7 @@ impl Lasers {
     /// height across it (0x4B9100's corner order); additive, fading with life.
     pub fn beams_batches(&self, camera: Vec3, texture: Option<(usize, [f32; 2], [f32; 2], [[f32; 2]; 3])>) -> Vec<Batch> {
         let mut out = Vec::new();
-        for b in self.beams.iter().filter(|b| b.life > 0) {
+        for b in self.beams.iter().chain(self.ribbons.iter()).filter(|b| b.life > 0) {
             let end = Vec3::from(b.end.map(|v| v as f32 / 32.0));
             let start = Vec3::from(b.start.map(|v| v as f32 / 32.0));
             let dir = start - end;
