@@ -413,6 +413,8 @@ pub struct CreatureNode {
     pub flags: u16,
     /// Already in model space (rest pose), like the PS1 `.all` parts.
     pub mesh: Option<Mesh>,
+    /// Not drawn (bit 0 of the part flags 0x4CAB80 sets; Mr Potato Head's missing parts).
+    pub hidden: bool,
 }
 
 /// Connecting geometry from creature tag 0x208 (the exe's `hobjload.c` calls it a patch).
@@ -533,7 +535,7 @@ fn parse_creatures(b: &[u8], r: Range<usize>) -> Result<Vec<Creature>> {
                     let flags = d.u16()?;
                     let _ffff = d.u16()?;
                     let mesh = if flags & 1 != 0 { Some(read_mesh(&mut d, end)?) } else { None };
-                    cr.nodes.push(CreatureNode { name: name.clone(), flags, mesh });
+                    cr.nodes.push(CreatureNode { name: name.clone(), flags, mesh, hidden: false });
                 }
             }
             0x204 => cr.animations.push(d.take(len, "animation")?.to_vec()),

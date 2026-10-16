@@ -309,6 +309,9 @@ fn creature_batches_placed(ngn: &Ngn, c: &Creature, place: Place, base: Option<(
         })
         .collect();
     for (n, node) in c.nodes.iter().enumerate() {
+        if node.hidden {
+            continue;
+        }
         if let Some(mesh) = &node.mesh {
             add_mesh(ngn, &mut out, mesh, place, matrices[n].as_ref());
         }

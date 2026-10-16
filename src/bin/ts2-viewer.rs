@@ -378,6 +378,9 @@ struct Viewer {
     /// the menu choice (0x830C94), a timer (0x52F2DC), menu presses and a frame count.
     token_seq: u8,
     token_choice: u8,
+    /// Mr Potato Head's missing part: hidden at the start (0x4A2080), shown once he has it
+    /// back (0x4A2480). The part number while hidden, -1 once done.
+    potato_part: i32,
     token_timer: i32,
     menu_nav: i32,
     hud_frames: u32,
@@ -1018,6 +1021,29 @@ impl Viewer {
                 }
                 if let Some(l) = self.script.as_mut() {
                     let coins = self.pickups.as_ref().map_or(0, |p| p.coins);
+                    // Mr Potato Head (creature 9) is missing his part until it's handed over: the
+                    // level's item number, and for item 1 parts 0xB, 0xC and 0xF too.
+                    let item = l.item;
+                    let set = |ngn: &mut ngn::Ngn, part: i32, hide: bool| {
+                        if let Some(c) = ngn.creatures.iter_mut().find(|c| c.id == 9) {
+                            let mut parts = vec![part];
+                            if part == 1 {
+                                parts.extend([0xB, 0xC, 0xF]);
+                            }
+                            for p in parts {
+                                if let Some(n) = c.nodes.get_mut(p as usize) {
+                                    n.hidden = hide;
+                                }
+                            }
+                        }
+                    };
+                    if self.potato_part == 0 && item > 0 {
+                        self.potato_part = item;
+                        set(&mut self.ngn, item, true);
+                    } else if self.potato_part > 0 && item == 0 {
+                        set(&mut self.ngn, self.potato_part, false);
+                        self.potato_part = -1;
+                    }
                     l.tokens = self.pickups.as_ref().map_or(0, |p| p.tokens);
                     for t in 0..ticks {
                         l.step_creatures(&self.world, &mut self.specials, player, cr, coins);
@@ -1329,7 +1355,8 @@ impl Viewer {
                                 }
                             }
                         }
-                        if std::mem::take(&mut self.jump_pressed) {
+                        // The menu holds the camera, so the press arrives as a speech-box press.
+                        if std::mem::take(&mut self.jump_pressed) | std::mem::take(&mut self.talk_jump) {
                             if let Some(a) = self.audio.as_mut() {
                                 a.play_flat(0x3E);
                             }
@@ -2039,6 +2066,7 @@ fn main() {
         fp_mouse: [0.0; 2],
         token_seq: 0,
         token_choice: 0,
+        potato_part: 0,
         token_timer: 0,
         menu_nav: 0,
         hud_frames: 0,
