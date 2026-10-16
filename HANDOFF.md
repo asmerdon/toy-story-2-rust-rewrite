@@ -71,6 +71,15 @@ The user asked for first-person mode (with the crib in level 1) and to carry on 
 - **Reward sparkles** (`src/rewards.rs`, 0x49FB40, all levels): list 58's box spots (0x71) and challenge rewards (0x73) twinkle near the camera; level 1 puts out reward 1 at the start and on the trampoline, reward 0 on the spring.
 - **Info pickups** (the 9 tutorial signposts, 0x402610): touching one plays its scene with the tutorial text. **Cosmic shield cage**: the shield pickup (id 0x31) is caged and can't be taken until Mr Potato Head gets his ear; then the cage (special 0x19, mover 10) goes and it shows at double size. Tests in `tests/rooms.rs`.
 
+### Round 10 (2026-10-16)
+- Level geometry is drawn with back faces culled (front = counter-clockwise; 97% of triangles on walkable floor wind upwards; the back faces are mostly baked pure black). Drawing both sides showed black walls (attic entrance post) and box insides fighting the lit fronts. Billboards, creatures, specials, HUD are not culled. The "decal" list for instance flag 0x80000 stays with a zero nudge (that flag is ordinary geometry).
+- The low-detail set is drawn whole under the detailed one (it fills gaps), not from 10000 out.
+- Talk camera: position from the point-2 track, looking at the (n − 2) / 2 + 2 track (0x402A10 command 10 → 0x402030(target, position)); it was swapped.
+- Specials naming the same instance: the later id keeps it (level 1: 0x1A and the helmet 0x2D on instance 0).
+- Creatures out of the original reach make no sound.
+- Harmful surfaces (types 0–3, 16–19) count when touched from the side too (0x487AB0 reads any contact); scripts' `player.surface` stays the floor's.
+- Open: the garage drills (movers 6–8, no surface type: what hurts in the original isn't found), the second set of bars (list 60 ledges; grabbing works in code, needs the user's repro), glass jars (likely the PS1 subtractive blend), talk box empty when Space is held.
+
 ### Rounds 8–9 (2026-10-16): user feedback on level 1
 - Look-at scenes now count down for every level (the viewer ticks them unless the script did: `Common::look_ticked`); the token camera no longer sticks. The token menu takes Space (it arrives as a speech-box press).
 - Creatures stay in play everywhere (`always_active`, deviation: the original freezes them beyond ~3200 of the camera); `Creature::in_reach` keeps the original test, and characters only call out within it (Bo Peep no longer heard in the attic).
