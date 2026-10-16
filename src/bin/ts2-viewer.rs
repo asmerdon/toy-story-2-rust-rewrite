@@ -1059,6 +1059,14 @@ impl Viewer {
                             l.look_at(at.map(|v| v * 32), player.pos_obj(), 0xB4, 0x10);
                         }
                     }
+                    if let Some(pk) = self.pickups.as_mut() {
+                        for (k, at) in l.token_moves.drain(..) {
+                            pk.move_token(k, at);
+                        }
+                        for k in l.hides.drain(..) {
+                            pk.hide_token(k);
+                        }
+                    }
                     let (voices, slots): (Vec<u16>, Vec<(u16, i32, [i32; 3])>) = (l.voices.drain(..).collect(), l.slots.drain(..).collect());
                     if let Some(a) = self.audio.as_mut() {
                         let listener = Vec3::from(world_to_game(self.cam.pos));

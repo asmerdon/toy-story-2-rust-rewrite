@@ -129,7 +129,7 @@ pub struct Boss {
     /// 0x52B7E0: the HUD bar, 0..54.
     pub bar: i32,
     /// 0x830E3E: the engine's level.
-    hum: i32,
+    pub hum: i32,
     /// Buzz is close enough to be challenged (the routine's call of 0x4027F0).
     pub challenge: bool,
     /// 0x50A118: the camera turns towards here this tick.
@@ -647,6 +647,7 @@ impl Creatures {
             0x20 => self.clown(c),
             0x1A => self.dino(c),
             0x2F => self.car_boss(slot, c, s, world),
+            0x1F => self.spider(c),
             0x17 => {
                 self.friend(c, 0x8E, 0x8E, 0x5A, true);
                 // Upside down in its record's pose (0x4259B0).
@@ -1302,6 +1303,82 @@ impl Creatures {
             let at = [c.pos[0] - sin(f) / 3, c.pos[1] - 0x2000, c.pos[2] - cos(f) / 3];
             let spin = self.rand() as i32 - 0x80;
             self.spawns.push((at, 0x11, 10, spin));
+        }
+    }
+
+    /// 0x425700, level 10's spider (0x1F); `boss.state` is the script's 0x52FC4C, `boss.phase`
+    /// the fans' power (0x52FC34), `boss.spin` / `boss.wave` its shot timer and step (0x52FC40
+    /// / 0x52FC48). A hit flashes it for 60 ticks (record state 4, sound 0x8A). Fighting, it
+    /// fires on a cycle (0x4F3780: 400, 40, 40, 40, 40, 200 ticks) while Buzz is down in the
+    /// arena: first a slow shot (0x59, sound 0x8B), then four lobbed blobs (0x77, sound 0x89).
+    /// With the fans up (power > 0x400) or inside ±0x7A00 of the middle it climbs to 0x6000
+    /// above home (animation 2, flag 0x10), else it comes back down (animation 1); sound 0x88
+    /// each change. Its bar is health × 54 / 30; with Buzz above the arena it can't be hurt.
+    fn spider(&mut self, c: &mut Creature) {
+        const SHOTS: [i32; 6] = [400, 40, 40, 40, 40, 200];
+        let b = &mut self.boss;
+        b.blink = !b.blink;
+        if c.health != b.last {
+            b.flash = 0x3C;
+            b.last = c.health;
+            c.rec.state = 4;
+            self.sounds.push((0x8A, c.pos));
+        }
+        c.lit = false;
+        if self.boss.state >= 2 {
+            self.boss.flash -= 1;
+            if self.boss.flash < 0 {
+                self.boss.flash = 0;
+                c.rec.state = 7;
+            } else if self.boss.blink {
+                c.lit = true;
+            }
+        }
+        if self.boss.state != 2 {
+            return;
+        }
+        let buzz = self.buzz;
+        self.boss.spin -= 1;
+        if self.boss.spin < 0 {
+            self.boss.wave = (self.boss.wave + 1) % 6;
+            self.boss.spin = SHOTS[self.boss.wave as usize];
+            if buzz[1] > -0x1C2509 {
+                let at = Self::local(c, [0, -0x1F4, -0xC8]);
+                let f = c.angles[1];
+                if self.boss.wave == 0 {
+                    let spin = self.rand() as i32 - 0x80;
+                    self.particles.push(ParticleRequest { pos: at, vel: [0, -2, 0], gravity: f << 2, angle: 0, spin, typ: 0x59 });
+                    self.sounds.push((0x8B, c.pos));
+                } else {
+                    self.particles.push(ParticleRequest { pos: at, vel: [sin(f) >> 2, -0x400, cos(f) >> 2], gravity: 0x40, angle: 0, spin: 0, typ: 0x77 });
+                    self.sounds.push((0x89, c.pos));
+                }
+            }
+        }
+        let inside = c.pos[0] > -0x7A00 && c.pos[0] < 0x7A00 && c.pos[2] > -0x7A00 && c.pos[2] < 0x7A00;
+        if self.boss.phase < 0x401 && !inside {
+            c.flags &= !0x10;
+            c.target[1] = c.home[1];
+            if c.anim == 2 {
+                self.sounds.push((0x88, c.pos));
+                self.set_anim(c, 1, 1);
+            }
+        } else {
+            c.flags |= 0x10;
+            c.target[1] = c.home[1] - 0x6000;
+            if c.anim == 1 {
+                self.sounds.push((0x88, c.pos));
+                self.set_anim(c, 2, 2);
+            }
+        }
+        self.boss.bar = c.health * 0x36 / 0x1E;
+        if buzz[1] < -0x1C2508 {
+            c.rec.state = 4;
+        } else {
+            self.boss.hum = 0x5A;
+            if self.boss.flash == 0 {
+                c.rec.state = 7;
+            }
         }
     }
 

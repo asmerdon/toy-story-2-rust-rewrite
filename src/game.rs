@@ -835,6 +835,13 @@ pub struct Player {
     /// at 0x400 (mode 1) or 0x40.
     pub water: (u8, i32),
     pub in_water: bool,
+    /// 0x53C608: held up by an air jet or fan (level 10); cancels the super spin, cleared on
+    /// landing.
+    pub floating: bool,
+    /// An outside push this tick (level units; level 10's wind, 0x48B660), and its ramp
+    /// (0x7295A0, up by 0x100 a push to 0x1000).
+    pub push: Vec3,
+    pub push_ramp: i32,
     /// Flag 0x40 of +0x40: thrown by something (room 3's spring). Until he lands, no friction
     /// and speeds up to 0xB80 each way (0x436220's profile).
     pub launched: bool,
@@ -928,6 +935,9 @@ impl Player {
             launched: false,
             water: (0, 0),
             in_water: false,
+            floating: false,
+            push: Vec3::ZERO,
+            push_ramp: 0,
         }
     }
 
@@ -983,6 +993,26 @@ impl Player {
         self.target = heading & 0xFFF;
         self.launched = true;
         self.stomp = 0;
+    }
+
+    /// An air jet or fan (level 10): off the floor, no stomp, and while rising slower than
+    /// `cap` (negative: up) the vertical speed goes up by `dv`.
+    pub fn updraft(&mut self, dv: i32, cap: i32) {
+        self.on_floor = false;
+        self.stomp = 0;
+        self.floating = true;
+        if self.vel[1] > cap {
+            self.vel[1] -= dv;
+        }
+    }
+
+    /// 0x48B660 on Buzz: pushed by `d` (object units a tick), easing in.
+    pub fn push_by(&mut self, d: [i32; 3]) {
+        if self.climb != 0 || self.zip != 0 {
+            return;
+        }
+        self.push_ramp = (self.push_ramp + 0x100).min(0x1000);
+        self.push += Vec3::from(d.map(|v| (v * self.push_ramp >> 12) as f32 / 32.0));
     }
 
     /// As `launch`, with the velocity's sines shifted down by `shift` (level 7's spring: 3).
@@ -1278,6 +1308,14 @@ impl Player {
             && let Some((m, _)) = self.floor_mover
         {
             self.pos += world.mover_motion(m);
+        }
+        self.pos += std::mem::take(&mut self.push);
+        if self.floating {
+            if self.on_floor {
+                self.floating = false;
+            } else if self.charge < 0 {
+                self.charge = 0;
+            }
         }
         self.last_pos = self.pos;
         self.move_and_collide(world);

@@ -41,6 +41,9 @@ pub struct Common {
     pub given: [bool; 5],
     /// Tokens to show now (0x4A0DB0 outside a conversation).
     pub reveals: Vec<usize>,
+    /// Tokens to move (level units) or hide again this tick.
+    pub token_moves: Vec<(usize, [i32; 3])>,
+    pub hides: Vec<usize>,
     /// The tokens Buzz has collected (bits, `0x52F0D7[level]`), set by the caller.
     pub tokens: u8,
     /// 0x830D48: the level's missing item (from 0x503A22; negative once Buzz has it, 0 once
@@ -570,6 +573,13 @@ pub fn for_level(level: usize, world: &World, specials: &mut Specials, exe: Opti
         3 => Box::new(crate::level3::Level3::new(specials)),
         6 => Box::new(crate::level6::Level6::new()),
         9 => Box::new(crate::level9::Level9::new()),
+        10 => {
+            let mut l = crate::level10::Level10::new(exe);
+            if let Some(e) = exe {
+                l.set_story(e, lists);
+            }
+            Box::new(l)
+        }
         8 => {
             let mut l = crate::level8::Level8::new();
             if let Some(e) = exe {

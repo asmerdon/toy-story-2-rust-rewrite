@@ -425,6 +425,28 @@ impl Pickups {
         }
     }
 
+    /// Token `k`, if it's still to collect, moves to `pos` (level units; level 10's runaway
+    /// token).
+    pub fn move_token(&mut self, k: usize, pos: [i32; 3]) {
+        if let Some(&id) = self.token_ids.get(k)
+            && self.tokens & (1 << k) == 0
+            && let Some(p) = self.by_id(id)
+        {
+            p.pos = pos;
+        }
+    }
+
+    /// 0x4A0E60: token `k` goes out of sight again (not collected).
+    pub fn hide_token(&mut self, k: usize) {
+        if let Some(&id) = self.token_ids.get(k)
+            && self.tokens & (1 << k) == 0
+            && let Some(p) = self.by_id(id)
+        {
+            p.scale = 0.0;
+            p.removed = true;
+        }
+    }
+
     /// A coin a beaten enemy drops (0x405D20 throws one up; it falls to the floor below).
     pub fn drop_coin(&mut self, pos: [i32; 3], floor: Option<i32>) {
         self.items.push(Pickup {

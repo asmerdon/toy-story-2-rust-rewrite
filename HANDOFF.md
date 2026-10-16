@@ -88,7 +88,8 @@ The user asked for first-person mode (with the crib in level 1) and to carry on 
 - Level 9 (`src/level9.rs`, 0x424390 / 0x424490): the boss (slot 0, type 54) with six flails and the minion rounds (pairs from 0x4F2F58; the boss is held out of reach at 600 until each pair is beaten), the chase, its beam. The flails' call-up animation (0x405CF0 anim 1 seq 0x17) and the sparks while calling aren't drawn.
 - Tests `tests/level5.rs`–`level9.rs`.
 - Not ported: level 4 crane puzzle, level 8 claw machine, level 5 bubble machine, level 7 rockets and button race, level 2 drawbridge / tree / ball.
-- Next: level 10 (start 0x425B60, frame 0x425F60, ~1000 lines; creature routine GUNSP 0x425700 and others), then the unported pieces above.
+- Level 10 (`src/level10.rs`): spinners, air shafts, fans, wind, the two lifts, vents, the stomp-switch puzzle, sparks, characters, the runaway token race, the spider boss (creature 0x1F, 0x425700). Player gained `updraft`, `push_by`, `floating`; pickups `move_token` / `hide_token`. Not ported: lifts freezing while Buzz mantles onto them (0x559E80), lights, the electric beams in rooms 7 / 12. Tests `tests/level10.rs`.
+- Next: the unported pieces above, then particles and the rest of "Next steps".
 
 ### Round 6 (2026-10-15): the other levels
 - Levels 11–15 are not in the install (CD only): the playable set is 1–10.
