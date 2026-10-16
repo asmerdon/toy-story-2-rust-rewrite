@@ -198,6 +198,12 @@ pub struct Pickups {
     respawn: Option<(usize, i32)>,
     /// The last shield picked up (it shrinks back to twice its size when another is taken).
     shield_item: Option<usize>,
+    /// The shield ball's place (level units) and spin about Z (0x882960), set each tick by
+    /// `follow_shield`.
+    shield_at: Option<[i32; 3]>,
+    shield_spin: i32,
+    /// A shield ball given up for a new one, to put back where it was (0x4A50D0).
+    shield_back: std::cell::Cell<Option<i32>>,
     /// This level's ability gates (0x503A44…): ability bit, cage special, pickup id, cage
     /// mover, the pickup's scale once open.
     gates: Vec<(u8, i32, u8, i32, f32)>,
@@ -274,6 +280,9 @@ impl Pickups {
             frame: 0,
             respawn: None,
             shield_item: None,
+            shield_at: None,
+            shield_spin: 0,
+            shield_back: std::cell::Cell::new(None),
             gates: Vec::new(),
             appearing: Vec::new(),
             burst: Vec::new(),
@@ -552,6 +561,7 @@ impl Pickups {
             Kind::Shield => {
                 if let Some(prev) = self.shield_item.replace(i) {
                     let p = &mut self.items[prev];
+                    self.shield_back.set(Some(p.id as i32));
                     p.removed = false;
                     p.scale = 2.0;
                 }
@@ -647,10 +657,38 @@ impl Pickups {
         out
     }
 
+    /// 0x4A5170, each tick: the last shield taken rides with Buzz as a ball, 0x2000 above his
+    /// feet and 0x1000 towards the camera (object units), facing his way and rolling with his
+    /// `speed`; it pulses at three times its size, and over its last 0x80 ticks shrinks away.
+    pub fn follow_shield(&mut self, buzz: [i32; 3], camera: [i32; 3], facing: i32, speed: i32) {
+        let Some(k) = self.shield_item else { return };
+        let d = [(buzz[0] - camera[0]) >> 5, (buzz[1] - camera[1] - 0x2000) >> 5, (buzz[2] - camera[2]) >> 5];
+        let len = ((d[0] as f64).powi(2) + (d[1] as f64).powi(2) + (d[2] as f64).powi(2)).sqrt().max(1.0);
+        let n = d.map(|v| (v as f64 * 4096.0 / len) as i32);
+        self.shield_at = Some([(buzz[0] - n[0]) >> 5, (buzz[1] - n[1] - 0x2000) >> 5, (buzz[2] - n[2]) >> 5]);
+        self.shield_spin = (self.shield_spin - (speed >> 4)) & 0xFFF;
+        let sin = |a: i32| ((a & 0xFFF) as f64 / 4096.0 * std::f64::consts::TAU).sin() * 16384.0;
+        let s = self.shield;
+        let scale = if s < 0x80 { (sin(s * 8) as i32 >> 2) * 3 } else { (sin((s & 0x3F) * 0x40) as i32 >> 4) + 0x3000 };
+        let p = &mut self.items[k];
+        p.scale = scale.max(0) as f32 / 4096.0;
+        p.spin = [0, -facing & 0xFFF, self.shield_spin];
+    }
+
     /// Writes the special objects' tumble and scale (0x4CCCE0 / 0x4CCB20) into `specials`.
     pub fn apply(&self, specials: &mut crate::specials::Specials) {
+        if let Some(id) = self.shield_back.take()
+            && let Some(h) = specials.home_obj(id)
+        {
+            specials.set_pos(id, h.map(|v| v >> 5));
+        }
         for p in self.items.iter().filter(|p| !p.is_sprite()) {
             let id = p.id as i32;
+            if self.shield_item.is_some_and(|k| std::ptr::eq(&self.items[k], p))
+                && let Some(at) = self.shield_at
+            {
+                specials.set_pos(id, at);
+            }
             specials.turn_from_own(id, p.spin);
             let s = (p.scale * 4096.0) as i32;
             specials.set_scale(id, [s; 3]);

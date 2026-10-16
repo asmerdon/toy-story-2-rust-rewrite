@@ -1229,6 +1229,8 @@ impl Viewer {
                     pk.lives = player.lives;
                     pk.shield = player.shield;
                     let evs = pk.tick(player.pos.to_array(), cam_game);
+                    let speed = (player.vel[0] as f32).hypot(player.vel[2] as f32) as i32;
+                    pk.follow_shield(player.pos_obj(), cam_game.map(|v| (v * 32.0) as i32), player.facing, speed);
                     if player.dying == 0 {
                         player.health = pk.health;
                     }
