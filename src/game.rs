@@ -1683,6 +1683,9 @@ impl Player {
         self.floor_mover = None;
         self.surface = None;
         let start = self.pos;
+        // A surface touched from the side (0x487AB0 reads whatever Buzz hit, walls too): only
+        // its harm counts here, so scripts' floor switches still see the floor alone.
+        let mut side_surface: Option<u8> = None;
         for _ in 0..PASSES {
             if d.length_squared() < 1e-8 {
                 break;
@@ -1712,6 +1715,7 @@ impl Player {
                 if let Some(m) = h.mover {
                     self.wall_mover = Some((m, n));
                 }
+                side_surface = h.surface.or(side_surface);
                 c += Vec3::new(n.x, 0.0, n.z) * WALL_PUSH;
                 v.x *= 15.0 / 16.0;
                 v.z *= 15.0 / 16.0;
@@ -1750,7 +1754,8 @@ impl Player {
         self.on_floor = floor;
         self.vel = [v.x.round() as i32, v.y.round() as i32, v.z.round() as i32];
         // Surfaces (0x434550): types 0-3 hurt, 16-19 kill (Buzz is put back where he was).
-        if let Some(s) = self.surface
+        let harmful = |s: &u8| matches!(s >> 2, 0 | 4);
+        if let Some(s) = self.surface.filter(harmful).or(side_surface.filter(harmful))
             && self.dying == 0
         {
             match s >> 2 {

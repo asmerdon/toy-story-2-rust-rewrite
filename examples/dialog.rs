@@ -15,7 +15,7 @@ fn main() {
         let mut d = ts2::dialog::Dialog::new(&text);
         let mut counts = Vec::new();
         for t in 0..400 {
-            d.tick(false, false);
+            d.tick(std::env::var("PRESS").ok().and_then(|v| v.parse::<i32>().ok()) == Some(t), false);
             if t % 50 == 0 {
                 counts.push(d.quads().len());
             }
