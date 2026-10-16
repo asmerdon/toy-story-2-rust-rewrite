@@ -80,6 +80,8 @@ pub struct Level1 {
     lift: [i32; 3],
     lift_max: i32,
     pole_offset: Option<i32>,
+    /// The drill bits' lift (level units, up).
+    drill_lift: [f32; 3],
     /// Room 4's fountain: its next target point (0x52F52C), the steam timer and vent
     /// (0x52F5B0 / 0x52F598).
     fountain: usize,
@@ -153,6 +155,7 @@ impl Level1 {
             lift,
             lift_max: lift[1] + 0xB800,
             pole_offset: None,
+            drill_lift: [0.0; 3],
             fountain: 0,
             steam: 0,
             vent: 0,
@@ -524,6 +527,7 @@ impl Level1 {
         let buzz = player.pos_obj();
 
         self.clock = self.clock.wrapping_add(1);
+        self.drills(specials, player);
         if room == Some(5) {
             self.see_saw(world, specials, player);
         }
@@ -671,5 +675,33 @@ impl Script for Level1 {
     fn step_creatures(&mut self, world: &World, specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
         self.tick_creatures(world, specials, player, cr);
         self.tick_characters(world, player, cr, coins);
+    }
+}
+
+/// The three drill bits on the shelf (specials 9, 0x12, 0x11), each hanging 626 level units
+/// below its point.
+const DRILLS: [i32; 3] = [0x11, 9, 0x12];
+const DRILL_LENGTH: f32 = 626.0;
+
+impl Level1 {
+    /// Deviation: the drill bits go up and down, each out of step with the next, and hurt Buzz
+    /// when he touches one (knocked back, a battery). Nothing found in the exe moves or arms
+    /// them, so the motion is made up (the user's pick): up to 700 units over a 3-second
+    /// cycle. They have no collision; touching means within 200 across and overlapping
+    /// Buzz's height (450).
+    fn drills(&mut self, specials: &mut Specials, player: &mut Player) {
+        let b = player.pos;
+        for (k, &special) in DRILLS.iter().enumerate() {
+            let Some(home) = specials.home_obj(special) else { continue };
+            let phase = (self.clock as f32 / 180.0 + k as f32 / 3.0) * std::f32::consts::TAU;
+            let lift = (1.0 - phase.cos()) * 350.0;
+            self.drill_lift[k] = lift;
+            let at = [home[0] as f32 / 32.0, home[1] as f32 / 32.0 - lift, home[2] as f32 / 32.0];
+            specials.set_pos(special, at.map(|v| v as i32));
+            let (dx, dz) = (b.x - at[0], b.z - at[2]);
+            if dx * dx + dz * dz < 200.0 * 200.0 && b.y > at[1] && b.y - 450.0 < at[1] + DRILL_LENGTH && player.hurt_timer == 0 {
+                player.hurt(crate::boxes::angle12(dx, dz), 3);
+            }
+        }
     }
 }
