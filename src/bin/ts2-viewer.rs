@@ -100,11 +100,14 @@ struct Uniforms {
     range: [f32; 4],
 }
 
-/// The original draws a level in two passes (0x4CDDD0): first the low-detail second mesh set
-/// beyond `FAR_FROM`, then, after clearing depth, the detailed first set within `NEAR_TO`.
-/// The two sets overlap exactly (coplanar), so drawing both with one depth buffer flickers.
-/// Values: detail level 2 of the table at 0x508D24 (the exe's defaults), view depth in game
-/// units.
+/// The original draws a level in two passes (0x4CDDD0): first the low-detail second mesh set,
+/// then, after clearing depth, the detailed first set within `NEAR_TO`, so the detailed set
+/// always wins and the low-detail one only fills its gaps (the attic entrance has a face only
+/// in the low-detail set). The two sets overlap exactly (coplanar), so drawing both with one
+/// depth buffer flickers. The exe's defaults (detail level 2 of the table at 0x508D24) also
+/// give the far pass 10000 (`FAR_FROM`), read here earlier as a near clip; drawn that way the
+/// gaps showed as holes, so the far pass now starts at 0. View depth in game units.
+#[allow(dead_code)]
 const FAR_FROM: f32 = 10000.0;
 const NEAR_TO: f32 = 12000.0;
 
@@ -429,11 +432,12 @@ fn level_sets(ngn: &ngn::Ngn, hide_zone0: bool, specials: &ts2::specials::Specia
 }
 
 /// Instance flag 0x80000. Such instances often sit exactly on another one (level 1's attic
-/// boxes and their open flaps), sharing faces with it; they're drawn a hair nearer the camera
-/// so the shared faces don't fight. (What the original does with the flag isn't known.)
+/// boxes and their dark insides), sharing faces with it; they're drawn a hair further from the
+/// camera so the other copy wins where they meet (drawn nearer, the boxes' tops went black).
+/// (What the original does with the flag isn't known.)
 const DECAL: u32 = 0x80000;
-/// How much nearer: clip depth × (1 + this), with reversed depth.
-const DECAL_BIAS: f32 = 2e-4;
+/// How much further: clip depth × (1 + this), with reversed depth (larger is nearer).
+const DECAL_BIAS: f32 = -2e-4;
 
 fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatch> {
     batches
@@ -646,7 +650,7 @@ impl Gfx {
         };
         // Far set beyond FAR_FROM, detailed set within NEAR_TO, everything else unclipped.
         let s = uniforms.params[2];
-        let ranges = [[FAR_FROM * s, f32::MAX], [0.0, NEAR_TO * s], [0.0, f32::MAX]];
+        let ranges = [[0.0, f32::MAX], [0.0, NEAR_TO * s], [0.0, f32::MAX]];
         for (buf, r) in self.uniform_bufs.iter().zip(ranges) {
             let u = Uniforms { range: [r[0], r[1], 0.0, 0.0], ..*uniforms };
             self.queue.write_buffer(buf, 0, bytemuck::bytes_of(&u));

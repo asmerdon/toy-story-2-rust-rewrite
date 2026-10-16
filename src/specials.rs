@@ -55,6 +55,15 @@ impl Specials {
                 own_pos: inst.pos,
             });
         }
+        // Two ids naming one instance (level 1: 0x1A, a crib part, and 0x2D, the first-person
+        // helmet, both instance 0): the later id keeps it, so the earlier one doesn't show the
+        // helmet in the living room.
+        let mut owner: HashMap<(usize, usize), u16> = HashMap::new();
+        for (&id, s) in &objects {
+            let e = owner.entry((s.layer, s.instance)).or_insert(id);
+            *e = (*e).max(id);
+        }
+        objects.retain(|id, s| owner[&(s.layer, s.instance)] == *id);
         Specials { objects }
     }
 

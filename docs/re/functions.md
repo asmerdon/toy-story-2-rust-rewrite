@@ -306,7 +306,7 @@ Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid
 
 | Address | Name | Notes |
 |---|---|---|
-| 0x4027F0 | `Talk(slot, list, text, buzzFacing, npcFacing, token)` ✔ | Nothing while one is running (0x50A1F8). Leaves first person. Facings −1: from the list's first two points. Runs the script 0x4DF6CC (with these written into it): list; Buzz on point 0, the character on point 1; their facings; camera look-at from point 2, position from (n − 2) / 2 + 2; glide; wait. Freezes play (0x52B816 bit 1). Token ≥ 0: 0x50A1F8 = token + 10. Text: 0x401A00, sound 0x1D |
+| 0x4027F0 | `Talk(slot, list, text, buzzFacing, npcFacing, token)` ✔ | Nothing while one is running (0x50A1F8). Leaves first person. Facings −1: from the list's first two points. Runs the script 0x4DF6CC (with these written into it): list; Buzz on point 0, the character on point 1; their facings; camera from point 2, looking at point (n − 2) / 2 + 2 (0x402030(target, position)); glide; wait. Freezes play (0x52B816 bit 1). Token ≥ 0: 0x50A1F8 = token + 10. Text: 0x401A00, sound 0x1D |
 | 0x402A10 | `PlayCutscene` ✔ (talk script) | Commands 0 list, 1 place, 2 facing, 3 / 4 camera points, 7 wait, 10 camera between points; the camera glides along the list (speed easing to the next length, ≥ 0x80). When the speech box is gone: play resumes, sound 0x1E, and 0x50A1F8 ≥ 10 → 0x4A0DB0(token) |
 | 0x4A0DB0 | `RevealToken(k, quiet)` ✔ | Once per token (0x830CD0): shows it (and in the full form looks at it for 180 ticks, 0x4020F0, leaving first person) |
 | 0x401A00 | `LayoutText` ✔ | 36-character lines wrapped at spaces, wrapped lines padded; `^` toggles highlighting and takes no room |

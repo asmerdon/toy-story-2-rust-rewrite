@@ -63,8 +63,10 @@ impl Cutscene {
         let at = |k: usize| self.points.get(k).copied().unwrap_or_default();
         let lerp = |p: [i32; 3], q: [i32; 3]| [0, 1, 2].map(|k| p[k] + ((q[k] - p[k]) as i64 * self.t as i64 / self.len.max(1) as i64) as i32);
         let n = self.points.len();
-        let pos = if self.a + 1 < n { lerp(at(self.a), at(self.a + 1)) } else { at(self.a) };
-        let look = if self.b + 1 < n { lerp(at(self.b), at(self.b + 1)) } else { at(self.b) };
+        // 0x402A10 command 10 → 0x402030(target, position): the camera rides the track from
+        // point 2 (`b`), looking at the track from (n − 2) / 2 + 2 (`a`).
+        let look = if self.a + 1 < n { lerp(at(self.a), at(self.a + 1)) } else { at(self.a) };
+        let pos = if self.b + 1 < n { lerp(at(self.b), at(self.b + 1)) } else { at(self.b) };
         (pos, look)
     }
 
