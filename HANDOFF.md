@@ -71,6 +71,20 @@ The user asked for first-person mode (with the crib in level 1) and to carry on 
 - **Reward sparkles** (`src/rewards.rs`, 0x49FB40, all levels): list 58's box spots (0x71) and challenge rewards (0x73) twinkle near the camera; level 1 puts out reward 1 at the start and on the trampoline, reward 0 on the spring.
 - **Info pickups** (the 9 tutorial signposts, 0x402610): touching one plays its scene with the tutorial text. **Cosmic shield cage**: the shield pickup (id 0x31) is caged and can't be taken until Mr Potato Head gets his ear; then the cage (special 0x19, mover 10) goes and it shows at double size. Tests in `tests/rooms.rs`.
 
+### Rounds 8–9 (2026-10-16): user feedback on level 1
+- Look-at scenes now count down for every level (the viewer ticks them unless the script did: `Common::look_ticked`); the token camera no longer sticks. The token menu takes Space (it arrives as a speech-box press).
+- Creatures stay in play everywhere (`always_active`, deviation: the original freezes them beyond ~3200 of the camera); `Creature::in_reach` keeps the original test, and characters only call out within it (Bo Peep no longer heard in the attic).
+- Audio: the listener's forward includes the camera pitch (as 0x4A3810's matrix rows); looping owned sounds (engines) follow their owner's balance (`Looped` / `Gains`).
+- First-person mouse: 0.8 units of 4096 a count, fractions carried.
+- Background: level.raw packet 36 is the PS1 backdrop picture (192×128, 8-bit palette; `packets::backdrop` / `backdrop_rgba`, `examples/backdrop`). The PC (0x48FB70) only clears to its first / last pixel colours above / below a horizon line; the viewer draws the picture itself (deviation, user's choice), tiled round the view, turning with it, sky colour above, ground below (`sky_batch`).
+- Mr Potato Head (creature id 9): node = the level's item number hidden until handed over (0x4A2080 / 0x4A2480 via 0x4CE570 → 0x4CAB80 part flag bit 0; item 1 also 0xB, 0xC, 0xF). `CreatureNode::hidden`.
+- Box hint sparkles (list 58 group 0) go once that box is pushed (0x433700 → 0x49FAB0).
+- Coin sprites are alpha-tested and write depth (they drew over banister billboards).
+- Shield pickup: its object becomes the ball riding with Buzz (0x4A5170, `Pickups::follow_shield`).
+- Instances with flag 0x80000 (attic boxes' second copies) are drawn a hair nearer (`DECAL`), so shared faces don't fight.
+- Checked, original values: laser power-up 1200 − 10 a shot = 120 shots (0x434B9E `sub eax, 0xa`); 60 Hz ticks (0x490860). Tin Man's script and chase match the original.
+- Open, need the user's detail: text sometimes not showing (Bo Peep / Potato), the floating first-person model downstairs (helmet specials and zone-0 instances are hidden), which swing poles miss their loop, dark lighting textures, black texture by the attic entrance, the rope lift, the exit animation camera, hint camera clipping.
+
 ### Round 7 (2026-10-16): levels 5–9, and the user's round-6 feedback
 - User feedback (8 points) and what was done (none tested yet):
   1. Lamp / attic-box flicker: z-fighting; the renderer now uses reversed-Z depth (`perspective_infinite_reverse_rh`, compare Greater, clear 0). Ask whether it's gone.
