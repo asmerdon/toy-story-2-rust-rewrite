@@ -15,7 +15,7 @@
 
 use crate::formats::exe::Exe;
 use crate::pickups::SpriteDef;
-use crate::scene::{self, Batch, Blend, GpuVertex};
+use crate::scene::{Batch, Blend, GpuVertex};
 
 pub const LIVES: usize = 0;
 pub const HEALTH: usize = 1;
@@ -282,8 +282,15 @@ pub fn batches(quads: &[Quad], sprites: &[Option<SpriteDef>], texture: &dyn Fn(i
         let color = [0xFF, q.color[0], q.color[1], q.color[2]];
         let v = |x: f32, y: f32, u: f32, w: f32| GpuVertex { pos: [x, y, 0.0], uv: [u, w], color };
         let (a, b, c, d) = (v(x0, y0, u0, v0), v(x1, y0, u1, v0), v(x1, y1, u1, v1), v(x0, y1, u0, v1));
-        scene::push(&mut out, Some(tex), Blend::Alpha, [a, b, c]);
-        scene::push(&mut out, Some(tex), Blend::Alpha, [a, c, d]);
+        // In drawing order: a quad joins the last batch only if it has the same texture.
+        // Grouping by texture alone put the speech text before its box whenever an earlier
+        // element (the power-up bar) used the font's texture, and the box hid it.
+        if out.last().is_none_or(|b: &Batch| b.texture != Some(tex)) {
+            out.push(Batch { texture: Some(tex), blend: Blend::Alpha, vertices: Vec::new() });
+        }
+        if let Some(last) = out.last_mut() {
+            last.vertices.extend([a, b, c, a, c, d]);
+        }
     }
     out
 }
