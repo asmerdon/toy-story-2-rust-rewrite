@@ -142,7 +142,9 @@ impl Boxes {
         } else if self.pushing != 0 && ((self.push_angle - player.target) + 0x400) & 0xFFF > 0x800 {
             // The stick turned more than 90° away from the push (end of 0x4346C0): let go.
             self.pushing = 0;
-        } else if self.pushing == 0 && player.on_floor {
+        } else if self.pushing == 0 && (player.on_floor || player.coyote > 0) {
+            // (Or just off it: on the kitchen shelf's slight slope, the tick Buzz meets the spring
+            // box finds the wall but not the floor.)
             if let Some((m, n)) = player.wall_mover
                 && let Some(k) = self.boxes.iter().position(|b| b.mover == m && b.fall == 0 && b.slide >= 0)
             {
@@ -274,6 +276,12 @@ impl Boxes {
 
     /// Box `k` is sliding off its edge (+0x16 = −1) or falling (+0x14 ≠ 0), as level scripts
     /// test it (level 1's door: box 3).
+    /// For diagnostics: the box being pushed (1-based, 0 none), the push direction and each
+    /// box's segment heading.
+    pub fn push_state(&self) -> (usize, i32, Vec<i32>) {
+        (self.pushing, self.push_angle, self.boxes.iter().map(|b| b.angle).collect())
+    }
+
     pub fn going_over(&self, k: usize) -> bool {
         self.boxes.get(k).is_some_and(|b| b.slide == -1 || b.fall != 0)
     }

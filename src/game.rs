@@ -1579,7 +1579,8 @@ impl Player {
                         self.jump = JumpPhase::Spent;
                     }
                 }
-                _ if self.coyote == 0 || self.stomp != 0 || self.fall_timer == FALL_PANIC => {
+                // Pushing a box (state bit 0x200) he can't jump.
+                _ if self.coyote == 0 || self.stomp != 0 || self.fall_timer == FALL_PANIC || self.pushing => {
                     // A press that can't double jump uses it up (e.g. a third press).
                     if self.jump == JumpPhase::Released {
                         self.jump = JumpPhase::Spent;
