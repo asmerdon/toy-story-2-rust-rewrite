@@ -192,3 +192,37 @@ pub fn spawns(packet: &Packet) -> Vec<Spawn> {
         })
         .collect()
 }
+
+/// The type-36 packet: the level's PS1 background picture, 8-bit with an RGB palette. The PC
+/// version only takes two colours from it (0x452310): the palette colour of its first pixel
+/// (the sky, 0x4F73B4) and of its last (the ground, 0x4F73C0); it clears the screen with them
+/// above and below the horizon, `horizon` (0x4F73B0) lines below where the view's horizon
+/// falls (in 240-line PS1 screen units).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Backdrop {
+    pub width: i32,
+    pub height: i32,
+    pub horizon: i32,
+    pub sky: [u8; 3],
+    pub ground: [u8; 3],
+}
+
+/// Reads a type-36 packet: u32 type, i32 horizon, i16 width, i16 height, i16 palette bytes,
+/// u16, then the palette (3 bytes a colour) and width × height indices.
+pub fn backdrop(packet: &Packet) -> Option<Backdrop> {
+    if packet.kind() != kind::MAP {
+        return None;
+    }
+    let d = &packet.data;
+    let i16_at = |o: usize| d.get(o..o + 2).map(|b| i16::from_le_bytes([b[0], b[1]]) as i32);
+    let horizon = i32::from_le_bytes(d.get(4..8)?.try_into().ok()?);
+    let (width, height, pal) = (i16_at(8)?, i16_at(10)?, i16_at(12)?);
+    let pixels = 0x10 + (pal / 2 * 2) as usize;
+    let colour = |at: usize| -> Option<[u8; 3]> {
+        let i = *d.get(at)? as usize;
+        Some([*d.get(0x10 + 3 * i)?, *d.get(0x11 + 3 * i)?, *d.get(0x12 + 3 * i)?])
+    };
+    let sky = colour(pixels)?;
+    let ground = colour(pixels + (width * height) as usize - 1)?;
+    Some(Backdrop { width, height, horizon, sky, ground })
+}

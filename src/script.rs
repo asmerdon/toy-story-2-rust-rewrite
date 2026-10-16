@@ -67,6 +67,8 @@ pub struct Common {
     /// A look-at scene (0x4020F0): the camera at `from` looking at `at` (object units) for
     /// `ticks` (0x50A1F4) while play stands still.
     pub look: Option<Look>,
+    /// The script counted the look-at down itself this tick (else the caller does).
+    pub look_ticked: bool,
     /// The level is over (0x830CC4 = 1: the token screen).
     pub done: bool,
     /// Pickups (by index in list 63) to hide (false) or bring back (true).
@@ -187,6 +189,7 @@ impl Common {
 
     /// 0x402A10's countdown: one tick of the scene, ending it at 0.
     pub fn tick_look(&mut self) {
+        self.look_ticked = true;
         if let Some(l) = self.look.as_mut() {
             l.ticks -= 1;
             if l.ticks < 1 {

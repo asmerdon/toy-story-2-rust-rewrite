@@ -275,10 +275,15 @@ struct Gfx {
     creature: Vec<GpuBatch>,
     /// The HUD, in screen space (0..1, y down), drawn last over everything.
     hud: Vec<GpuBatch>,
+    /// The background (0x48FB70): cleared to the sky colour, the ground band over it.
+    sky: Vec<GpuBatch>,
+    clear: [f64; 3],
 }
 
 struct Viewer {
     ngn: ngn::Ngn,
+    /// The level's background colours and horizon (level.raw packet 36).
+    backdrop: Option<packets::Backdrop>,
     anims: Vec<Vec<anim::Animation>>,
     gfx: Option<Gfx>,
     cam: Camera,
@@ -591,7 +596,7 @@ impl Gfx {
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
         let level_far = upload(&device, level_far, texture_bgs.len() - 1);
-        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new() }
+        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1] }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -631,8 +636,9 @@ impl Gfx {
         let mut enc = self.device.create_command_encoder(&Default::default());
         let order = [scene::Blend::Opaque, scene::Blend::Alpha, scene::Blend::Additive, scene::Blend::Darken];
         // Two passes, depth cleared in between, as 0x4CDDD0 does.
-        let passes: [(&[(usize, &[GpuBatch])], bool); 3] = [
-            (&[(0, &self.level_far), (0, &self.billboards[1])], true),
+        let passes: [(&[(usize, &[GpuBatch])], bool); 4] = [
+            (&[(3, &self.sky)], true),
+            (&[(0, &self.level_far), (0, &self.billboards[1])], false),
             (&[(1, &self.level), (1, &self.billboards[0]), (2, &self.creature)], false),
             (&[(3, &self.hud)], false),
         ];
@@ -643,7 +649,7 @@ impl Gfx {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: if first { wgpu::LoadOp::Clear(wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 }) } else { wgpu::LoadOp::Load },
+                        load: if first { wgpu::LoadOp::Clear(wgpu::Color { r: self.clear[0], g: self.clear[1], b: self.clear[2], a: 1.0 }) } else { wgpu::LoadOp::Load },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -775,7 +781,14 @@ impl Viewer {
                         r1: self.keys.contains(&KeyCode::KeyX),
                         r1_pressed: r1_pressed && t == 0,
                         l1_pressed: leaving_l1 && t == 0,
-                        mouse: if t == 0 { std::mem::take(&mut self.fp_mouse).map(|v| v.round() as i32) } else { [0; 2] },
+                        mouse: if t == 0 {
+                            // Whole units now; the fraction carries over.
+                            let m = self.fp_mouse.map(|v| v.trunc());
+                            self.fp_mouse = [self.fp_mouse[0] - m[0], self.fp_mouse[1] - m[1]];
+                            m.map(|v| v as i32)
+                        } else {
+                            [0; 2]
+                        },
                     };
                     if player.first_person != 0 {
                         self.look.tick(player, cr, &mut self.particles, &mut self.specials, &self.world, pad);
@@ -1001,6 +1014,10 @@ impl Viewer {
                     l.tokens = self.pickups.as_ref().map_or(0, |p| p.tokens);
                     for t in 0..ticks {
                         l.step_creatures(&self.world, &mut self.specials, player, cr, coins);
+                        if !std::mem::take(&mut l.look_ticked) {
+                            l.tick_look();
+                            l.look_ticked = false;
+                        }
                         // A conversation starting: Buzz and the character take their places.
                         if let Some((at, facing, slot)) = l.staging.take() {
                             let g = Vec3::from(at[0].map(|v| v as f32 / 32.0));
@@ -1736,6 +1753,7 @@ impl ApplicationHandler for Viewer {
                     // buffer then keeps its precision far out, so near-coplanar faces (a box lid
                     // left ajar, a lamp's layered panels) don't fight.
                     let proj = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), aspect, 0.05);
+                    g.sky = self.backdrop.map_or_else(Vec::new, |b| upload(&g.device, &[sky_batch(&b, proj * self.cam.view(), self.cam.forward())], g.texture_bgs.len() - 1));
                     let u = Uniforms {
                         view_proj: (proj * self.cam.view()).to_cols_array_2d(),
                         params: [self.color_mode as f32, if self.alpha_test { 1.0 } else { 0.0 }, WORLD_SCALE, 0.0],
@@ -1750,12 +1768,12 @@ impl ApplicationHandler for Viewer {
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
-        // First person: the mouse turns and tilts the view (4 units of 4096 a pixel).
+        // First person: the mouse turns and tilts the view (0.8 units of 4096, about 0.07°, a count).
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
             && self.player.as_ref().is_some_and(|p| p.first_person == 4)
         {
-            self.fp_mouse[0] += dx as f32 * 4.0;
-            self.fp_mouse[1] += dy as f32 * 4.0;
+            self.fp_mouse[0] += dx as f32 * 0.8;
+            self.fp_mouse[1] += dy as f32 * 0.8;
             return;
         }
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
@@ -1792,9 +1810,11 @@ fn main() {
     // Spawns come from the packet file with the same stem (level.ngn -> level.raw).
     let raw_path = std::path::Path::new(path).with_extension("raw");
     let mut all_spawns = Vec::new();
+    let mut backdrop = None;
     let spawns: Vec<(usize, [f32; 3])> = match fs::read(&raw_path).map_err(|e| e.to_string()).and_then(|b| packets::parse(&b).map_err(|e| e.to_string())) {
         Ok(pk) => {
             let all: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
+            backdrop = pk.iter().find_map(packets::backdrop);
             all_spawns = all.clone();
             let found: Vec<_> = all
                 .iter()
@@ -1886,9 +1906,12 @@ fn main() {
     let level_no = exe::level_number(level_path);
     let boxes = level_no.map(|lv| ts2::boxes::Boxes::new(lv, &level_lists, game_exe.as_ref(), &world, &mut specials));
     let script = level_no.and_then(|lv| ts2::script::for_level(lv, &world, &mut specials, game_exe.as_ref(), &level_lists, random_table.clone()));
-    // Level 6 keeps every creature in play (0x4086F0).
+    // Deviation: every creature stays in play wherever the camera is. The original (0x4086F0)
+    // freezes those beyond about 3200 level units of the camera (all of them in play only in
+    // level 6), hidden there by its short draw distance; drawn further here, they visibly
+    // stopped mid-move, and the Tin Man's attack cycle paused whenever the camera looked away.
     if let Some(c) = creatures.as_mut() {
-        c.always_active = level_no == Some(6);
+        c.always_active = true;
     }
     if let Some(b) = &boxes {
         println!("{} pushable objects", b.boxes.len());
@@ -1939,6 +1962,7 @@ fn main() {
         None => println!("no player start found (toy2.exe not next to data\\, or not a main level file)"),
     }
     let mut viewer = Viewer {
+        backdrop,
         level,
         level_far,
         billboards: [near_bb, far_bb],
@@ -2015,4 +2039,32 @@ fn main() {
     }
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut viewer).expect("run");
+}
+
+/// 0x48FB70's background: the sky colour above, the ground colour below a line `height` +
+/// `horizon` PS1 lines (of 240) under where the view's horizon falls. Looking nearly straight
+/// up or down, all sky or all ground. Screen space (0..1, y down).
+fn sky_batch(b: &packets::Backdrop, view_proj: Mat4, forward: Vec3) -> Batch {
+    let flat = Vec3::new(forward.x, 0.0, forward.z);
+    let line = if flat.length() < 1e-3 {
+        if forward.y > 0.0 { 2.0 } else { -1.0 }
+    } else {
+        let c = view_proj * flat.normalize().extend(0.0);
+        if c.w <= 1e-6 {
+            if forward.y > 0.0 { 2.0 } else { -1.0 }
+        } else {
+            (1.0 - c.y / c.w) / 2.0 - 0.5 + (b.horizon + b.height) as f32 / 240.0
+        }
+    };
+    let line = line.clamp(0.0, 1.0);
+    let colour = |c: [u8; 3]| [0x80, c[0] / 2, c[1] / 2, c[2] / 2];
+    let mut vertices = Vec::new();
+    for (y0, y1, c) in [(0.0, line, b.sky), (line, 1.0, b.ground)] {
+        if y1 <= y0 {
+            continue;
+        }
+        let v = |x: f32, y: f32| scene::GpuVertex { pos: [x, y, 0.0], uv: [0.0, 0.0], color: colour(c) };
+        vertices.extend([v(0.0, y0), v(1.0, y0), v(1.0, y1), v(0.0, y0), v(1.0, y1), v(0.0, y1)]);
+    }
+    Batch { texture: None, blend: scene::Blend::Opaque, vertices }
 }

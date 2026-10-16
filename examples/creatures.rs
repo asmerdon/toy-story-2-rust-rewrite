@@ -21,7 +21,7 @@ fn main() {
     }
     for b in behaviours {
         let ptr = u32::from_le_bytes(e.at(0x4E02C4 + 4 * b as u32, 4).unwrap().try_into().unwrap());
-        let words: Vec<i16> = (0..48).map(|k| i16::from_le_bytes(e.at(ptr + 2 * k, 2).unwrap().try_into().unwrap())).collect();
+        let words: Vec<i16> = (0..std::env::var("WORDS").ok().and_then(|v| v.parse().ok()).unwrap_or(48u32)).map(|k| i16::from_le_bytes(e.at(ptr + 2 * k, 2).unwrap().try_into().unwrap())).collect();
         println!("behaviour {b} @ {ptr:#x}: {words:?}");
     }
 }
