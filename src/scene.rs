@@ -219,6 +219,12 @@ pub fn instance_batches(ngn: &Ngn, layer: usize, index: usize, spin: [i32; 3], s
 /// bottom-right). Drawn alpha-blended.
 #[allow(clippy::too_many_arguments)]
 pub fn sprite(out: &mut Vec<Batch>, texture: Option<usize>, pos: [f32; 3], half: f32, right: [f32; 3], up: [f32; 3], uv: [[f32; 2]; 2], color: [u8; 4]) {
+    sprite_blend(out, texture, Blend::Alpha, pos, half, right, up, uv, color);
+}
+
+/// As `sprite`, with blend mode `blend` (Opaque: alpha-tested, writing depth).
+#[allow(clippy::too_many_arguments)]
+pub fn sprite_blend(out: &mut Vec<Batch>, texture: Option<usize>, blend: Blend, pos: [f32; 3], half: f32, right: [f32; 3], up: [f32; 3], uv: [[f32; 2]; 2], color: [u8; 4]) {
     let corner = |sx: f32, sy: f32, u: f32, v: f32| GpuVertex {
         pos: [0, 1, 2].map(|k| pos[k] + (right[k] * sx + up[k] * sy) * half),
         uv: [u, v],
@@ -226,8 +232,8 @@ pub fn sprite(out: &mut Vec<Batch>, texture: Option<usize>, pos: [f32; 3], half:
     };
     let [[u0, v0], [u1, v1]] = uv;
     let (a, b, c, d) = (corner(-1.0, 1.0, u0, v0), corner(1.0, 1.0, u1, v0), corner(1.0, -1.0, u1, v1), corner(-1.0, -1.0, u0, v1));
-    push(out, texture, Blend::Alpha, [a, b, c]);
-    push(out, texture, Blend::Alpha, [a, c, d]);
+    push(out, texture, blend, [a, b, c]);
+    push(out, texture, blend, [a, c, d]);
 }
 
 /// An instance's rotation and scale as a row-vector matrix (no translation): scale, then

@@ -931,6 +931,11 @@ impl Viewer {
             for _ in 0..ticks {
                 self.particles.tick(&self.world, (player.pos_obj(), player.facing));
                 self.rewards.tick(self.particles.camera, &mut self.particles);
+                if let Some(b) = self.boxes.as_mut() {
+                    for k in b.put_out.drain(..) {
+                        self.rewards.put_out(k, 0, &mut self.particles);
+                    }
+                }
                 if let Some(l) = self.script.as_mut() {
                     for (k, g) in l.put_out.drain(..) {
                         self.rewards.put_out(k, g, &mut self.particles);

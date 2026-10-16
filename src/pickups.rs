@@ -634,7 +634,10 @@ impl Pickups {
             let [u, v] = def.cells[frame];
             let uv = [[u as f32 / tw, v as f32 / th], [(u as f32 + def.size[0] as f32) / tw, (v as f32 + def.size[1] as f32) / th]];
             let pos = p.pos.map(|v| v as f32);
-            scene::sprite(&mut out, Some(tex), pos, 100.0, right, up, uv, [alpha, 0x80, 0x80, 0x80]);
+            // Alpha-tested and writing depth, so cut-out billboards (banister spindles) in front
+            // of it hide it however they sort. The distance fade is lost (deviation).
+            let _ = alpha;
+            scene::sprite_blend(&mut out, Some(tex), scene::Blend::Opaque, pos, 100.0, right, up, uv, [0xFF, 0x80, 0x80, 0x80]);
             // Shadow: cell (96, 96)â€“(127, 127) of texture 31, 80 half-size, black at 0x88.
             if let (Some(floor), Some((stex, sw, sh))) = (p.floor, texture(0x1F)) {
                 let uv = [[96.0 / sw, 96.0 / sh], [127.0 / sw, 127.0 / sh]];

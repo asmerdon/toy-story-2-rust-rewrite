@@ -49,6 +49,8 @@ pub struct Boxes {
     /// 1-based index of the box being pushed (0x53C648), its offset from Buzz and the push
     /// direction (0x53C81C/0x53C820/0x53C624).
     pushing: usize,
+    /// Box spots (list 58 group 0) to put out, for the caller.
+    pub put_out: Vec<usize>,
     offset: [i32; 2],
     push_angle: i32,
     /// Ticks before Buzz says "hnn" again (0x53C670).
@@ -67,7 +69,7 @@ fn box_list(level: usize) -> Option<u32> {
 impl Boxes {
     pub fn new(level: usize, lists: &[PointList], exe: Option<&Exe>, world: &World, specials: &mut Specials) -> Boxes {
         let paths = lists.iter().filter(|l| l.kind >= 0 && l.kind < 0x3F).map(|l| (l.kind, l.points.clone())).collect();
-        let mut b = Boxes { boxes: Vec::new(), paths, pushing: 0, offset: [0; 2], push_angle: 0, voice_timer: 0 };
+        let mut b = Boxes { boxes: Vec::new(), paths, pushing: 0, offset: [0; 2], push_angle: 0, voice_timer: 0, put_out: Vec::new() };
         let (Some(exe), Some(mut va)) = (exe, box_list(level)) else { return b };
         while let Ok(t) = exe.at(va, 6) {
             let w = |k: usize| i16::from_le_bytes([t[2 * k], t[2 * k + 1]]);
@@ -207,6 +209,8 @@ impl Boxes {
         if b.landed < count - 1 {
             if ((self.push_angle - b.angle) + 8) & 0xFFF < 0x10 {
                 moving = true;
+                // Pushed: its hint sparkle (list 58, group 0) goes for good (0x49FAB0).
+                self.put_out.push(k);
                 b.progress += 0xC;
                 if b.slide > 0 && b.slide < b.progress {
                     // Over the edge: it goes on by itself.
