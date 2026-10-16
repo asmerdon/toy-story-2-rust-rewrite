@@ -124,6 +124,11 @@ fn main() {
             tri_count(*l0, *i0), a.pos, a.rot, a.scale, tri_count(*l1, *i1), b.pos, b.rot, b.scale
         );
     }
+    // Pairs within the detailed set (both layer 0): these can fight in one depth pass.
+    for (((l0, i0), (l1, i1)), c) in ip.iter().filter(|(((a, _), (b, _)), _)| *a == 0 && *b == 0).take(20) {
+        let (a, b) = (&n.layers[*l0].instances[*i0], &n.layers[*l1].instances[*i1]);
+        println!("near-set pair {c:4}  L0#{i0} zone {:#x} {:?}  L0#{i1} zone {:#x} {:?}", a.flags, a.pos, b.flags, b.pos);
+    }
     let mut s: Vec<_> = spots.into_iter().collect();
     s.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
     for ((x, z), c) in s.iter().take(10) {

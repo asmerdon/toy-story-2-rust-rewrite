@@ -67,6 +67,8 @@ fn vs_main(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2)
     // so the level is not mirrored.
     let p = vec3<f32>(pos.x, -pos.y, -pos.z) * u.params.z;
     o.pos = u.view_proj * vec4<f32>(p, 1.0);
+    // range.z: a nudge towards the camera (reversed depth: larger is nearer).
+    o.pos.z = o.pos.z * (1.0 + u.range.z);
     o.uv = uv;
     o.color = color;
     // Clip w of a perspective projection is the view depth.
@@ -265,13 +267,14 @@ struct Gfx {
     /// Pipelines for Opaque, Alpha, Additive and Darken, in that order.
     pipelines: [wgpu::RenderPipeline; 4],
     /// Uniforms for the far level pass, the near level pass, everything else, and the HUD.
-    uniform_bufs: [wgpu::Buffer; 4],
-    uniform_bgs: [wgpu::BindGroup; 4],
+    uniform_bufs: [wgpu::Buffer; 5],
+    uniform_bgs: [wgpu::BindGroup; 5],
     /// One bind group per level texture, plus a white one at the end for untextured geometry.
     texture_bgs: Vec<wgpu::BindGroup>,
     depth: wgpu::TextureView,
     /// Detailed level geometry (first mesh set) and the low-detail set drawn far away.
     level: Vec<GpuBatch>,
+    level_decal: Vec<GpuBatch>,
     level_far: Vec<GpuBatch>,
     /// Billboards of the near and far sets, this frame.
     billboards: [Vec<GpuBatch>; 2],
@@ -311,6 +314,7 @@ struct Viewer {
     creature_anim: Vec<usize>,
     /// Level geometry (detailed and far sets), handed to the GPU on first resume.
     level: Vec<Batch>,
+    level_decal: Vec<Batch>,
     level_far: Vec<Batch>,
     /// Camera-facing quads of the near and far sets, rebuilt each frame.
     billboards: [Vec<scene::Billboard>; 2],
@@ -405,6 +409,8 @@ fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgp
 /// (second) mesh sets.
 struct LevelSets {
     near: Vec<Batch>,
+    /// Detailed-set instances drawn a hair nearer (`DECAL`).
+    decal: Vec<Batch>,
     far: Vec<Batch>,
     near_bb: Vec<scene::Billboard>,
     far_bb: Vec<scene::Billboard>,
@@ -414,10 +420,20 @@ struct LevelSets {
 fn level_sets(ngn: &ngn::Ngn, hide_zone0: bool, specials: &ts2::specials::Specials) -> LevelSets {
     let dynamic: std::collections::HashSet<(usize, usize)> = specials.instances().collect();
     let keep = |l: usize, n: usize, i: &ngn::Instance| (!hide_zone0 || i.flags & 0xFFFF != 0) && !dynamic.contains(&(l, n));
-    let (near, near_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && keep(l, n, i));
+    let (near, near_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL == 0 && keep(l, n, i));
+    let (decal, mut decal_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL != 0 && keep(l, n, i));
     let (far, far_bb) = scene::level_parts_where(ngn, |l, n, i| l > 0 && keep(l, n, i));
-    LevelSets { near, far, near_bb, far_bb }
+    let mut near_bb = near_bb;
+    near_bb.append(&mut decal_bb);
+    LevelSets { near, decal, far, near_bb, far_bb }
 }
+
+/// Instance flag 0x80000. Such instances often sit exactly on another one (level 1's attic
+/// boxes and their open flaps), sharing faces with it; they're drawn a hair nearer the camera
+/// so the shared faces don't fight. (What the original does with the flag isn't known.)
+const DECAL: u32 = 0x80000;
+/// How much nearer: clip depth × (1 + this), with reversed depth.
+const DECAL_BIAS: f32 = 2e-4;
 
 fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatch> {
     batches
@@ -540,7 +556,7 @@ impl Gfx {
             cache: None,
         }));
 
-        let uniform_bufs: [wgpu::Buffer; 4] = std::array::from_fn(|_| {
+        let uniform_bufs: [wgpu::Buffer; 5] = std::array::from_fn(|_| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("uniforms"),
                 size: std::mem::size_of::<Uniforms>() as u64,
@@ -548,7 +564,7 @@ impl Gfx {
                 mapped_at_creation: false,
             })
         });
-        let uniform_bgs: [wgpu::BindGroup; 4] = std::array::from_fn(|i| {
+        let uniform_bgs: [wgpu::BindGroup; 5] = std::array::from_fn(|i| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout: &uniform_layout,
@@ -606,7 +622,7 @@ impl Gfx {
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
         let level_far = upload(&device, level_far, texture_bgs.len() - 1);
-        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1] }
+        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1] }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -635,6 +651,8 @@ impl Gfx {
             let u = Uniforms { range: [r[0], r[1], 0.0, 0.0], ..*uniforms };
             self.queue.write_buffer(buf, 0, bytemuck::bytes_of(&u));
         }
+        let decal = Uniforms { range: [0.0, NEAR_TO * s, DECAL_BIAS, 0.0], ..*uniforms };
+        self.queue.write_buffer(&self.uniform_bufs[4], 0, bytemuck::bytes_of(&decal));
         // The HUD: screen (x, y) in 0..1, y down, straight to clip space (the shader negates y).
         let hud = Uniforms {
             view_proj: Mat4::from_cols(glam::Vec4::new(2.0, 0.0, 0.0, 0.0), glam::Vec4::new(0.0, 2.0, 0.0, 0.0), glam::Vec4::ZERO, glam::Vec4::new(-1.0, 1.0, 0.5, 1.0)).to_cols_array_2d(),
@@ -649,7 +667,7 @@ impl Gfx {
         let passes: [(&[(usize, &[GpuBatch])], bool); 4] = [
             (&[(3, &self.sky)], true),
             (&[(0, &self.level_far), (0, &self.billboards[1])], false),
-            (&[(1, &self.level), (1, &self.billboards[0]), (2, &self.creature)], false),
+            (&[(1, &self.level), (4, &self.level_decal), (1, &self.billboards[0]), (2, &self.creature)], false),
             (&[(3, &self.hud)], false),
         ];
         for (draws, first) in passes {
@@ -1685,6 +1703,7 @@ impl Viewer {
                 let sets = level_sets(&self.ngn, hide, &self.specials);
                 if let Some(g) = self.gfx.as_mut() {
                     g.level = upload(&g.device, &sets.near, g.texture_bgs.len() - 1);
+                    g.level_decal = upload(&g.device, &sets.decal, g.texture_bgs.len() - 1);
                     g.level_far = upload(&g.device, &sets.far, g.texture_bgs.len() - 1);
                 }
                 self.billboards = [sets.near_bb, sets.far_bb];
@@ -1753,6 +1772,9 @@ impl ApplicationHandler for Viewer {
             self.cam.pos = Vec3::new(c[0], -c[1], -c[2]) * WORLD_SCALE + Vec3::new(0.0, 2.0, 0.0);
         }
         self.gfx = Some(Gfx::new(window, &self.ngn, &level, &level_far, self.backdrop_image.as_ref()));
+        if let Some(g) = self.gfx.as_mut() {
+            g.level_decal = upload(&g.device, &self.level_decal, g.texture_bgs.len() - 1);
+        }
         self.last = Instant::now();
     }
 
@@ -1896,7 +1918,7 @@ fn main() {
     let specials = ts2::specials::Specials::new(&ngn);
     // Zone-0 instances are camera-attached models (first-person helmet view), not level
     // geometry: hidden by default and never collided with.
-    let LevelSets { near: level, far: level_far, near_bb, far_bb } = level_sets(&ngn, true, &specials);
+    let LevelSets { near: level, decal: level_decal, far: level_far, near_bb, far_bb } = level_sets(&ngn, true, &specials);
     // Collision: the original's TERRAIN.ALL / TERR1.ALL next to the level, else the render mesh.
     let terrain = ts2::formats::terrain::path_for(std::path::Path::new(path))
         .and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)))
@@ -2008,6 +2030,7 @@ fn main() {
         backdrop,
         backdrop_image,
         level,
+        level_decal,
         level_far,
         billboards: [near_bb, far_bb],
         world,
