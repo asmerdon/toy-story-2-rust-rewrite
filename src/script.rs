@@ -569,6 +569,13 @@ pub fn for_level(level: usize, world: &World, specials: &mut Specials, exe: Opti
         }
         3 => Box::new(crate::level3::Level3::new(specials)),
         6 => Box::new(crate::level6::Level6::new()),
+        8 => {
+            let mut l = crate::level8::Level8::new();
+            if let Some(e) = exe {
+                l.set_story(e, lists);
+            }
+            Box::new(l)
+        }
         7 => {
             let mut l = crate::level7::Level7::new(world, specials, exe);
             if let Some(e) = exe {

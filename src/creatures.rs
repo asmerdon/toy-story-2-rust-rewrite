@@ -646,6 +646,7 @@ impl Creatures {
             0x16 => self.drill(slot, c),
             0x20 => self.clown(c),
             0x1A => self.dino(c),
+            0x2F => self.car_boss(slot, c, s, world),
             0x17 => {
                 self.friend(c, 0x8E, 0x8E, 0x5A, true);
                 // Upside down in its record's pose (0x4259B0).
@@ -1205,6 +1206,100 @@ impl Creatures {
         if self.boss.state >= 3 && self.clock.is_multiple_of(7) {
             let f = c.angles[1];
             let at = [c.pos[0] - 3 * (sin(f - 0x400) >> 2), c.pos[1] - 0x400, c.pos[2] - 3 * (sin(f) >> 2)];
+            let spin = self.rand() as i32 - 0x80;
+            self.spawns.push((at, 0x11, 10, spin));
+        }
+    }
+
+    /// 0x422660, level 8's boss (0x2F); `boss.state` is the script's 0x52FAE0, `boss.spin`
+    /// its laser cycle (0x52FB9C) and `boss.hud` whether Buzz is in its room (room 5). Out of
+    /// it, it heads home. A hit flashes it for 60 ticks (record state 4, then 7). Fighting:
+    /// every 240 ticks it fires its laser for 40 (every 8 ticks, sound 2: a red beam ahead;
+    /// Buzz down in front within 0x200 × 256 is hurt), every 400 a missile (0x72, sound 0x4C);
+    /// its bar is (health − 9) × 54 / 20 and it taunts (0xD4). Below 10 health it's beaten
+    /// (script + 0x44, fireballs, jingle −2). Its engine (0x7F) runs while it moves; skidding
+    /// it kicks up dust (0x2A, sound 0x36); smoke in animation 2.
+    fn car_boss(&mut self, slot: usize, c: &mut Creature, s: &Step, world: &World) {
+        if s.forward > 0 {
+            self.owned_sounds.push((0x7F, c.pos, slot));
+        }
+        if !self.boss.hud {
+            c.target = c.home;
+        }
+        let b = &mut self.boss;
+        b.blink = !b.blink;
+        if c.health != b.last {
+            b.flash = 0x3C;
+            b.last = c.health;
+            c.rec.state = 4;
+        }
+        c.lit = false;
+        if b.state >= 2 {
+            b.flash -= 1;
+            if b.flash < 0 {
+                b.flash = 0;
+                if b.state == 2 {
+                    c.rec.state = 7;
+                }
+            } else {
+                c.lit = b.blink;
+            }
+        }
+        let f = c.angles[1];
+        if self.boss.state == 2 {
+            self.boss.spin -= 1;
+            if self.boss.spin < 0 {
+                self.boss.spin = 0xF0;
+            } else if self.boss.spin < 0x28 && self.clock.is_multiple_of(8) {
+                self.sounds.push((2, c.pos));
+                let from = [c.pos[0] + (sin(f) >> 2), c.pos[1] - 0x1000, c.pos[2] + (cos(f) >> 2)];
+                let delta = [sin(f) * 8, 0, cos(f) * 8];
+                let o = glam::Vec3::from(from.map(|v| v as f32 / 32.0));
+                let d = glam::Vec3::from(delta.map(|v| v as f32 / 32.0));
+                let t = world.sweep(o, d, 1.0).map_or(1.0, |h| h.t);
+                let to = [0, 1, 2].map(|k| from[k] + (delta[k] as f32 * t) as i32);
+                self.ribbons.push((from, to, [0x80, 0, 0], 0x20));
+                let buzz = self.buzz;
+                let dd = [0, 1, 2].map(|k| (buzz[k] - c.pos[k]) >> 8);
+                if c.pos[1] - 0x1000 < buzz[1] && dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2] < 0x200 * 0x200 {
+                    let a = atan(buzz[0] - c.pos[0], buzz[2] - c.pos[2]);
+                    if ((a - f) + 0x20) & 0xFFF < 0x40 {
+                        self.hurts.push((a, 2));
+                    }
+                }
+            }
+            self.boss.bar = ((c.health - 9) * 0x36 / 0x14).max(0);
+            c.timer -= 1;
+            if c.timer < 0 {
+                self.sounds.push((0x4C, c.pos));
+                c.timer = 400;
+                let at = [c.pos[0] + (sin(f - 0x800) >> 2), c.pos[1] - 0x2000, c.pos[2] + (sin(f - 0x400) >> 2)];
+                self.particles.push(ParticleRequest { pos: at, vel: [0, -2, 0], gravity: 0, angle: f * 4, spin: 0x80, typ: 0x72 });
+            }
+        }
+        if c.health < 10 && self.boss.state == 2 {
+            c.set_script(0x44 / 2);
+            c.rec.state = 4;
+            c.flags &= !0x100;
+            let e = self.shape(c.id).ellipsoid(0);
+            let at = [0, 1, 2].map(|k| c.pos[k] + e.offset[k] as i32);
+            for _ in 0..5 {
+                let spin = self.rand() as i32 - 0x80;
+                self.spawns.push((at, 0x23, 0xE, spin));
+            }
+            self.boss.jingles.push((-2, c.pos));
+            self.boss.state = 3;
+        }
+        if self.clock.is_multiple_of(4) && ((c.anim == 1 && c.time < 0x80000) || (c.anim == 0 && s.side.abs() > 0x200)) {
+            for (a, b2) in [(0x680, -0x580), (-0x680, -0x280)] {
+                let at = [c.pos[0] + (sin(f + a) >> 1), c.pos[1] - 0x800, c.pos[2] + (sin(f + b2) >> 1)];
+                let spin = self.rand() as i32 - 0x80;
+                self.spawns.push((at, 0x2A, 10, spin));
+            }
+            self.sounds.push((0x36, c.pos));
+        }
+        if c.anim == 2 && self.clock.is_multiple_of(7) {
+            let at = [c.pos[0] - sin(f) / 3, c.pos[1] - 0x2000, c.pos[2] - cos(f) / 3];
             let spin = self.rand() as i32 - 0x80;
             self.spawns.push((at, 0x11, 10, spin));
         }

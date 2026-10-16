@@ -7,6 +7,7 @@ use ts2::formats::{exe, leveldat, ngn, packets, terrain};
 use ts2::game::{Player, World};
 use ts2::script::Script;
 
+#[allow(dead_code)]
 struct L2 {
     world: World,
     specials: ts2::specials::Specials,
