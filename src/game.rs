@@ -985,6 +985,13 @@ impl Player {
         self.stomp = 0;
     }
 
+    /// As `launch`, with the velocity's sines shifted down by `shift` (level 7's spring: 3).
+    pub fn launch_at(&mut self, vy: i32, heading: i32, shift: u32) {
+        self.launch(vy, heading);
+        self.vel[0] >>= shift;
+        self.vel[2] >>= shift;
+    }
+
     /// Gives the player the game's random table (`data\rand.dat`); without it Buzz never fidgets.
     pub fn set_random_table(&mut self, bytes: Vec<u8>) {
         self.random = bytes;

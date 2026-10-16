@@ -645,6 +645,7 @@ impl Creatures {
             0x14 => self.zurg_pod(slot, c, s, world),
             0x16 => self.drill(slot, c),
             0x20 => self.clown(c),
+            0x1A => self.dino(c),
             0x17 => {
                 self.friend(c, 0x8E, 0x8E, 0x5A, true);
                 // Upside down in its record's pose (0x4259B0).
@@ -1150,6 +1151,62 @@ impl Creatures {
             } else {
                 c.lit = b.blink;
             }
+        }
+    }
+
+    /// 0x420AF0, the dino (0x1A), level 7's boss; `boss.state` is the script's 0x52FA14. A
+    /// hit flashes it for 60 ticks (record state 4, then 7 while fighting; sound 0x79); its
+    /// script's timer makes it breathe fire (particles 0x55 from its mouth, sound 0x78, the
+    /// camera shakes at 30); below 10 health it dies (script + 0x74, harmless, five fireballs,
+    /// jingle −2, the fight over); then it smokes.
+    fn dino(&mut self, c: &mut Creature) {
+        let b = &mut self.boss;
+        b.blink = !b.blink;
+        if c.health != b.last {
+            b.flash = 0x3C;
+            b.last = c.health;
+            c.rec.state = 4;
+            self.sounds.push((0x79, c.pos));
+        }
+        if c.timer != 0 {
+            let at = Self::local(c, [0x14, -0x258, 0]);
+            let u = (c.angles[1] - 0x80 + self.rand() as i32) & 0xFFF;
+            self.sounds.push((0x78, c.pos));
+            let r = self.rand() as i32;
+            self.rand();
+            self.particles.push(ParticleRequest { pos: at, vel: [sin(u) >> 3, r + 0x200, cos(u) >> 3], gravity: 0, angle: 0, spin: r - 0x80, typ: 0x55 });
+            c.timer = (c.timer - 1).max(0);
+        }
+        c.lit = false;
+        if self.boss.state >= 2 {
+            self.boss.flash -= 1;
+            if self.boss.flash < 0 {
+                self.boss.flash = 0;
+                if self.boss.state == 2 {
+                    c.rec.state = 7;
+                }
+            } else {
+                c.lit = self.boss.blink;
+            }
+        }
+        if c.health < 10 && self.boss.state == 2 {
+            c.set_script(0x74 / 2);
+            c.rec.state = 4;
+            c.flags &= !0x100;
+            let e = self.shape(c.id).ellipsoid(0);
+            let at = [0, 1, 2].map(|k| c.pos[k] + e.offset[k] as i32);
+            for _ in 0..5 {
+                let spin = self.rand() as i32 - 0x80;
+                self.spawns.push((at, 0x23, 0xE, spin));
+            }
+            self.boss.jingles.push((-2, c.pos));
+            self.boss.state = 3;
+        }
+        if self.boss.state >= 3 && self.clock.is_multiple_of(7) {
+            let f = c.angles[1];
+            let at = [c.pos[0] - 3 * (sin(f - 0x400) >> 2), c.pos[1] - 0x400, c.pos[2] - 3 * (sin(f) >> 2)];
+            let spin = self.rand() as i32 - 0x80;
+            self.spawns.push((at, 0x11, 10, spin));
         }
     }
 
