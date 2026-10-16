@@ -616,8 +616,15 @@ impl Creatures {
                 continue;
             }
             c.active = true;
+            let heard = (self.sounds.len(), self.owned_sounds.len());
             let s = self.think(&mut c, world, buzz);
             self.routine(i, &mut c, &s, world);
+            // Kept in play beyond the original's reach, it makes no sound there (the original
+            // only ran, and so only heard, creatures within it).
+            if !c.in_reach {
+                self.sounds.truncate(heard.0);
+                self.owned_sounds.truncate(heard.1);
+            }
             // 0x4086F0: > 0 a delayed death, < 0 dying (then removed).
             if c.hurt > 0 {
                 c.hurt -= 1;
