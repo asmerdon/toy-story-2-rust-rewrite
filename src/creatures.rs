@@ -108,6 +108,8 @@ pub struct Creature {
     dying_script: bool,
     /// +0x34: drawn lit up (the Tin Man's flash when hurt).
     pub lit: bool,
+    /// Within the original's activity reach of the camera this tick (0x4086F0).
+    pub in_reach: bool,
     /// +0x2C–0x30: the model's scale (0x1000 = as built).
     pub scale: i32,
     /// A script's override of its hit ellipsoid (offset y, radius), as level 3 grows and
@@ -384,6 +386,7 @@ impl Creatures {
                 active: false,
                 dying_script: false,
                 lit: false,
+                in_reach: false,
                 scale: 0x1000,
                 hit_size: None,
             };
@@ -602,6 +605,9 @@ impl Creatures {
             let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             // In reach of the camera: 400 plus an eighth of its bounding radius (0x4086F0).
             let near = (self.shape(c.id).sphere[3] as i32 >> 3) + 400;
+            // In the original's reach of the camera (0x4086F0), whatever keeps it in play here:
+            // characters only call out when this near.
+            c.in_reach = d2 < near * near;
             // Health 0xCA (racing) keeps it in play wherever the camera is, and in level 6
             // (the boss arena) everything is always in play.
             let d2 = if self.always_active || c.health == 0xCA { 10 } else { d2 };

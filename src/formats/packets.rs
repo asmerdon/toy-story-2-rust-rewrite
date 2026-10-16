@@ -226,3 +226,19 @@ pub fn backdrop(packet: &Packet) -> Option<Backdrop> {
     let ground = colour(pixels + (width * height) as usize - 1)?;
     Some(Backdrop { width, height, horizon, sky, ground })
 }
+
+/// The type-36 picture itself as RGBA (width, height, pixels top row first).
+pub fn backdrop_rgba(packet: &Packet) -> Option<(u32, u32, Vec<u8>)> {
+    let b = backdrop(packet)?;
+    let d = &packet.data;
+    let pal = i16::from_le_bytes([d[12], d[13]]) as usize / 2 * 2;
+    let px = 0x10 + pal;
+    let n = (b.width * b.height) as usize;
+    let mut rgba = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        let c = *d.get(px + i)? as usize;
+        rgba.extend_from_slice(d.get(0x10 + 3 * c..0x13 + 3 * c)?);
+        rgba.push(255);
+    }
+    Some((b.width as u32, b.height as u32, rgba))
+}

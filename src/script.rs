@@ -354,7 +354,7 @@ pub fn touched(cr: &mut Creatures, slot: usize) -> bool {
 
 impl Common {
     fn in_view(cr: &Creatures, slot: usize) -> Option<[i32; 3]> {
-        cr.slots.get(slot).filter(|c| c.id != 0 && c.active).map(|c| c.pos)
+        cr.slots.get(slot).filter(|c| c.id != 0 && c.active && c.in_reach).map(|c| c.pos)
     }
 
     /// 0x4A1CE0(slot, list, Buzz's facing, Hamm's, token): until his token is given, Hamm

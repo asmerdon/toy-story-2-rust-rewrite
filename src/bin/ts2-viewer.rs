@@ -127,7 +127,7 @@ struct AudioOut {
     buffers: std::collections::HashMap<u16, Vec<(rodio::Sink, std::time::Instant)>>,
     /// Owned sounds (0x4A3980): one looping buffer per (slot, owner), stopped 16 ticks after
     /// its owner last played it (0x4A3BE0).
-    owned: std::collections::HashMap<(u16, u32), (rodio::Sink, i32)>,
+    owned: std::collections::HashMap<(u16, u32), (rodio::Sink, i32, Gains)>,
 }
 
 /// Ticks an owned sound keeps looping after the last time its owner played it.
@@ -150,17 +150,20 @@ impl AudioOut {
         let (gl, gr) = self.bank.gains(l, r);
         if self.bank.is_owned(id) {
             let key = (slot, owner);
-            if let Some((s, t)) = self.owned.get_mut(&key)
+            // Played again: kept going, its balance following the owner (0x4A3980).
+            if let Some((s, t, g)) = self.owned.get_mut(&key)
                 && !s.empty()
             {
                 *t = OWNED_TICKS;
+                g.set(gl, gr);
                 return;
             }
             let Some(sample) = self.bank.slot(slot) else { return };
-            let stereo: Vec<i16> = sample.data.iter().flat_map(|&s| [(s as f32 * gl) as i16, (s as f32 * gr) as i16]).collect();
             let Ok(sink) = rodio::Sink::try_new(&self.handle) else { return };
-            sink.append(rodio::buffer::SamplesBuffer::new(2, sample.rate, stereo).repeat_infinite());
-            self.owned.insert(key, (sink, OWNED_TICKS));
+            let gains = Gains::default();
+            gains.set(gl, gr);
+            sink.append(Looped { data: std::sync::Arc::new(sample.data.clone()), rate: sample.rate, at: 0, gains: gains.clone() });
+            self.owned.insert(key, (sink, OWNED_TICKS, gains));
             return;
         }
         if voice {
@@ -188,7 +191,7 @@ impl AudioOut {
 
     /// 0x4A3BE0 for `ticks` ticks: owned sounds not played again stop.
     fn tick_owned(&mut self, ticks: i32) {
-        self.owned.retain(|_, (s, t)| {
+        self.owned.retain(|_, (s, t, _)| {
             *t -= ticks;
             if *t <= 0 {
                 s.stop();
@@ -284,6 +287,9 @@ struct Viewer {
     ngn: ngn::Ngn,
     /// The level's background colours and horizon (level.raw packet 36).
     backdrop: Option<packets::Backdrop>,
+    /// Its picture (width, height, RGBA), drawn behind everything (PS1 style; the PC version
+    /// only used its two colours).
+    backdrop_image: Option<(u32, u32, Vec<u8>)>,
     anims: Vec<Vec<anim::Animation>>,
     gfx: Option<Gfx>,
     cam: Camera,
@@ -428,7 +434,7 @@ fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatc
 }
 
 impl Gfx {
-    fn new(window: Arc<Window>, ngn: &ngn::Ngn, level: &[Batch], level_far: &[Batch]) -> Gfx {
+    fn new(window: Arc<Window>, ngn: &ngn::Ngn, level: &[Batch], level_far: &[Batch], backdrop: Option<&(u32, u32, Vec<u8>)>) -> Gfx {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(window.clone()).expect("create surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -560,6 +566,7 @@ impl Gfx {
             .textures
             .iter()
             .map(|t| bmp::decode(&t.bmp, Some(bmp::PC_KEY)).unwrap_or_else(|| white.clone()))
+            .chain(backdrop.map(|(w, h, rgba)| bmp::Image { width: *w, height: *h, rgba: rgba.clone() }))
             .chain(std::iter::once(white.clone()))
             .collect();
         let texture_bgs = images
@@ -1089,7 +1096,7 @@ impl Viewer {
                         let listener = Vec3::from(world_to_game(self.cam.pos));
                         let f = self.cam.forward();
                         let g = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
-                        let (rg, fg) = (g(f.cross(Vec3::Y)).normalize_or_zero(), g(Vec3::new(f.x, 0.0, f.z)).normalize_or_zero());
+                        let (rg, fg) = (g(f.cross(Vec3::Y)).normalize_or_zero(), g(f).normalize_or_zero());
                         for id in voices {
                             a.play(id, true, OWNER_BUZZ, Vec3::ZERO, rg, fg);
                         }
@@ -1140,7 +1147,7 @@ impl Viewer {
             // Pickups and jingles, one 60 Hz tick at a time (0x440F70 / 0x4A0F80 / 0x49E9D0).
             let to_game = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
             let f = self.cam.forward();
-            let (right_g, fwd_g) = (to_game(f.cross(Vec3::Y)).normalize_or_zero(), to_game(Vec3::new(f.x, 0.0, f.z)).normalize_or_zero());
+            let (right_g, fwd_g) = (to_game(f.cross(Vec3::Y)).normalize_or_zero(), to_game(f).normalize_or_zero());
             let listener = Vec3::from(cam_game);
             let mut creature_sounds: Vec<(u16, [i32; 3])> = self.creatures.as_mut().map(|c| c.sounds.drain(..).collect()).unwrap_or_default();
             let owned: Vec<(u16, [i32; 3], usize)> = self.creatures.as_mut().map(|c| c.owned_sounds.drain(..).collect()).unwrap_or_default();
@@ -1711,7 +1718,7 @@ impl ApplicationHandler for Viewer {
             let c = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
             self.cam.pos = Vec3::new(c[0], -c[1], -c[2]) * WORLD_SCALE + Vec3::new(0.0, 2.0, 0.0);
         }
-        self.gfx = Some(Gfx::new(window, &self.ngn, &level, &level_far));
+        self.gfx = Some(Gfx::new(window, &self.ngn, &level, &level_far, self.backdrop_image.as_ref()));
         self.last = Instant::now();
     }
 
@@ -1753,7 +1760,7 @@ impl ApplicationHandler for Viewer {
                     // buffer then keeps its precision far out, so near-coplanar faces (a box lid
                     // left ajar, a lamp's layered panels) don't fight.
                     let proj = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), aspect, 0.05);
-                    g.sky = self.backdrop.map_or_else(Vec::new, |b| upload(&g.device, &[sky_batch(&b, proj * self.cam.view(), self.cam.forward())], g.texture_bgs.len() - 1));
+                    g.sky = self.backdrop.map_or_else(Vec::new, |b| upload(&g.device, &sky_batch(&b, proj * self.cam.view(), self.cam.forward(), self.backdrop_image.as_ref().map(|_| self.ngn.textures.len()), aspect), g.texture_bgs.len() - 1));
                     let u = Uniforms {
                         view_proj: (proj * self.cam.view()).to_cols_array_2d(),
                         params: [self.color_mode as f32, if self.alpha_test { 1.0 } else { 0.0 }, WORLD_SCALE, 0.0],
@@ -1811,10 +1818,12 @@ fn main() {
     let raw_path = std::path::Path::new(path).with_extension("raw");
     let mut all_spawns = Vec::new();
     let mut backdrop = None;
+    let mut backdrop_image = None;
     let spawns: Vec<(usize, [f32; 3])> = match fs::read(&raw_path).map_err(|e| e.to_string()).and_then(|b| packets::parse(&b).map_err(|e| e.to_string())) {
         Ok(pk) => {
             let all: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
             backdrop = pk.iter().find_map(packets::backdrop);
+            backdrop_image = pk.iter().find_map(packets::backdrop_rgba);
             all_spawns = all.clone();
             let found: Vec<_> = all
                 .iter()
@@ -1963,6 +1972,7 @@ fn main() {
     }
     let mut viewer = Viewer {
         backdrop,
+        backdrop_image,
         level,
         level_far,
         billboards: [near_bb, far_bb],
@@ -2041,30 +2051,116 @@ fn main() {
     event_loop.run_app(&mut viewer).expect("run");
 }
 
-/// 0x48FB70's background: the sky colour above, the ground colour below a line `height` +
-/// `horizon` PS1 lines (of 240) under where the view's horizon falls. Looking nearly straight
-/// up or down, all sky or all ground. Screen space (0..1, y down).
-fn sky_batch(b: &packets::Backdrop, view_proj: Mat4, forward: Vec3) -> Batch {
+/// The background, behind everything (screen space, 0..1, y down). The PC version (0x48FB70)
+/// clears to the sky colour above, and the ground colour below, a line `horizon` + `height`
+/// PS1 lines (of 240) under the view's horizon. Deviation: as on the PS1, the level's picture
+/// (packet 36: houses, trees, sky) fills the `height` lines above that line, repeating round
+/// the view and turning with it like far scenery.
+fn sky_batch(b: &packets::Backdrop, view_proj: Mat4, forward: Vec3, picture: Option<usize>, aspect: f32) -> Vec<Batch> {
     let flat = Vec3::new(forward.x, 0.0, forward.z);
-    let line = if flat.length() < 1e-3 {
-        if forward.y > 0.0 { 2.0 } else { -1.0 }
-    } else {
-        let c = view_proj * flat.normalize().extend(0.0);
-        if c.w <= 1e-6 {
-            if forward.y > 0.0 { 2.0 } else { -1.0 }
-        } else {
-            (1.0 - c.y / c.w) / 2.0 - 0.5 + (b.horizon + b.height) as f32 / 240.0
-        }
+    // Screen x (0..1) and y of a horizontal direction at yaw `a` (radians), if in front.
+    let project = |a: f32| {
+        let d = Vec3::new(a.sin(), 0.0, a.cos());
+        let c = view_proj * d.extend(0.0);
+        (c.w > 1e-6).then(|| ((c.x / c.w + 1.0) / 2.0, (1.0 - c.y / c.w) / 2.0))
     };
-    let line = line.clamp(0.0, 1.0);
-    let colour = |c: [u8; 3]| [0x80, c[0] / 2, c[1] / 2, c[2] / 2];
-    let mut vertices = Vec::new();
-    for (y0, y1, c) in [(0.0, line, b.sky), (line, 1.0, b.ground)] {
-        if y1 <= y0 {
-            continue;
-        }
-        let v = |x: f32, y: f32| scene::GpuVertex { pos: [x, y, 0.0], uv: [0.0, 0.0], color: colour(c) };
-        vertices.extend([v(0.0, y0), v(1.0, y0), v(1.0, y1), v(0.0, y0), v(1.0, y1), v(0.0, y1)]);
+    let yaw = flat.x.atan2(flat.z);
+    let ahead = if flat.length() < 1e-3 { None } else { project(yaw) };
+    let Some((x0, horizon)) = ahead else {
+        // Straight up or down: all sky or all ground.
+        let c = if forward.y > 0.0 { b.sky } else { b.ground };
+        return vec![Batch { texture: None, blend: scene::Blend::Opaque, vertices: quad(0.0, 0.0, 1.0, 1.0, [0.0; 4], c) }];
+    };
+    let top = horizon - 0.5 + b.horizon as f32 / 240.0;
+    let line = top + b.height as f32 / 240.0;
+    let mut out = Vec::new();
+    let mut flat_v = Vec::new();
+    let l = line.clamp(0.0, 1.0);
+    if l > 0.0 {
+        flat_v.extend(quad(0.0, 0.0, 1.0, l, [0.0; 4], b.sky));
     }
-    Batch { texture: None, blend: scene::Blend::Opaque, vertices }
+    if l < 1.0 {
+        flat_v.extend(quad(0.0, l, 1.0, 1.0, [0.0; 4], b.ground));
+    }
+    out.push(Batch { texture: None, blend: scene::Blend::Opaque, vertices: flat_v });
+    if let Some(tex) = picture
+        && let Some((x1, _)) = project(yaw + 0.01)
+    {
+        // Screen widths per radian of turn, and a tile width that repeats a whole number of
+        // times round a full turn.
+        let k = (x1 - x0) / 0.01;
+        let turn = std::f32::consts::TAU * k.abs();
+        let want = (line - top) * b.width as f32 / b.height as f32 / aspect;
+        let n = (turn / want).round().max(1.0);
+        let w = turn / n;
+        // Where the tile containing yaw 0 starts, moving with the view.
+        let origin = x0 - yaw * k;
+        let mut s = origin - ((origin / w).ceil()) * w;
+        let mut v = Vec::new();
+        while s < 1.0 {
+            let (u0, u1) = if k > 0.0 { (0.0, 1.0) } else { (1.0, 0.0) };
+            v.extend(quad(s, top, s + w, line, [u0, 0.0, u1, 1.0], [0xFF; 3]));
+            s += w;
+        }
+        out.push(Batch { texture: Some(tex), blend: scene::Blend::Opaque, vertices: v });
+    }
+    out
+}
+
+/// A screen-space rectangle (two triangles) with uv rectangle `uv` (u0, v0, u1, v1) and a
+/// flat colour.
+fn quad(x0: f32, y0: f32, x1: f32, y1: f32, uv: [f32; 4], c: [u8; 3]) -> Vec<scene::GpuVertex> {
+    let colour = [0x80, c[0] / 2, c[1] / 2, c[2] / 2];
+    let v = |x: f32, y: f32, u: f32, w: f32| scene::GpuVertex { pos: [x, y, 0.0], uv: [u, w], color: colour };
+    vec![v(x0, y0, uv[0], uv[1]), v(x1, y0, uv[2], uv[1]), v(x1, y1, uv[2], uv[3]), v(x0, y0, uv[0], uv[1]), v(x1, y1, uv[2], uv[3]), v(x0, y1, uv[0], uv[3])]
+}
+
+/// Left and right gains shared with a playing loop, so its balance can follow its owner.
+#[derive(Clone, Default)]
+struct Gains(std::sync::Arc<[std::sync::atomic::AtomicU32; 2]>);
+
+impl Gains {
+    fn set(&self, l: f32, r: f32) {
+        self.0[0].store(l.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.0[1].store(r.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+    fn get(&self, k: usize) -> f32 {
+        f32::from_bits(self.0[k].load(std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+/// A mono sample looped forever as stereo at the current `gains`.
+struct Looped {
+    data: std::sync::Arc<Vec<i16>>,
+    rate: u32,
+    /// Output sample index (two per frame).
+    at: usize,
+    gains: Gains,
+}
+
+impl Iterator for Looped {
+    type Item = i16;
+    fn next(&mut self) -> Option<i16> {
+        if self.data.is_empty() {
+            return None;
+        }
+        let s = self.data[(self.at / 2) % self.data.len()] as f32 * self.gains.get(self.at & 1);
+        self.at = (self.at + 1) % (self.data.len() * 2);
+        Some(s as i16)
+    }
+}
+
+impl Source for Looped {
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> u16 {
+        2
+    }
+    fn sample_rate(&self) -> u32 {
+        self.rate
+    }
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
