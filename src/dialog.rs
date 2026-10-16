@@ -106,11 +106,14 @@ pub struct Dialog {
     /// 0x50A4EC: 0x1000 open; rising from 0 opening, rising from −0x1000 closing.
     open: i32,
     clock: u32,
+    /// A jump press waiting for the next typing step (the original reads the pad once a frame,
+    /// and its frames are two ticks, so it never misses one).
+    fast: bool,
 }
 
 impl Dialog {
     pub fn new(text: &str) -> Dialog {
-        Dialog { text: layout(text), at: 0, highlight: false, cells: [(b' ', false); CELLS], row: 0, col: 0, shown: -0x48, state: 0, countdown: 2, open: 0, clock: 0 }
+        Dialog { text: layout(text), at: 0, highlight: false, cells: [(b' ', false); CELLS], row: 0, col: 0, shown: -0x48, state: 0, countdown: 2, open: 0, clock: 0, fast: false }
     }
 
     pub fn open(&self) -> bool {
@@ -127,9 +130,10 @@ impl Dialog {
                 ev.push(Event::Sound(0x3E));
             }
             if self.state == 0 {
+                self.fast |= jump_pressed;
                 self.countdown -= 1;
                 if self.countdown < 1 {
-                    let mut fast = jump_pressed;
+                    let mut fast = std::mem::take(&mut self.fast);
                     self.countdown = 2;
                     loop {
                         if self.col == 0 {

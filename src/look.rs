@@ -32,6 +32,9 @@ pub struct Pad {
     pub r1_pressed: bool,
     /// L1 pressed this tick (leaves first person).
     pub l1_pressed: bool,
+    /// Mouse motion this tick (12-bit angle units: turn, tilt down). Not in the original: a
+    /// PC addition, applied straight to the view on top of the d-pad.
+    pub mouse: [i32; 2],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -215,6 +218,11 @@ impl FirstPerson {
         } else {
             self.lock = false;
             self.fresh = false;
+        }
+        if pad.mouse != [0; 2] {
+            self.lock = false;
+            turn += pad.mouse[0] * 16;
+            tilt += pad.mouse[1] * 16;
         }
         p.facing = (p.facing + turn / 16) & 0xFFF;
         let mut v = (self.pitch + 0x400 & 0xFFF) + tilt / 16;

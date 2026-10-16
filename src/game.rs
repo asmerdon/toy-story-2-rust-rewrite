@@ -824,6 +824,11 @@ pub struct Player {
     pub pushing: bool,
     /// 0x53C810: his vertical speed going into this tick's move (how hard he lands).
     pub fall_speed: i32,
+    /// Flag 4 set by the game around him (the token sequence, 0x4A0F80): he stands still.
+    pub frozen: bool,
+    /// 0x53C824: the laser power-up (1200 from the green pickup): held fire shoots a green
+    /// full-strength beam every 6 ticks, each using 10.
+    pub power: i32,
     /// Water (0x53C5E8 mode, 0x53C628 surface height, object units), set by level scripts:
     /// mode 1 counts from 0x2000 below the surface, modes 2 / 3 from the surface. In it
     /// (flag 0x100) the airborne step works at a quarter scale (k = 4) and falls are capped
@@ -918,6 +923,8 @@ impl Player {
             last_pos: pos,
             pushing: false,
             fall_speed: 0,
+            power: 0,
+            frozen: false,
             launched: false,
             water: (0, 0),
             in_water: false,
@@ -1122,8 +1129,26 @@ impl Player {
         self.tick_pad_with(world, stick, dpad, jump_held, jump_pressed, stomp_pressed, &mut |_, _| {});
     }
 
+    /// Flag 4 of +0x40: dizzy after a super spin, getting up after a long fall, or thrown by
+    /// a spring. While it's set the frame loop (0x49DFE0) masks the pad to 0x309: no stick,
+    /// d-pad, jump, spin, fire or L1.
+    pub fn input_locked(&self) -> bool {
+        (self.charge < 0 && self.charge >= SUPER_SPIN_END) || self.fall_timer < 0 || self.launched || self.frozen
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn tick_pad_with(&mut self, world: &World, stick: [f32; 2], dpad: u8, jump_held: bool, jump_pressed: bool, stomp_pressed: bool, pre_move: &mut PreMove<'_>) {
+        // The pad mask (0x49DFE0) while flag 4 is set; in first person (0x4038E0 takes the
+        // buttons) Buzz can't jump or spin either.
+        let locked = self.input_locked();
+        let (stick, dpad) = if locked { ([0.0; 2], 0) } else { (stick, dpad) };
+        let still = locked || self.first_person != 0;
+        let (jump_held, jump_pressed, stomp_pressed) = if still { (false, false, false) } else { (jump_held, jump_pressed, stomp_pressed) };
+        if locked {
+            self.fire_latch = false;
+            self.fire_held = false;
+            self.look_latch = false;
+        }
         self.stick_pushed = stick != [0.0, 0.0];
         self.fall_speed = self.vel[1];
         if self.launched && self.on_floor {
@@ -1795,7 +1820,18 @@ impl Player {
                 if self.laser_charge == 0x40 {
                     fire = 2;
                 }
-                self.laser_charge = 0;
+                // Powered up, the next press fires at once.
+                self.laser_charge = if self.power != 0 { 6 } else { 0 };
+            } else if self.power != 0 {
+                // Rapid fire: a shot every 6 ticks while held.
+                self.laser_charge += 1;
+                if self.laser_charge > 5 {
+                    fire = 1;
+                    self.laser_charge = 0;
+                }
+                if self.laser > 0x33 {
+                    self.laser -= 0x28;
+                }
             } else {
                 self.laser_charge = (self.laser_charge + 1).min(0x40);
                 if pressed && bits & 0xF_BE7E == 0 {
@@ -1817,6 +1853,11 @@ impl Player {
             if fire == 0 {
                 return;
             }
+        }
+        // A normal shot with the power-up is the green one (kind 3), using up 10 of it.
+        if fire == 1 && self.power != 0 {
+            self.power = (self.power - 10).max(0);
+            fire = 3;
         }
         self.laser = 0xC;
         self.sound(if fire == 1 { 2 } else { 6 });
@@ -2315,7 +2356,14 @@ mod tests {
         }
         assert!(!p.super_spinning() && p.charge < 0);
         assert_eq!(p.state, state::DIZZY);
-        for _ in 0..119 {
+        // Dizzy, the stick and the buttons do nothing (the pad mask while flag 4 is set).
+        assert!(p.input_locked());
+        let at = p.pos;
+        for _ in 0..30 {
+            p.update(&w, Input { move_xz: [0.0, 1.0], jump: true, jump_held: true, ..Default::default() }, 1.0 / 60.0);
+        }
+        assert!((p.pos - at).length() < 1.0 && p.on_floor, "moved while dizzy");
+        for _ in 0..89 {
             p.update(&w, input(false, false), 1.0 / 60.0);
         }
         assert_eq!(p.charge, 0);
@@ -2615,5 +2663,33 @@ mod tests {
         assert_eq!(double_jump_speed_high(0x6A00), 0x22A);
         assert_eq!(double_jump_speed_high(0x7000), 0x74C);
         assert_eq!(double_jump_speed_high(576 * 32), 1063);
+    }
+}
+
+#[cfg(test)]
+mod power_tests {
+    use super::*;
+    use crate::scene::{Batch, GpuVertex};
+
+    /// With the green power-up, holding fire shoots green (kind 3) beams every 6 ticks, each
+    /// using 10 of the 1200.
+    #[test]
+    fn power_up_gives_rapid_green_shots() {
+        let v = |x: f32, z: f32| GpuVertex { pos: [x, 0.0, z], uv: [0.0; 2], color: [0; 4] };
+        let floor = [v(-2000., -2000.), v(2000., -2000.), v(2000., 2000.), v(-2000., -2000.), v(2000., 2000.), v(-2000., 2000.)];
+        let w = World::from_batches(&[Batch { vertices: floor.to_vec(), ..Default::default() }]);
+        let mut p = Player::new(Vec3::ZERO);
+        for _ in 0..10 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        p.power = 1200;
+        let mut shots = Vec::new();
+        for t in 0..120 {
+            p.update(&w, Input { fire: t == 0, fire_held: true, ..Default::default() }, 1.0 / 60.0);
+            shots.extend(p.shots.drain(..));
+        }
+        assert!(shots.len() >= 15, "{} shots", shots.len());
+        assert!(shots.iter().all(|s| s.kind == 3));
+        assert_eq!(p.power, 1200 - 10 * shots.len() as i32);
     }
 }

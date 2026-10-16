@@ -26,7 +26,6 @@ fn boss_fight_ends_the_level() {
     let mut cr = Creatures::new(&spawns, Some(&e), random);
     cr.load_shapes(&game.join("data"));
     let s0 = cr.slots[0].pos;
-    let s0 = cr.slots[0].pos;
     let mut p = Player::new(Vec3::from([0x30000, s0[1], s0[2]].map(|v| v as f32 / 32.0)));
     p.on_floor = true;
     let mut hits = 0;

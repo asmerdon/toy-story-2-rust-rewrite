@@ -134,6 +134,9 @@ pub enum Event {
     Collected { index: usize, kind: Kind, pos: [i32; 3] },
     /// The 50th coin (sound 0x4F, non-positional).
     FiftyCoins,
+    /// A token appearing bursts (0x4A0F80: sound 0x33 and 16 sparkles 0x2B from the table
+    /// 0x5039C4), level units.
+    TokenBurst([i32; 3]),
 }
 
 /// Draw distance (`0x54BEF0`, set to 0x680 by 0x43E6E0); sprites fade over the last part.
@@ -198,6 +201,10 @@ pub struct Pickups {
     /// This level's ability gates (0x503A44…): ability bit, cage special, pickup id, cage
     /// mover, the pickup's scale once open.
     gates: Vec<(u8, i32, u8, i32, f32)>,
+    /// Tokens appearing (0x830CD8): item and ticks left from 0x84.
+    appearing: Vec<(usize, i32)>,
+    /// The sparkles' velocities (0x5039C4: 16 × x, y, z), object units a tick × 4.
+    pub burst: Vec<[i32; 3]>,
 }
 
 impl Pickups {
@@ -268,6 +275,8 @@ impl Pickups {
             respawn: None,
             shield_item: None,
             gates: Vec::new(),
+            appearing: Vec::new(),
+            burst: Vec::new(),
         };
         if let Some(exe) = exe {
             p.level_setup(level, exe);
@@ -297,6 +306,9 @@ impl Pickups {
             for &k in setup.revealed {
                 self.reveal_token(k);
             }
+        }
+        if let Ok(b) = exe.at(0x5039C4, 96) {
+            self.burst = b.chunks_exact(6).map(|c| [0, 2, 4].map(|k| i16::from_le_bytes([c[k], c[k + 1]]) as i32)).collect();
         }
         // 0x4A2080 with no moves unlocked yet.
         for (bit, table) in PROGRESS_TABLES.into_iter().enumerate() {
@@ -354,6 +366,52 @@ impl Pickups {
             cages.push((cage, mover));
         }
         cages
+    }
+
+    /// 0x4A0DB0 (full form): token `k` appears with its animation (hidden for 35 ticks, then
+    /// popping in and wobbling down to size over 0x84 ticks, bursting at 100). Returns where
+    /// it is (level units), for the look-at scene, if it wasn't already out.
+    pub fn reveal_token_animated(&mut self, k: usize) -> Option<[i32; 3]> {
+        let &id = self.token_ids.get(k)?;
+        if self.tokens & (1 << k) != 0 {
+            return None;
+        }
+        let i = self.items.iter().position(|p| p.id == id)?;
+        if self.appearing.iter().any(|a| a.0 == i) || (!self.items[i].removed && self.items[i].scale > 0.0) {
+            return None;
+        }
+        let p = &mut self.items[i];
+        p.removed = false;
+        p.scale = 0.0;
+        self.appearing.push((i, 0x84));
+        Some(p.pos)
+    }
+
+    /// One tick of the appearing tokens' animation (0x4A0F80).
+    fn tick_appearing(&mut self, events: &mut Vec<Event>) {
+        let sin = |a: i32| ((a & 0xFFF) as f64 / 4096.0 * std::f64::consts::TAU).sin().mul_add(16384.0, 0.0).round() as i32;
+        let mut done = Vec::new();
+        for (n, (i, t)) in self.appearing.iter_mut().enumerate() {
+            let prev = *t;
+            *t = (*t - 1).max(0);
+            if prev > 100 && *t <= 100 {
+                events.push(Event::TokenBurst(self.items[*i].pos));
+            }
+            let s = if prev < 0x58 {
+                (((sin(((prev - 4) & 0xF) * 0x100) >> 3) + 0x200) >> (5 - prev / 16).clamp(0, 5)) + 0x1000
+            } else if prev < 0x60 {
+                sin((0x5F - prev) * 0x80) >> 2
+            } else {
+                0
+            };
+            self.items[*i].scale = if *t == 0 { 1.0 } else { s as f32 / 4096.0 };
+            if *t == 0 {
+                done.push(n);
+            }
+        }
+        for n in done.into_iter().rev() {
+            self.appearing.remove(n);
+        }
     }
 
     /// 0x4A0DB0 (instant form): token `k` of the level's five becomes visible and collectable.
@@ -432,6 +490,7 @@ impl Pickups {
         // Collection: around a point 230 units above Buzz's feet, in steps of 8 units.
         let b = buzz.map(|v| v.floor() as i32);
         let mut events = Vec::new();
+        self.tick_appearing(&mut events);
         for i in 0..self.items.len() {
             let p = &self.items[i];
             if p.removed || !p.visible || p.radius & 0x7F == 0 {

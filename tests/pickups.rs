@@ -86,3 +86,31 @@ fn hud_sprites_resolve() {
         Some((i, [256.0, 256.0]))
     }).iter().map(|b| b.vertices.len()).sum::<usize>(), 8 * 6);
 }
+
+/// A token revealed in full (0x4A0DB0): hidden at first, a burst at tick 32, popping in
+/// and settling at full size after 0x84 ticks.
+#[test]
+fn revealed_token_animates_in() {
+    let Some(game) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else { return };
+    let e = ts2::formats::exe::Exe::parse(std::fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let dat = std::fs::read(game.join("data/level01/level.dat")).unwrap();
+    let mut pk = ts2::pickups::Pickups::new(1, &dat, Some(&e)).unwrap();
+    assert_eq!(pk.burst.len(), 16);
+    let at = pk.reveal_token_animated(0).expect("token 0 appears");
+    let i = pk.items.iter().position(|p| p.id == pk.token_ids[0]).unwrap();
+    let far = [at[0] as f32 + 100000.0, at[1] as f32, at[2] as f32];
+    let (mut burst_at, mut first_seen) = (None, None);
+    for t in 0..0x84 {
+        let evs = pk.tick(far, [at[0] as f32, at[1] as f32, at[2] as f32]);
+        if evs.iter().any(|e| matches!(e, ts2::pickups::Event::TokenBurst(_))) {
+            burst_at = Some(t);
+        }
+        if first_seen.is_none() && pk.items[i].scale > 0.0 {
+            first_seen = Some(t);
+        }
+    }
+    eprintln!("burst at {burst_at:?}, visible from {first_seen:?}, scale now {}", pk.items[i].scale);
+    assert_eq!(burst_at, Some(31));
+    assert!(first_seen.is_some_and(|t| t > 30));
+    assert_eq!(pk.items[i].scale, 1.0);
+}

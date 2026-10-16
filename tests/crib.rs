@@ -49,7 +49,7 @@ fn crib_bars_are_shot_down_in_first_person() {
         let r1_pressed = tick % 200 == 5 || (tick % 200 > 5 && tick % 10 == 0 && look.target != Some(bar));
         let input = Input { look: tick == 0, fire: tick % 200 == 120, ..Default::default() };
         p.update(&world, input, 1.0 / 60.0);
-        let pad = ts2::look::Pad { dpad: 0, r1: tick % 200 >= 5, r1_pressed, l1_pressed: false };
+        let pad = ts2::look::Pad { dpad: 0, r1: tick % 200 >= 5, r1_pressed, l1_pressed: false, mouse: [0; 2] };
         if p.first_person != 0 {
             look.tick(&mut p, &mut cr, &mut parts, &mut specials, &world, pad);
         }

@@ -40,6 +40,8 @@ pub struct Status {
     pub spin_charge: i32,
     pub laser: i32,
     pub laser_charge: i32,
+    /// 0x53C824: the laser power-up left.
+    pub power: i32,
     /// 0x52B7D8: Bo Peep's sheep found (−1 when done).
     pub sheep: i32,
     /// 0x52F2F8 and 0x52AD64: the race's state and Buzz's laps.
@@ -113,7 +115,7 @@ impl Hud {
         if s.spin_charge != 0 {
             self.timer[SPIN] = 0x78;
         }
-        if s.laser != 0 {
+        if s.laser != 0 || s.power != 0 {
             self.timer[LASER] = 0x3C;
         }
         if s.sheep > 0 {
@@ -234,8 +236,15 @@ impl Hud {
             put(NARROW, 0x110 - shift, 0xE0 - off, 0xF, 0, grey, 0x800, 0x800);
             let c = s.laser_charge;
             let blink = c == 0x40 && self.counter(3) < 4;
-            let color = if blink { [0, (c * 2 - 0x80) as u8, 0] } else { [0x80, (c * 2) as u8, 0] };
-            put(WIDE, 0x1B6 - (shift << 9) / 0x140, 0xDA - off, 6, 0, color, c * 0x1644 / 2, 0x3000);
+            let (color, width) = if s.power != 0 {
+                // The power-up's green bar, its length what's left.
+                ([0, ((s.power >> 4) + 0x40).min(0xFF) as u8, 0], s.power * 0x98)
+            } else if blink {
+                ([0, (c * 2 - 0x80) as u8, 0], c * 0x1644 / 2)
+            } else {
+                ([0x80, (c * 2) as u8, 0], c * 0x1644 / 2)
+            };
+            put(WIDE, 0x1B6 - (shift << 9) / 0x140, 0xDA - off, 6, 0, color, width, 0x3000);
             put(NARROW, 0x110 - shift, 0xD8 - off, 0xD, 0, grey, 0x1000, 0x1000);
         }
         // 7: a boss's health bar at the top (sprite 6 stretched, red to yellow) in its frame

@@ -356,6 +356,20 @@ struct Viewer {
     look: ts2::look::FirstPerson,
     look_pressed: bool,
     r1_pressed: bool,
+    /// Presses meant for the speech box, kept until a tick reads them; and a jump held over
+    /// from it, ignored until Space is let go.
+    talk_jump: bool,
+    talk_square: bool,
+    jump_blocked: bool,
+    /// Mouse motion waiting for first person's next tick (turn, tilt).
+    fp_mouse: [f32; 2],
+    /// The token sequence (0x830CC4: 1 stop, 2 wait for him to stand, 9 menu, 3 / 4 victory),
+    /// the menu choice (0x830C94), a timer (0x52F2DC), menu presses and a frame count.
+    token_seq: u8,
+    token_choice: u8,
+    token_timer: i32,
+    menu_nav: i32,
+    hud_frames: u32,
 }
 
 fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -708,17 +722,27 @@ impl Viewer {
             });
             // In a conversation Buzz stands still; jump and Square go to the speech box.
             let talking = self.script.as_ref().is_some_and(|l| l.cutscene.is_some() || l.look.is_some());
-            let (talk_jump, talk_square) = if talking { (std::mem::take(&mut self.jump_pressed), std::mem::take(&mut self.fire_pressed)) } else { (false, false) };
+            if talking {
+                self.talk_jump |= std::mem::take(&mut self.jump_pressed);
+                self.talk_square |= std::mem::take(&mut self.fire_pressed);
+                std::mem::take(&mut self.stomp_pressed);
+                // Space used on the speech box mustn't make Buzz jump when it closes.
+                self.jump_blocked = true;
+            }
+            if !self.keys.contains(&KeyCode::Space) {
+                self.jump_blocked = false;
+            }
             let move_xz = if talking { [0.0; 2] } else { move_xz };
+            let free = !talking && !self.jump_blocked;
             let input = game::Input {
                 move_xz,
-                jump: std::mem::take(&mut self.jump_pressed),
-                jump_held: self.keys.contains(&KeyCode::Space),
-                stomp: std::mem::take(&mut self.stomp_pressed),
-                stomp_held: self.keys.contains(&KeyCode::KeyE),
-                fire: std::mem::take(&mut self.fire_pressed),
-                fire_held: self.fire_held,
-                look: player.first_person == 0 && self.look_pressed,
+                jump: free && std::mem::take(&mut self.jump_pressed),
+                jump_held: free && self.keys.contains(&KeyCode::Space),
+                stomp: !talking && std::mem::take(&mut self.stomp_pressed),
+                stomp_held: !talking && self.keys.contains(&KeyCode::KeyE),
+                fire: !talking && std::mem::take(&mut self.fire_pressed),
+                fire_held: !talking && self.fire_held,
+                look: !talking && player.first_person == 0 && self.look_pressed,
                 dpad: [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
                     .iter()
                     .filter(|(k, _)| self.keys.contains(k))
@@ -735,9 +759,14 @@ impl Viewer {
                     }
                 }
             });
-            // First person (0x4038E0) runs in place of the follow camera.
-            let leaving_l1 = std::mem::take(&mut self.look_pressed) && player.first_person == 4;
-            let r1_pressed = std::mem::take(&mut self.r1_pressed);
+            // First person (0x4038E0) runs in place of the follow camera. Presses wait for a
+            // frame that runs a tick, so a fast frame can't swallow them.
+            let leaving_l1 = self.look_pressed && player.first_person == 4 && ticks > 0;
+            let r1_pressed = self.r1_pressed && ticks > 0;
+            if ticks > 0 {
+                self.look_pressed = false;
+                self.r1_pressed = false;
+            }
             let was_fp = player.first_person != 0;
             if let Some(cr) = self.creatures.as_mut() {
                 for t in 0..ticks {
@@ -746,6 +775,7 @@ impl Viewer {
                         r1: self.keys.contains(&KeyCode::KeyX),
                         r1_pressed: r1_pressed && t == 0,
                         l1_pressed: leaving_l1 && t == 0,
+                        mouse: if t == 0 { std::mem::take(&mut self.fp_mouse).map(|v| v.round() as i32) } else { [0; 2] },
                     };
                     if player.first_person != 0 {
                         self.look.tick(player, cr, &mut self.particles, &mut self.specials, &self.world, pad);
@@ -901,9 +931,6 @@ impl Viewer {
                             pk.show_item(i, shown);
                         }
                     }
-                    if std::mem::take(&mut l.done) {
-                        println!("level complete! (the original shows the token screen here)");
-                    }
                 }
                 self.particles.touch(player.pos_obj(), player.spin > 0x14 || player.super_spinning());
                 self.lasers.tick();
@@ -922,6 +949,7 @@ impl Viewer {
                     spin_charge: player.charge,
                     laser: player.laser,
                     laser_charge: player.laser_charge,
+                    power: player.power,
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                     race: self.script.as_ref().map_or(0, |l| l.race),
                     laps: self.script.as_ref().map_or(0, |l| l.laps),
@@ -989,7 +1017,8 @@ impl Viewer {
                             }
                         }
                         if let Some(cs) = l.cutscene.as_mut() {
-                            let evs = cs.tick(talk_jump && t == 0, talk_square && t == 0);
+                            let (j, q) = if t == 0 { (std::mem::take(&mut self.talk_jump), std::mem::take(&mut self.talk_square)) } else { (false, false) };
+                            let evs = cs.tick(j, q);
                             for ev in evs {
                                 match ev {
                                     ts2::cutscene::Event::Sound(id) => {
@@ -1001,8 +1030,8 @@ impl Viewer {
                                         l.cutscene = None;
                                         if let Some(k) = token {
                                             l.given[k] = true;
-                                            if let Some(pk) = self.pickups.as_mut() {
-                                                pk.reveal_token(k);
+                                            if let Some(at) = self.pickups.as_mut().and_then(|pk| pk.reveal_token_animated(k)) {
+                                                l.look_at(at.map(|v| v * 32), player.pos_obj(), 0xB4, 0x10);
                                             }
                                         }
                                         // The follow camera picks up behind him again.
@@ -1025,11 +1054,10 @@ impl Viewer {
                         }
                         self.abilities_shown = l.abilities;
                     }
-                    for k in l.reveals.drain(..) {
-                        if let Some(pk) = self.pickups.as_mut() {
-                            pk.reveal_token(k);
+                    for k in l.reveals.drain(..).collect::<Vec<_>>() {
+                        if let Some(at) = self.pickups.as_mut().and_then(|pk| pk.reveal_token_animated(k)) {
+                            l.look_at(at.map(|v| v * 32), player.pos_obj(), 0xB4, 0x10);
                         }
-                        println!("a pizza planet token has appeared");
                     }
                     let (voices, slots): (Vec<u16>, Vec<(u16, i32, [i32; 3])>) = (l.voices.drain(..).collect(), l.slots.drain(..).collect());
                     if let Some(a) = self.audio.as_mut() {
@@ -1130,6 +1158,7 @@ impl Viewer {
                     a.play(id, false, OWNER_CREATURES, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);
                 }
             }
+            let mut bursts: Vec<[i32; 3]> = Vec::new();
             for _ in 0..ticks {
                 if let Some(pk) = self.pickups.as_mut() {
                     // Health, lives and the shield live on Buzz; pickups add to them.
@@ -1144,6 +1173,10 @@ impl Viewer {
                     player.shield = pk.shield;
                     for ev in evs {
                         match ev {
+                            ts2::pickups::Event::TokenBurst(at) => {
+                                let at = at.map(|v| v * 32);
+                                bursts.push(at);
+                            }
                             ts2::pickups::Event::Collected { index, kind, pos } => {
                                 // Info pickups stay; touching one plays its scene (0x402610), and
                                 // while it runs (or without one) touching does nothing.
@@ -1163,6 +1196,10 @@ impl Viewer {
                                     // comparison), so only its first note plays here.
                                     self.jingles.push(Jingle { steps: a.bank.jingle(-1).iter().take(1).copied().collect(), next: 0, timer: 0, pos });
                                 }
+                                // The green power-up (0x4A0F80 case 10): 0x53C824 = 1200.
+                                if kind == ts2::pickups::Kind::Timer {
+                                    player.power = 1200;
+                                }
                                 if kind == ts2::pickups::Kind::Other
                                     && let Some(l) = self.script.as_mut()
                                     && l.item > 0
@@ -1171,7 +1208,10 @@ impl Viewer {
                                     println!("you found Mr Potato Head's missing part: take it back to him");
                                 }
                                 if kind == ts2::pickups::Kind::Token {
-                                    println!("you have collected a token! (the original offers \"keep on playing / exit level\" here)");
+                                    // 0x4A0F80 case 2: the token sequence (0x830CC4 = 1).
+                                    if self.token_seq == 0 {
+                                        self.token_seq = 1;
+                                    }
                                 }
                             }
                             ts2::pickups::Event::FiftyCoins => {
@@ -1195,6 +1235,117 @@ impl Viewer {
                     }
                 }
                 self.jingles.retain(|j| j.next < j.steps.len());
+            }
+            // A token appearing: sound 0x33 and sixteen sparkles (0x2B) from the burst table.
+            for at in bursts {
+                if let Some(a) = self.audio.as_mut() {
+                    a.play(0x33, false, OWNER_OBJECT, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);
+                }
+                let table = self.pickups.as_ref().map(|p| p.burst.clone()).unwrap_or_default();
+                for v in table {
+                    let spin = self.particles.rand() as i32 - 0x80;
+                    self.particles.create(at, v.map(|c| c >> 2), 0x20, 0, spin, 0x2B);
+                }
+            }
+            // The token sequence (0x4A0F80 / 0x49FD40, 0x830CC4).
+            let boss_level = self.pickups.as_ref().is_some_and(|p| p.token_ids.is_empty());
+            if self.script.as_mut().is_some_and(|l| std::mem::take(&mut l.done)) && self.token_seq == 0 {
+                self.token_seq = 1;
+            }
+            for _ in 0..ticks {
+                match self.token_seq {
+                    1 => {
+                        // Buzz stops where he is.
+                        player.frozen = true;
+                        player.vel[0] = 0;
+                        player.vel[2] = 0;
+                        self.token_seq = 2;
+                    }
+                    2 => {
+                        if player.on_floor && player.vel[0] == 0 && player.vel[2] == 0 {
+                            // 0x402290(1000): the camera close in front of him.
+                            let b = player.pos_obj();
+                            let c = world_to_game(self.cam.pos).map(|v| (v * 32.0) as i32);
+                            let a = ts2::boxes::angle12((b[0] - c[0]) as f32, (b[2] - c[2]) as f32);
+                            let sin = |x: i32| ((x & 0xFFF) as f32 / 4096.0 * std::f32::consts::TAU).sin() * 16384.0;
+                            let at = [b[0], b[1] - 0x3000, b[2]];
+                            let from = [at[0] + sin(a - 0x800) as i32, at[1], at[2] + sin(a - 0x400) as i32];
+                            if let Some(l) = self.script.as_mut() {
+                                l.look = Some(ts2::script::Look { from, at, ticks: 1000 });
+                            }
+                            self.token_choice = 0;
+                            if boss_level {
+                                self.token_seq = 3;
+                                self.token_timer = 1000;
+                                if let Some(a) = self.audio.as_mut() {
+                                    a.play_flat(0xA9);
+                                }
+                            } else {
+                                self.token_seq = 9;
+                            }
+                        }
+                    }
+                    9 => {
+                        // "keep on playing / exit level": up / down choose, jump picks.
+                        let nav = std::mem::take(&mut self.menu_nav);
+                        if nav != 0 {
+                            let choice = if nav > 0 { 1 } else { 0 };
+                            if choice != self.token_choice {
+                                self.token_choice = choice;
+                                if let Some(a) = self.audio.as_mut() {
+                                    a.play_flat(0x3F);
+                                }
+                            }
+                        }
+                        if std::mem::take(&mut self.jump_pressed) {
+                            if let Some(a) = self.audio.as_mut() {
+                                a.play_flat(0x3E);
+                            }
+                            if self.token_choice == 1 {
+                                self.token_seq = 3;
+                                self.token_timer = 1000;
+                                if let Some(a) = self.audio.as_mut() {
+                                    a.play_flat(0xA9);
+                                }
+                            } else {
+                                self.token_seq = 0;
+                                player.frozen = false;
+                                if let Some(l) = self.script.as_mut() {
+                                    l.look = None;
+                                }
+                                self.jump_blocked = true;
+                                self.orig_cam = Some(ts2::camera::Camera::new(player));
+                            }
+                        }
+                    }
+                    3 => {
+                        // The victory: he turns to the camera, then jumps for joy.
+                        self.token_timer -= 1;
+                        if self.token_timer < 0x37A {
+                            player.frozen = false;
+                            player.start_jump(-0xC00, game::JumpPhase::DoubleReleased);
+                            player.frozen = true;
+                            if let Some(a) = self.audio.as_mut() {
+                                a.play_flat(0x33);
+                            }
+                            self.token_seq = 4;
+                            self.token_timer = 0x44;
+                        }
+                    }
+                    4 => {
+                        self.token_timer -= 1;
+                        if self.token_timer < 0 {
+                            println!("level complete (the original leaves the level here; this viewer has no level select, so play carries on)");
+                            self.token_seq = 0;
+                            player.frozen = false;
+                            if let Some(l) = self.script.as_mut() {
+                                l.look = None;
+                            }
+                            self.orig_cam = Some(ts2::camera::Camera::new(player));
+                        }
+                    }
+                    _ => {}
+                }
             }
         } else {
             let mut v = Vec3::ZERO;
@@ -1341,6 +1492,7 @@ impl Viewer {
                     spin_charge: p.charge,
                     laser: p.laser,
                     laser_charge: p.laser_charge,
+                    power: p.power,
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                     race: self.script.as_ref().map_or(0, |l| l.race),
                     laps: self.script.as_ref().map_or(0, |l| l.laps),
@@ -1357,6 +1509,22 @@ impl Viewer {
                 let mut q = self.hud_state.quads(&status, &self.hud_sprites);
                 if let Some(c) = self.script.as_ref().and_then(|l| l.cutscene.as_ref()) {
                     q.extend(c.dialog.quads());
+                }
+                self.hud_frames = self.hud_frames.wrapping_add(1);
+                if self.token_seq == 9 {
+                    // 0x49FD40's token menu: the box, the title, the two choices (the chosen one
+                    // pulsing) and the hint.
+                    let pulse = {
+                        let u = (self.hud_frames / 2 % 64) as i32;
+                        ((if u > 0x1F { 0x3F - u } else { u }) * 2 + 0x40) as u8
+                    };
+                    ts2::dialog::boxed(&mut q, 0x4D, 0x5B, 0x166000, 0x2D000, [0, 0, 0x80]);
+                    let centred = |q: &mut Vec<ts2::hud::Quad>, y: i32, t: &str, c: [u8; 3]| ts2::dialog::text(q, (320 - 8 * t.len() as i32) / 2, y, t.as_bytes(), c);
+                    centred(&mut q, 0x5E, "you have collected a token!", [0x80, 0x80, 0]);
+                    let (keep, exit) = if self.token_choice == 0 { ([pulse; 3], [0x80; 3]) } else { ([0x80; 3], [pulse; 3]) };
+                    centred(&mut q, 0x6A, "keep on playing", keep);
+                    centred(&mut q, 0x72, "exit level", exit);
+                    centred(&mut q, 0x7C, "jump to select", [0x80; 3]);
                 }
                 ts2::hud::batches(&q, &self.hud_sprites, &texture)
             }
@@ -1432,6 +1600,9 @@ impl Viewer {
             KeyCode::KeyE if self.player.is_some() => self.stomp_pressed = true,
             KeyCode::KeyQ if self.player.is_some() => self.look_pressed = true,
             KeyCode::KeyX if self.player.is_some() => self.r1_pressed = true,
+            // Menu navigation (the token menu).
+            KeyCode::KeyW if self.player.is_some() => self.menu_nav = -1,
+            KeyCode::KeyS if self.player.is_some() => self.menu_nav = 1,
             KeyCode::Digit0 if self.player.is_some() => {
                 self.anim_preview = None;
                 println!("Buzz animations from the original move table");
@@ -1568,6 +1739,14 @@ impl ApplicationHandler for Viewer {
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
+        // First person: the mouse turns and tilts the view (4 units of 4096 a pixel).
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
+            && self.player.as_ref().is_some_and(|p| p.first_person == 4)
+        {
+            self.fp_mouse[0] += dx as f32 * 4.0;
+            self.fp_mouse[1] += dy as f32 * 4.0;
+            return;
+        }
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
             && self.looking
         {
@@ -1805,6 +1984,15 @@ fn main() {
         look: Default::default(),
         look_pressed: false,
         r1_pressed: false,
+        talk_jump: false,
+        talk_square: false,
+        jump_blocked: false,
+        fp_mouse: [0.0; 2],
+        token_seq: 0,
+        token_choice: 0,
+        token_timer: 0,
+        menu_nav: 0,
+        hud_frames: 0,
     };
     // The first-person helmet and arms only show in first person.
     for id in ts2::look::MODEL {
