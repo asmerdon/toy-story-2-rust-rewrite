@@ -71,6 +71,25 @@ The user asked for first-person mode (with the crib in level 1) and to carry on 
 - **Reward sparkles** (`src/rewards.rs`, 0x49FB40, all levels): list 58's box spots (0x71) and challenge rewards (0x73) twinkle near the camera; level 1 puts out reward 1 at the start and on the trampoline, reward 0 on the spring.
 - **Info pickups** (the 9 tutorial signposts, 0x402610): touching one plays its scene with the tutorial text. **Cosmic shield cage**: the shield pickup (id 0x31) is caged and can't be taken until Mr Potato Head gets his ear; then the cage (special 0x19, mover 10) goes and it shows at double size. Tests in `tests/rooms.rs`.
 
+### Round 7 (2026-10-16): levels 5–9, and the user's round-6 feedback
+- User feedback (8 points) and what was done (none tested yet):
+  1. Lamp / attic-box flicker: z-fighting; the renderer now uses reversed-Z depth (`perspective_infinite_reverse_rh`, compare Greater, clear 0). Ask whether it's gone.
+  2. Tin Man chase: compared line by line with the original; zone round his home, constants and steering match. Ask the user what exactly looks wrong.
+  3. Moving while dizzy / getting up after a long fall: pad mask 0x309 while Buzz flag 4 is set (0x49DFE0): dizzy, fall recovery, launched, token sequence (`Player::input_locked`).
+  4. Q first person: presses latched until a tick runs; no jump / spin in first person; mouse look added (deviation).
+  5. Talk prompts: Space skips the typing (dialog `fast` latch); input masked while talking; jump blocked until Space is released.
+  6. Tokens: the appear animation (0x4A0DB0: 180-tick look-at, burst at 100, sound 0x33, 16 sparkles) and the token sequence 0x830CC4 (stop, wait for Buzz to stand still, then the menu; boss levels the victory state).
+  7. Laser power-up: 0x53C824 = 1200 from the Timer pickup; held fire shoots green (kind 3) every 6 ticks, −10 a shot; HUD bar.
+  8. Health: 14 batteries at the start, the 15th hit kills — the original's values.
+- Level 5 (`src/level5.rs`): glide movers, see-saws, trampoline, water, the clown, characters, the challenge.
+- Level 6 (`src/level6.rs`): the boss arena (everything always in play there, as in 0x4086F0).
+- Level 7 (`src/level7.rs`): paths, locks, spring, trampoline, egg challenge, characters, the dino boss (0x1A).
+- Level 8 (`src/level8.rs`): spinners, characters, flying race, water, the car boss (0x2F).
+- Level 9 (`src/level9.rs`, 0x424390 / 0x424490): the boss (slot 0, type 54) with six flails and the minion rounds (pairs from 0x4F2F58; the boss is held out of reach at 600 until each pair is beaten), the chase, its beam. The flails' call-up animation (0x405CF0 anim 1 seq 0x17) and the sparks while calling aren't drawn.
+- Tests `tests/level5.rs`–`level9.rs`.
+- Not ported: level 4 crane puzzle, level 8 claw machine, level 5 bubble machine, level 7 rockets and button race, level 2 drawbridge / tree / ball.
+- Next: level 10 (start 0x425B60, frame 0x425F60, ~1000 lines; creature routine GUNSP 0x425700 and others), then the unported pieces above.
+
 ### Round 6 (2026-10-15): the other levels
 - Levels 11–15 are not in the install (CD only): the playable set is 1–10.
 - `src/script.rs`: every level's script is a `Script` (deref to `Common`: conversations, info scenes, HUD bits, token reveals, sounds, particles, sparkles, the random stream) built by `script::for_level`. Shared routines: `hamm`, `hint_character`, `call`, `finder`, `potato`, `Tilt` (0x49EC00, any yaw/mode). Ability gates are generic in `Pickups::open_gates`.
