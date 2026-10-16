@@ -268,7 +268,7 @@ struct Gfx {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     /// Pipelines for Opaque, Alpha, Additive and Darken, in that order.
-    pipelines: [wgpu::RenderPipeline; 4],
+    pipelines: [wgpu::RenderPipeline; 5],
     /// Uniforms for the far level pass, the near level pass, everything else, and the HUD.
     uniform_bufs: [wgpu::Buffer; 5],
     uniform_bgs: [wgpu::BindGroup; 5],
@@ -431,13 +431,12 @@ fn level_sets(ngn: &ngn::Ngn, hide_zone0: bool, specials: &ts2::specials::Specia
     LevelSets { near, decal, far, near_bb, far_bb }
 }
 
-/// Instance flag 0x80000. Such instances often sit exactly on another one (level 1's attic
-/// boxes and their dark insides), sharing faces with it; they're drawn a hair further from the
-/// camera so the other copy wins where they meet (drawn nearer, the boxes' tops went black).
-/// (What the original does with the flag isn't known.)
+/// Instance flag 0x80000 (meaning unknown; 288 ordinary instances in level 1). They're kept in
+/// their own list with a depth nudge, tried against the attic boxes' flicker; that turned out
+/// to be black back faces fighting the lit fronts, now culled, so the nudge is 0.
 const DECAL: u32 = 0x80000;
-/// How much further: clip depth × (1 + this), with reversed depth (larger is nearer).
-const DECAL_BIAS: f32 = -2e-4;
+/// The nudge: clip depth × (1 + this), with reversed depth (larger is nearer).
+const DECAL_BIAS: f32 = 0.0;
 
 fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatch> {
     batches
@@ -517,13 +516,17 @@ impl Gfx {
         // the blended modes test depth without writing it.
         use wgpu::{BlendComponent as C, BlendFactor as F, BlendOperation as Op, BlendState};
         let comp = |src, dst| C { src_factor: src, dst_factor: dst, operation: Op::Add };
-        let modes: [(Option<BlendState>, bool); 4] = [
-            (Some(BlendState::REPLACE), true),
-            (Some(BlendState::ALPHA_BLENDING), false),
-            (Some(BlendState { color: comp(F::SrcAlpha, F::One), alpha: comp(F::Zero, F::One) }), false),
-            (Some(BlendState { color: comp(F::Zero, F::OneMinusSrc), alpha: comp(F::Zero, F::One) }), false),
+        // The fifth: opaque with back faces culled, for level geometry (its winding is consistent:
+        // 97% of triangles on walkable floor wind upwards, and the back faces are mostly baked
+        // black, so drawing both sides showed black walls and box insides).
+        let modes: [(Option<BlendState>, bool, bool); 5] = [
+            (Some(BlendState::REPLACE), true, false),
+            (Some(BlendState::ALPHA_BLENDING), false, false),
+            (Some(BlendState { color: comp(F::SrcAlpha, F::One), alpha: comp(F::Zero, F::One) }), false, false),
+            (Some(BlendState { color: comp(F::Zero, F::OneMinusSrc), alpha: comp(F::Zero, F::One) }), false, false),
+            (Some(BlendState::REPLACE), true, true),
         ];
-        let pipelines = modes.map(|(blend, depth_write)| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipelines = modes.map(|(blend, depth_write, cull)| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ts2"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -546,8 +549,7 @@ impl Gfx {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            // The original data has no consistent winding, so draw both sides.
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            primitive: wgpu::PrimitiveState { cull_mode: cull.then_some(wgpu::Face::Back), front_face: wgpu::FrontFace::Ccw, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: depth_write,
@@ -668,11 +670,12 @@ impl Gfx {
         let mut enc = self.device.create_command_encoder(&Default::default());
         let order = [scene::Blend::Opaque, scene::Blend::Alpha, scene::Blend::Additive, scene::Blend::Darken];
         // Two passes, depth cleared in between, as 0x4CDDD0 does.
-        let passes: [(&[(usize, &[GpuBatch])], bool); 4] = [
-            (&[(3, &self.sky)], true),
-            (&[(0, &self.level_far), (0, &self.billboards[1])], false),
-            (&[(1, &self.level), (4, &self.level_decal), (1, &self.billboards[0]), (2, &self.creature)], false),
-            (&[(3, &self.hud)], false),
+        // (uniforms, batches, level geometry: opaque drawn with back faces culled)
+        let passes: [(&[(usize, &[GpuBatch], bool)], bool); 4] = [
+            (&[(3, &self.sky, false)], true),
+            (&[(0, &self.level_far, true), (0, &self.billboards[1], false)], false),
+            (&[(1, &self.level, true), (4, &self.level_decal, true), (1, &self.billboards[0], false), (2, &self.creature, false)], false),
+            (&[(3, &self.hud, false)], false),
         ];
         for (draws, first) in passes {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -695,8 +698,8 @@ impl Gfx {
             });
             // Opaque first, then the blended modes (which test but don't write depth).
             for (i, mode) in order.iter().enumerate() {
-                pass.set_pipeline(&self.pipelines[i]);
-                for &(u, batches) in draws {
+                for &(u, batches, level) in draws {
+                    pass.set_pipeline(&self.pipelines[if i == 0 && level { 4 } else { i }]);
                     pass.set_bind_group(0, &self.uniform_bgs[u], &[]);
                     for b in batches.iter().filter(|b| b.blend == *mode) {
                         pass.set_bind_group(1, &self.texture_bgs[b.texture], &[]);
