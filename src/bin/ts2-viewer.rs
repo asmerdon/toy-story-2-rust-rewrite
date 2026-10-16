@@ -517,7 +517,7 @@ impl Gfx {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: depth_write,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_compare: wgpu::CompareFunction::Greater,
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -649,7 +649,7 @@ impl Gfx {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
@@ -1724,7 +1724,10 @@ impl ApplicationHandler for Viewer {
                 self.update(dt);
                 if let Some(g) = self.gfx.as_mut() {
                     let aspect = g.config.width as f32 / g.config.height as f32;
-                    let proj = Mat4::perspective_rh(60f32.to_radians(), aspect, 0.05, 2000.0);
+                    // Reversed depth (near 1, far 0) with an infinite far plane: a float depth
+                    // buffer then keeps its precision far out, so near-coplanar faces (a box lid
+                    // left ajar, a lamp's layered panels) don't fight.
+                    let proj = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), aspect, 0.05);
                     let u = Uniforms {
                         view_proj: (proj * self.cam.view()).to_cols_array_2d(),
                         params: [self.color_mode as f32, if self.alpha_test { 1.0 } else { 0.0 }, WORLD_SCALE, 0.0],
