@@ -9,7 +9,7 @@ use ts2::game::{Player, World};
 /// Buzz walking in starts the fight; hitting the boss between its recoveries beats it and
 /// the level ends. (Work in progress: the boss isn't beaten yet.)
 #[test]
-#[ignore = "level 6 in progress: the boss is not beaten yet"]
+
 fn boss_fight_ends_the_level() {
     let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
     let dir = game.join("data/level06");
@@ -24,6 +24,7 @@ fn boss_fight_ends_the_level() {
     let pk = packets::parse(&fs::read(dir.join("level.raw")).unwrap()).unwrap();
     let spawns: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
     let mut cr = Creatures::new(&spawns, Some(&e), random);
+    cr.always_active = true;
     cr.load_shapes(&game.join("data"));
     let s0 = cr.slots[0].pos;
     let mut p = Player::new(Vec3::from([0x30000, s0[1], s0[2]].map(|v| v as f32 / 32.0)));

@@ -1878,6 +1878,10 @@ fn main() {
     let level_no = exe::level_number(level_path);
     let boxes = level_no.map(|lv| ts2::boxes::Boxes::new(lv, &level_lists, game_exe.as_ref(), &world, &mut specials));
     let script = level_no.and_then(|lv| ts2::script::for_level(lv, &world, &mut specials, game_exe.as_ref(), &level_lists, random_table.clone()));
+    // Level 6 keeps every creature in play (0x4086F0).
+    if let Some(c) = creatures.as_mut() {
+        c.always_active = level_no == Some(6);
+    }
     if let Some(b) = &boxes {
         println!("{} pushable objects", b.boxes.len());
     }

@@ -225,6 +225,8 @@ pub struct Creatures {
     pub sheep: i32,
     /// An RC race is on (0x52F2F8 > 1).
     pub racing: bool,
+    /// Every creature is in play wherever the camera is (level 6, 0x4086F0).
+    pub always_active: bool,
     /// The Tin Man fight.
     pub boss: Boss,
     /// Hits routines dealt to other slots this tick (slot, angle, kind), applied after.
@@ -333,6 +335,7 @@ impl Creatures {
             spawns: Vec::new(),
             sheep: 0,
             racing: false,
+            always_active: false,
             boss: Boss::default(),
             pending_hits: Vec::new(),
             buzz: [0; 3],
@@ -597,9 +600,12 @@ impl Creatures {
             }
             let d = [0, 1, 2].map(|k| (camera[k] - c.pos[k]) >> 8);
             let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-            let near = 400;
-            // Health 0xCA (racing) keeps it in play wherever the camera is (0x4086F0).
-            if (c.flags & 1 == 0 && d2 >= near * near && c.health != 0xCA) || c.flags & 0x2000 != 0 {
+            // In reach of the camera: 400 plus an eighth of its bounding radius (0x4086F0).
+            let near = (self.shape(c.id).sphere[3] as i32 >> 3) + 400;
+            // Health 0xCA (racing) keeps it in play wherever the camera is, and in level 6
+            // (the boss arena) everything is always in play.
+            let d2 = if self.always_active || c.health == 0xCA { 10 } else { d2 };
+            if (c.flags & 1 == 0 && d2 >= near * near) || c.flags & 0x2000 != 0 {
                 self.slots[i] = c;
                 continue;
             }
