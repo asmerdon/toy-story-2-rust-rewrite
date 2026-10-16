@@ -138,11 +138,16 @@ pub fn level_batches_where(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::format
 /// with `billboard_batches`.
 pub fn level_parts_where(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::formats::ngn::Instance) -> bool) -> (Vec<Batch>, Vec<Billboard>) {
     let (mut out, mut bb) = (Vec::new(), Vec::new());
+    let images: Vec<Option<crate::bmp::Image>> = ngn.textures.iter().map(|t| crate::bmp::decode(&t.bmp, Some(crate::bmp::PC_KEY))).collect();
     for (li, layer) in ngn.layers.iter().enumerate() {
         for (_, inst) in layer.instances.iter().enumerate().filter(|(ii, i)| keep(li, *ii, i)) {
             if let Some(mesh) = layer.meshes.get(inst.mesh as usize) {
                 let m = instance_matrix(inst);
-                add_mesh_parts(ngn, &mut out, Some(&mut bb), mesh, Place::new(inst.pos, 0.0), Some(&m));
+                let mut one = Vec::new();
+                add_mesh_parts(ngn, &mut one, Some(&mut bb), mesh, Place::new(inst.pos, 0.0), Some(&m));
+                light_black_faces(&mut one);
+                show_keyed_glass(&mut one, &images);
+                merge(&mut out, one);
             }
         }
     }
@@ -356,4 +361,84 @@ pub fn bounds(batches: &[Batch]) -> Option<([f32; 3], [f32; 3])> {
     let mut it = batches.iter().flat_map(|b| &b.vertices).map(|v| v.pos);
     let first = it.next()?;
     Some(it.fold((first, first), |(lo, hi), p| ([0, 1, 2].map(|k| lo[k].min(p[k])), [0, 1, 2].map(|k| hi[k].max(p[k])))))
+}
+
+/// Deviation: a triangle baked pure black (all three vertex colours 0, 0, 0) in an object that
+/// also has lit faces takes the object's average lit colour. The data has such faces facing
+/// into rooms (level 1's attic entrance: one inner wall black, the one across it wood); the
+/// original shows them lit. Objects that are all black (the boxes' insides) stay black.
+fn light_black_faces(batches: &mut [Batch]) {
+    let black = |c: [u8; 4]| c[1] == 0 && c[2] == 0 && c[3] == 0;
+    let (mut sum, mut n) = ([0u64; 3], 0u64);
+    for v in batches.iter().flat_map(|b| &b.vertices).filter(|v| !black(v.color)) {
+        for k in 0..3 {
+            sum[k] += v.color[k + 1] as u64;
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return;
+    }
+    let avg = sum.map(|s| (s / n) as u8);
+    for b in batches.iter_mut() {
+        for t in b.vertices.chunks_exact_mut(3) {
+            if t.iter().all(|v| black(v.color)) {
+                for v in t {
+                    v.color = [v.color[0], avg[0], avg[1], avg[2]];
+                }
+            }
+        }
+    }
+}
+
+/// Deviation: a triangle whose texture area is (nearly) all the colour key would vanish
+/// entirely. Level 1's kitchen jars are such: blended glass mapped onto pure key green, shown
+/// in the original as see-through green. Such triangles are drawn untextured in the key's
+/// green, lit by their vertex colour, keeping their blend.
+fn show_keyed_glass(batches: &mut Vec<Batch>, images: &[Option<crate::bmp::Image>]) {
+    let mut moved: Vec<Batch> = Vec::new();
+    for b in batches.iter_mut() {
+        let Some(img) = b.texture.and_then(|t| images.get(t)).and_then(|i| i.as_ref()) else { continue };
+        let mut keep = Vec::with_capacity(b.vertices.len());
+        for t in b.vertices.chunks_exact(3) {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for v in t {
+                for k in 0..2 {
+                    lo[k] = lo[k].min(v.uv[k]);
+                    hi[k] = hi[k].max(v.uv[k]);
+                }
+            }
+            // Up to 8 × 8 samples over the triangle's texture box.
+            let (mut keyed, mut all) = (0, 0);
+            for sy in 0..8 {
+                for sx in 0..8 {
+                    let u = lo[0] + (hi[0] - lo[0]) * (sx as f32 + 0.5) / 8.0;
+                    let v = lo[1] + (hi[1] - lo[1]) * (sy as f32 + 0.5) / 8.0;
+                    let x = ((u.rem_euclid(1.0)) * img.width as f32) as u32 % img.width;
+                    let y = ((v.rem_euclid(1.0)) * img.height as f32) as u32 % img.height;
+                    all += 1;
+                    if img.rgba[((y * img.width + x) * 4 + 3) as usize] == 0 {
+                        keyed += 1;
+                    }
+                }
+            }
+            if keyed * 10 >= all * 9 {
+                let glass: Vec<GpuVertex> = t
+                    .iter()
+                    .map(|v| {
+                        let light = v.color[1].max(v.color[2]).max(v.color[3]);
+                        GpuVertex { color: [v.color[0], 0, light, 0], ..*v }
+                    })
+                    .collect();
+                match moved.iter_mut().find(|m| m.blend == b.blend) {
+                    Some(m) => m.vertices.extend(glass),
+                    None => moved.push(Batch { texture: None, blend: b.blend, vertices: glass }),
+                }
+            } else {
+                keep.extend_from_slice(t);
+            }
+        }
+        b.vertices = keep;
+    }
+    merge(batches, moved);
 }

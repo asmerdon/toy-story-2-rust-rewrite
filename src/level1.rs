@@ -80,6 +80,8 @@ pub struct Level1 {
     lift: [i32; 3],
     lift_max: i32,
     pole_offset: Option<i32>,
+    /// The garage drills' current lift (level units, up), for moving their movers by the change.
+    drill_lift: [f32; 3],
     /// Room 4's fountain: its next target point (0x52F52C), the steam timer and vent
     /// (0x52F5B0 / 0x52F598).
     fountain: usize,
@@ -153,6 +155,7 @@ impl Level1 {
             lift,
             lift_max: lift[1] + 0xB800,
             pole_offset: None,
+            drill_lift: [0.0; 3],
             fountain: 0,
             steam: 0,
             vent: 0,
@@ -524,6 +527,7 @@ impl Level1 {
         let buzz = player.pos_obj();
 
         self.clock = self.clock.wrapping_add(1);
+        self.drills(world, specials, player);
         if room == Some(5) {
             self.see_saw(world, specials, player);
         }
@@ -671,5 +675,35 @@ impl Script for Level1 {
     fn step_creatures(&mut self, world: &World, specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
         self.tick_creatures(world, specials, player, cr);
         self.tick_characters(world, player, cr, coins);
+    }
+}
+
+/// The garage drill bits: special, the mover carrying its collision, and how far below the
+/// special the bit's tip is (level units).
+const DRILLS: [(i32, i32, f32); 3] = [(1, 6, 1275.0), (2, 7, 779.0), (3, 8, 538.0)];
+
+impl Level1 {
+    /// Deviation: the garage drill bits rise and fall, each out of step with the next, and
+    /// hurt Buzz inside one (as in the original, per the user). Nothing found in the exe moves
+    /// or arms them (no script, creature, path program or harmful surface), so the motion is
+    /// made up: 700 units over a 3-second cycle; the bit is 150 units round.
+    fn drills(&mut self, world: &World, specials: &mut Specials, player: &mut Player) {
+        let b = player.pos;
+        for (k, &(special, mover, tip)) in DRILLS.iter().enumerate() {
+            let Some(home) = specials.home_obj(special) else { continue };
+            let phase = (self.clock as f32 / 180.0 + k as f32 / 3.0) * std::f32::consts::TAU;
+            let lift = (1.0 - phase.cos()) * 350.0;
+            let d = lift - self.drill_lift[k];
+            self.drill_lift[k] = lift;
+            let at = [home[0] as f32 / 32.0, home[1] as f32 / 32.0 - lift, home[2] as f32 / 32.0];
+            specials.set_pos(special, at.map(|v| v as i32));
+            world.move_mover(mover, glam::Vec3::new(0.0, -d, 0.0));
+            // Inside the bit: from the special down to its tip, 150 round (Buzz's body is from
+            // his feet up 450).
+            let (dx, dz) = (b.x - at[0], b.z - at[2]);
+            if dx * dx + dz * dz < 250.0 * 250.0 && b.y > at[1] && b.y - 450.0 < at[1] + tip && player.hurt_timer == 0 {
+                player.hurt(crate::boxes::angle12(dx, dz), 3);
+            }
+        }
     }
 }
