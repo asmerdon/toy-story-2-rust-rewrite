@@ -421,7 +421,13 @@ impl Level1 {
         if cr.slots.get(TIN_MAN.0).is_none_or(|c| c.id != 5) {
             return;
         }
+        let health = cr.slots[TIN_MAN.0].health;
         let b = &mut cr.boss;
+        // 0x52F5A8: his health as the level starts, so his first opening isn't taken for a hit
+        // (it made him flinch shut at once).
+        if b.state == 0 {
+            b.last = health;
+        }
         if std::mem::take(&mut b.challenge) && b.state == 0 && player.on_floor && self.cutscene.is_none() {
             self.talk(TIN_MAN.0, TIN_MAN.1, TIN_MAN_TEXT, None, Some([0xE23, 0x700]));
             cr.boss.state = 1;

@@ -23,6 +23,7 @@ fn main() {
     at.y = world.floor_below(at.x, at.z, at.y - 400.0).unwrap_or(at.y);
     let mut p = ts2::game::Player::new(at);
     p.on_floor = true;
+    let (mut last_anim, mut since) = (u16::MAX, 0);
     for tick in 0..2000 {
         let steps = cr.tick(&world, p.pos_obj(), p.pos_obj());
         level.tick_characters(&world, &p, &mut cr, 0);
@@ -31,9 +32,11 @@ fn main() {
         }
         let c = &cr.slots[8];
         let chase = steps.iter().find(|(i, _)| *i == 8).map(|(_, s)| s.chase);
-        if tick % 50 == 0 {
+        if tick == 0 || c.anim != last_anim {
             let pos = glam::Vec3::from(c.pos.map(|v| v as f32 / 32.0));
-            println!("{tick}: state {} anim {} chase {chase:?} flags {:#x} dist to Buzz {:.0} from home {:.0} pc {}", cr.boss.state, c.anim, c.flags, (pos - at).length(), (pos - home).length(), 0);
+            println!("{tick}: anim {} (was {last_anim} for {} ticks) state {} chase {chase:?} dist {:.0} home {:.0}", c.anim, tick - since, cr.boss.state, (pos - at).length(), (pos - home).length());
+            last_anim = c.anim;
+            since = tick;
         }
     }
 }

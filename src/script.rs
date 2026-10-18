@@ -535,11 +535,27 @@ impl Tilt {
             self.z = hi * 4;
         }
         self.v = v;
+        // Was the plank at or below his feet, under him, before this turn?
+        let under = {
+            let p = player.pos;
+            world.floor_below_obj(p.x, p.z, p.y - 400.0).is_some_and(|(y, m)| m == Some(mover) && y >= p.y - 10.0)
+        };
         let a = [0, yaw, self.z >> 2];
         world.turn_mover(mover, a);
         specials.set_angles(special, a);
         if riding && a != before {
             player.pos = world.ride_turn(mover, before, a, player.pos);
+        } else if a != before && under {
+            // Not riding (say a moment off it as it bounced at its stop): if the plank came up
+            // past his feet, lift him back on top rather than let it pass through him.
+            let p = player.pos;
+            if let Some((y, Some(m))) = world.floor_below_obj(p.x, p.z, p.y - 400.0)
+                && m == mover
+                && y < p.y
+            {
+                player.pos.y = y;
+                player.vel[1] = player.vel[1].min(0);
+            }
         }
     }
 }
