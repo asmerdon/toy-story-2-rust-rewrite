@@ -1746,7 +1746,9 @@ impl Creatures {
         if c.rec.decel[1] != 0xFF {
             c.vel[0] = sin(angle) >> 5;
             c.vel[2] = cos(angle) >> 5;
-            c.flags &= !4;
+            // Byte +0x41 & 0xFB: flag 0x400 (in flight) off. (It was read as flag 4, which stopped
+            // walkers such as the RC car for good when bumped.)
+            c.flags &= !0x400;
         }
         if c.knock == 0 {
             c.knock = knock as i32;
