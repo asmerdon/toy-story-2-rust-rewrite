@@ -140,12 +140,6 @@ impl Boxes {
         let after = self.pushing.checked_sub(1).and_then(|k| self.boxes.get(k)).map(|b| b.pos);
         self.still = if before.is_some() && before != after { 0 } else { self.still.saturating_add(1) };
         player.pushing = self.pushing != 0 && self.still < 6;
-        // His push grunt (0x2D) once the box really moves (the original grunts on grabbing it,
-        // even against a side it can't go; deviation).
-        if self.pushing != 0 && self.still == 0 && self.voice_timer == 0 {
-            player.sounds.push(Sound { id: 0x2D, voice: true });
-            self.voice_timer = 0x28;
-        }
     }
 
     fn tick_inner(&mut self, player: &mut Player, world: &World, specials: &mut Specials) {
@@ -167,6 +161,10 @@ impl Boxes {
                     self.pushing = k + 1;
                     self.offset = [(b.pos[0] - player.pos_obj()[0]) >> 5, (b.pos[2] - player.pos_obj()[2]) >> 5];
                     self.push_angle = dir;
+                    if self.voice_timer == 0 {
+                        player.sounds.push(Sound { id: 0x2D, voice: true });
+                        self.voice_timer = 0x28;
+                    }
                 }
             }
         }
