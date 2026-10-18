@@ -1343,6 +1343,22 @@ impl Viewer {
                 self.token_seq = 1;
             }
             for _ in 0..ticks {
+                // 0x4A0F80: in the menu and the victory he turns to face the camera (by a
+                // sixteenth a tick); once he's jumped, the camera keeps looking at him.
+                if let Some(look) = self.script.as_mut().and_then(|l| l.look.as_mut()) {
+                    if matches!(self.token_seq, 3 | 9) {
+                        let cam_yaw = ts2::boxes::angle12((look.at[0] - look.from[0]) as f32, (look.at[2] - look.from[2]) as f32);
+                        let mut d = (cam_yaw - player.facing - 0x800) & 0xFFF;
+                        if d > 0x7FF {
+                            d -= 0x1000;
+                        }
+                        player.facing = (player.facing + d / 16) & 0xFFF;
+                        player.target = player.facing;
+                    } else if self.token_seq == 4 {
+                        let b = player.pos_obj();
+                        look.at = [b[0], b[1] - 0x3000, b[2]];
+                    }
+                }
                 match self.token_seq {
                     1 => {
                         // Buzz stops where he is.

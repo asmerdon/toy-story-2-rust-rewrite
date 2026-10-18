@@ -51,6 +51,8 @@ pub struct Boxes {
     pushing: usize,
     /// Box spots (list 58 group 0) to put out, for the caller.
     pub put_out: Vec<usize>,
+    /// Ticks since the box being pushed last moved.
+    still: u8,
     offset: [i32; 2],
     push_angle: i32,
     /// Ticks before Buzz says "hnn" again (0x53C670).
@@ -69,7 +71,7 @@ fn box_list(level: usize) -> Option<u32> {
 impl Boxes {
     pub fn new(level: usize, lists: &[PointList], exe: Option<&Exe>, world: &World, specials: &mut Specials) -> Boxes {
         let paths = lists.iter().filter(|l| l.kind >= 0 && l.kind < 0x3F).map(|l| (l.kind, l.points.clone())).collect();
-        let mut b = Boxes { boxes: Vec::new(), paths, pushing: 0, offset: [0; 2], push_angle: 0, voice_timer: 0, put_out: Vec::new() };
+        let mut b = Boxes { boxes: Vec::new(), paths, pushing: 0, offset: [0; 2], push_angle: 0, voice_timer: 0, put_out: Vec::new(), still: u8::MAX };
         let (Some(exe), Some(mut va)) = (exe, box_list(level)) else { return b };
         while let Ok(t) = exe.at(va, 6) {
             let w = |k: usize| i16::from_le_bytes([t[2 * k], t[2 * k + 1]]);
@@ -131,8 +133,13 @@ impl Boxes {
     /// 0x433700, inside Buzz's tick just before he moves.
     pub fn tick(&mut self, player: &mut Player, world: &World, specials: &mut Specials) {
         self.voice_timer = (self.voice_timer - 1).max(0);
+        let before = self.pushing.checked_sub(1).and_then(|k| self.boxes.get(k)).map(|b| b.pos);
         self.tick_inner(player, world, specials);
-        player.pushing = self.pushing != 0;
+        // The push animation only while the box really moves (or did a moment ago, across a
+        // segment change): against a side it can't go, Buzz just leans on it.
+        let after = self.pushing.checked_sub(1).and_then(|k| self.boxes.get(k)).map(|b| b.pos);
+        self.still = if before.is_some() && before != after { 0 } else { self.still.saturating_add(1) };
+        player.pushing = self.pushing != 0 && self.still < 6;
     }
 
     fn tick_inner(&mut self, player: &mut Player, world: &World, specials: &mut Specials) {
