@@ -2206,6 +2206,9 @@ impl Player {
                 }
                 self.sound(0x1B);
                 self.ledge = 0x45;
+                // 0x435100 sets the state itself (+0x90 = 0x1A), so a grab from a double jump
+                // (state 8, which the override leaves alone) still swings.
+                self.state = state::LEDGE;
                 if let Some(a) = self.anim.as_mut() {
                     a.restart();
                 }
