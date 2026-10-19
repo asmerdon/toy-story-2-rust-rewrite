@@ -211,6 +211,7 @@ pub struct Creatures {
     pub slots: Vec<Creature>,
     scripts: Vec<Option<Vec<i16>>>,
     seqs: Vec<Vec<u8>>,
+    animations: std::collections::HashMap<u8, Vec<Option<crate::formats::anim::Animation>>>,
     /// The game's random bytes (`rand.dat`) and read position (0x52ADAC).
     random: Vec<u8>,
     rpos: usize,
@@ -328,6 +329,7 @@ impl Creatures {
             slots: Vec::new(),
             scripts,
             seqs,
+            animations: Default::default(),
             random,
             rpos: 0,
             sounds: Vec::new(),
@@ -396,8 +398,24 @@ impl Creatures {
         c
     }
 
-    /// Reads every character's hit shapes: `creatures.cfg` in `data` names each id's file
-    /// (`<dir>\\<name>.all`, the directory relative to a level folder).
+    /// Load original animation poses for level-script node attachments.
+    pub fn load_animations(&mut self, ngn: &crate::formats::ngn::Ngn) {
+        self.animations = ngn.creatures.iter().map(|c| (c.id as u8,
+            c.animations.iter().map(|b| crate::formats::anim::parse(b).ok()).collect())).collect();
+    }
+
+    /// 0x43C1C0: an animated model-node attachment, in object units.
+    pub fn node_point(&self, slot: usize, node: usize, point: [f32; 3]) -> Option<[i32; 3]> {
+        let c = self.slots.get(slot)?;
+        let animation = self.animations.get(&c.id)?.get(c.anim as usize)?.as_ref()?;
+        let angles = c.angles.map(|a| a as f32 * std::f32::consts::TAU / 4096.0);
+        let angles = [angles[0], angles[1] + std::f32::consts::PI, angles[2]];
+        crate::scene::creature_node_point(c.pos.map(|v| v as f32 / 32.0), angles,
+            c.scale as f32 / 4096.0, animation, c.time as f32 / 65536.0, node, point)
+            .map(|p| p.map(|v| (v * 32.0) as i32))
+    }
+
+    /// Reads hit shapes named by creatures.cfg, relative to the data directory.
     pub fn load_shapes(&mut self, data: &std::path::Path) {
         let Ok(cfg) = std::fs::read_to_string(data.join("creatures.cfg")) else { return };
         let ids: std::collections::HashSet<u8> = self.slots.iter().map(|c| c.id).collect();
@@ -548,6 +566,17 @@ impl Creatures {
         if c.id == 0x18 {
             c.health = 0;
             c.respawn = 10000;
+        }
+    }
+
+    /// Level scripts use the same animation sequence setup as 0x405CF0.
+    pub fn animate_slot(&mut self, slot: usize, anim: u16, seq: usize, rates: [i8; 2]) {
+        let first = self.seqs.get(seq).and_then(|s| s.first()).copied().unwrap_or(0);
+        if let Some(c) = self.slots.get_mut(slot) {
+            c.anim = anim;
+            c.seq = (seq, 0);
+            c.time = (first as u32) << 16;
+            c.rates = rates;
         }
     }
 

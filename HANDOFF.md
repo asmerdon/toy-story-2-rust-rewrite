@@ -9,6 +9,38 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 
 ---
 
+## 2026-10-19 continuation: read before the historical notes below
+
+**The missing-level diagnosis below was wrong. All 15 core asset sets are installed.**
+Levels 11–15 are `data/level01..05/level1.ngn`, with `level1.dat`, `level1.raw`
+and `TERR1.ALL` beside them. The original loader (0x452FC0) and Pconv configs confirm it.
+All 15 sets passed parser checks with `TS2_GAME_DIR` set.
+
+- `src/campaign.rs` separates campaign numbers from executable IDs. Campaign 3 is
+  internal 6 (Bombs Away); campaign 6 is internal 3 (Slime Time). Do not swap only
+  the scripts: sounds, starts, HUD and pickups must retain internal IDs.
+- Viewer: `cargo run --release --bin ts2-viewer -- --level N [game_dir]`.
+- Audit: `cargo run --release --bin ts2-tool -- audit-levels <game_dir>`.
+- `src/level12.rs`: Zurg setup/frame logic, intro, attack timing, recovery, death,
+  completion, HUD and camera. Animated node-1 projectile origin uses the renderer's
+  matrices via `Creatures::load_animations` / `node_point`.
+- `src/particles.rs`: Zurg bounce/trail routines 0x42B090 / 0x42B250, and the
+  flag-8 Buzz homing path in 0x410F40. Creature-targeted homing remains unported.
+- Level 12 is simulation-tested, **not visually signed off**. Lighting and the
+  nearest-light marker are not ported. Playtest the intro, spin hits, retaliation,
+  death fall, projectile muzzle position and camera.
+- Levels 11, 13, 14, 15 still need their scripts. Existing level 2–10 omissions remain.
+- Disc audit: 23 PCM WAVs decode cleanly; 22 MPEG video files are present. 21 report
+  an MP2 packet error during decode (at the end of the sampled level-1 intro).
+  `tracks.txt` is an old directory listing, NOT an authoritative track map.
+- Verification: full `cargo test --release` with game data: **100 passed**;
+  `cargo build --release --bins` passed. User preference remains to playtest themselves.
+- Current user prefers batching pushes at the end; this supersedes the historical
+  instruction below to push after every piece of work.
+
+See `docs/re/asset-audit.md` and `MODLOG.md` for details. No original assets were
+added to the repository or installed/modified in Program Files.
+
 ## 1. What this project is
 
 A clean-room reimplementation of the 1999 PC game *Toy Story 2: Buzz Lightyear to the Rescue*,
@@ -46,8 +78,8 @@ branch (local `master` tracks `origin/dev`). There is no `main` yet; the user ma
 | What | Where |
 |---|---|
 | Project | `C:\Users\alexs\Documents\Toy Story 2 - Rust Rewrite` |
-| Game install | `C:\Program Files\Disney Interactive\Toy Story 2` (levels 1–10 only) |
-| CD image | `C:\Users\alexs\Downloads\Disney-Pixar-Toy-Story-2-…\ToyStory2.iso`: music as WAVs (`Setup\Toy2\CD\audio\*.wav`, `tracks.txt`) and FMVs (`Setup\Toy2\CD\rtlibs\*.dll`). Levels 11–15 are empty here too. 7-Zip (`C:\Program Files\7-Zip\7z.exe`) can list or extract it. |
+| Game install | `C:\Program Files\Disney Interactive\Toy Story 2` (all 15; see the correction above) |
+| CD image | `C:\Users\alexs\Downloads\Disney-Pixar-Toy-Story-2-…\ToyStory2.iso`: music as WAVs (`Setup\Toy2\CD\audio\*.wav`, `tracks.txt`) and FMVs (`Setup\Toy2\CD\rtlibs\*.dll`). Later levels use level1.* under folders 01–05; see correction above. 7-Zip (`C:\Program Files\7-Zip\7z.exe`) can list or extract it. |
 | Rust | stable via rustup, MSVC build tools; audio through `rodio` 0.19 |
 | Ghidra | 12.1.4 at `C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC`, JDK 21 at `C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot` |
 | Decompiled output | `re/out/c/<address>.c` (2,811 functions), `re/out/functions.tsv`, `re/out/strings.tsv` |
@@ -172,7 +204,7 @@ Each `src/levelN.rs` module doc lists what it covers. In short:
 
 Also not ported anywhere: rocket boots (0x4A4D60 etc.), the grappling hook (0x4A5370, list 59),
 lights (0x44F200), floor shadows, homing particles, footstep dust, music and FMVs, a front end
-or level select. Levels 11–15 have no data.
+or level select. Levels 11–15 data was subsequently located; see correction above.
 
 ## 6. Problems met, and what they taught
 
@@ -287,7 +319,7 @@ then 7–10. Bigger items after that:
 - a front end and level select (load the next level after "exit level";
   `exe::level_number`, `data\levelNN`);
 - the rocket boots and grappling hook (abilities from Mr Potato Head in later levels);
-- music from the CD WAVs (`tracks.txt` maps them);
+- music from the CD WAVs (`tracks.txt` is not a reliable mapping; verify against executable tables);
 - lights (0x44F200) and floor shadows.
 
 ### Facts worth knowing for the next levels

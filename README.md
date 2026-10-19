@@ -15,7 +15,27 @@ The original game's behaviour was worked out by reverse-engineering the exe with
 cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"
 ```
 
-Change `level01` to `level02` … `level10` for the other levels. Press F to play as Buzz.
+Prefer campaign numbers (including the correct order for Bombs Away and Slime Time):
+
+```powershell
+cargo run --release --bin ts2-viewer -- --level 3
+cargo run --release --bin ts2-viewer -- --level 12
+```
+
+`--level <1..15> [game_dir]` uses `TS2_GAME_DIR`, or the default install above.
+Direct file paths remain supported and refer to internal asset IDs. Press F to play as Buzz.
+Campaign 3 loads `level06/level.ngn`; campaign 6 loads `level03/level.ngn`.
+Levels 11–15 load `level01`–`level05` respectively, using **`level1.ngn`**.
+Their companion data is present; folders named `level11`–`level15` contain conversion configs.
+
+Validate all 15 asset sets with:
+
+```powershell
+cargo run --release --bin ts2-tool -- audit-levels "C:\Program Files\Disney Interactive\Toy Story 2"
+```
+
+This parses geometry/textures/models, point lists, spawn packets and collision for every
+campaign level. It reports script availability separately from asset availability.
 
 ## Ported so far
 
@@ -45,16 +65,17 @@ Change `level01` to `level02` … `level10` for the other levels. Press F to pla
   - **Level 1 (Andy's House): complete and playable start to finish.** This includes the crib escape, Bo Peep's sheep, Hamm's coins, Mr Potato Head and his missing ear, the RC race, the Tin Man boss, the attic see-saw, the lift, springs, push boxes, swing bars, the garage drills and the tutorial signposts. Collecting a token brings up the "keep playing / exit level" menu and the exit animation.
   - **Levels 2–10:** each level's own script is ported, including its characters, gadgets, challenges and bosses (the Zurg kite, the slime, the drill, the clown, the dino, the car, the level 9 boss with its minions and the spider). These still need playtesting.
 - **Rendering:** the original two-pass level draw, back-face culling, the PS1 background picture behind the windows and sky, and fixes for the level data's black faces and glass.
-- **Tests:** about 100 tests, many driving the real game data, covering movement, combat, bosses, races and gadgets.
+- **Tests:** 100 tests, many driving the real game data, covering movement, combat, bosses, races and gadgets.
 
 ## Not done yet
 
 - Levels 2–10 are ported but not yet playtested, so expect bugs there.
 - A few puzzles and gadgets are skipped, the biggest being level 4's crane puzzle and level 8's claw machine.
-- There is no front end or level select yet: you pick a level on the command line.
-- There is no music or FMVs. The music and cutscene videos are on the game CD, and aren't used yet.
+- There is no graphical front end yet. Command-line campaign selection supports levels 1–15.
+- Music and FMV playback are not integrated. The supplied disc contains 23 music WAVs and 22 MPEG videos named `.dll`; see `docs/re/asset-audit.md` for decode results.
 - The rocket boots and the grappling hook aren't ported.
-- Levels 11–15 can't be done, because their data isn't in the install or on the CD image tried so far.
+- Levels 11, 13, 14 and 15 have their complete core asset sets available, but their level scripts are not ported yet.
+- Level 12 (Zurg): entrance, attacks, hit recovery, arena boundaries, death and completion are ported and simulation-tested with real data. Visual playtesting remains; lighting and the nearest-light marker are omitted.
 
 ## Deviations from the original
 

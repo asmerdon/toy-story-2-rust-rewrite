@@ -4,6 +4,7 @@
 //! from the user's own install.
 
 pub mod audio;
+pub mod campaign;
 pub mod bmp;
 pub mod boxes;
 pub mod buzz;
@@ -26,6 +27,7 @@ pub mod level7;
 pub mod level8;
 pub mod level9;
 pub mod level10;
+pub mod level12;
 pub mod look;
 pub mod particles;
 pub mod pickups;

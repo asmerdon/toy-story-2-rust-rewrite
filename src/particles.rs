@@ -13,7 +13,8 @@
 //!   (0 half-transparent, 0x20 additive, 0x40 subtractive, 0x60 opaque).
 //!
 //! Kinds that steer at creatures or run creature-specific code (homing shots 0x1D/0x26,
-//! 0x2F/0x30/0x34) aren't ported yet; they move as plain particles.
+//! 0x34) aren't ported yet; they move as plain particles. Zurg shots 0x2F/0x30
+//! include arena bounce/trails and Buzz-targeted homing.
 //!
 //! Units as the game: object units, 12-bit angles, ticks. Sizes are half extents in level
 //! units.
@@ -60,6 +61,8 @@ pub struct Particle {
     pub pos: [i32; 3],
     pub vel: [i32; 3],
     pub gravity: i32,
+    /// Homing pitch (+0x20); gravity holds yaw and vel[1] holds target -1 for Buzz.
+    homing_pitch: i32,
     /// +0x1C: the floor under it, when known.
     pub floor: Option<i32>,
     /// +0x24 ticks to live (0 = free); +0x26 / +0x28 size.
@@ -241,9 +244,26 @@ impl Particles {
             }
             let mut p = self.slots[i];
             p.life = (p.life - 1).max(0);
-            // Motion: gravity, then position.
-            p.pos[1] += p.vel[1];
-            p.vel[1] += p.gravity;
+            // Flag 8 repurposes vertical velocity as a target and gravity as yaw
+            // (0x410F40). Zurg's 0x6D shots target Buzz, encoded as -1.
+            if p.kind == 0x30 && p.flags & 8 != 0 && p.vel[1] == -1 {
+                let dx = buzz.0[0] - p.pos[0];
+                let dy = buzz.0[1] - p.pos[1] - 0x2000;
+                let dz = buzz.0[2] - p.pos[2];
+                let yaw = crate::boxes::angle12((dx >> 5) as f32, (dz >> 5) as f32);
+                let turn = |to: i32, from: i32| ((to - from + 0x800) & 0xfff) - 0x800;
+                p.gravity = (p.gravity + turn(yaw, p.gravity) / 8) & 0xfff;
+                let horizontal = ((dx as f64).hypot(dz as f64)) as f32;
+                let pitch = crate::boxes::angle12(-dy as f32, horizontal);
+                p.homing_pitch = (p.homing_pitch + turn(pitch, p.homing_pitch) / 20) & 0xfff;
+                let horizontal_speed = sin14(p.homing_pitch + 0x400);
+                p.vel[0] = ((sin14(p.gravity) * horizontal_speed) >> 14) / 16;
+                p.vel[2] = ((sin14(p.gravity + 0x400) * horizontal_speed) >> 14) / 16;
+                p.pos[1] -= sin14(p.homing_pitch) / 16;
+            } else {
+                p.pos[1] += p.vel[1];
+                p.vel[1] += p.gravity;
+            }
             p.pos[0] += p.vel[0];
             p.pos[2] += p.vel[2];
             if p.frames > 1 {
@@ -456,6 +476,43 @@ impl Particles {
                 p.size[0] += grow;
                 p.size[1] = p.size[0];
                 1
+            }
+            0x2F | 0x30 => {
+                // Zurg's arena projectiles, 0x42B090 / 0x42B250.
+                if p.life > 4 && p.life % 4 == 0 {
+                    self.spawn([p.pos[0] - p.vel[0], p.pos[1], p.pos[2] - p.vel[2]],
+                        if p.kind == 0x2F { 0x6e } else { 0x6f }, 2);
+                }
+                if p.kind == 0x2F {
+                    let mut bounced = false;
+                    let inside = p.pos[0] > -0x256d6 && p.pos[0] < 0xe0aa
+                        && p.pos[2] > -0x1b3e9 && p.pos[2] < 0x1b297;
+                    if !inside {
+                        p.floor = Some(400000);
+                    } else {
+                        if p.floor.is_none() { p.floor = Some(-0x12bd3); }
+                        if p.pos[1] < -0x12bd2 {
+                            p.floor = Some(-0x12bd3);
+                        } else if p.floor == Some(-0x12bd3) {
+                            p.pos[1] = -0x12bd3;
+                            p.vel[1] = -((p.vel[1] * 7) >> 3).abs();
+                            bounced = true;
+                        } else {
+                            p.vel[0] = -p.vel[0];
+                            p.vel[2] = -p.vel[2];
+                            bounced = true;
+                        }
+                    }
+                    if p.pos[0] < -0x29b56 { p.vel[0] = p.vel[0].abs(); bounced = true; }
+                    if p.pos[0] > 0x2a62a { p.vel[0] = -p.vel[0].abs(); bounced = true; }
+                    if p.pos[2] < -0x230e9 { p.vel[2] = p.vel[2].abs(); bounced = true; }
+                    if p.pos[2] > 0x22b97 { p.vel[2] = -p.vel[2].abs(); bounced = true; }
+                    if bounced { self.events.push(Event::Sound(0x43, p.pos)); }
+                }
+                let dx = ((-0xbd7c - p.pos[0]) >> 5) as i64;
+                let dz = ((0x99 - p.pos[2]) >> 5) as i64;
+                if dx * dx + dz * dz < 0x100000 { p.life = 0; }
+                0
             }
             0x32 => {
                 if p.life > 0x3F {

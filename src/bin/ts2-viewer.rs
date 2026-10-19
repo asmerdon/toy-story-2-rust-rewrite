@@ -1872,9 +1872,24 @@ impl ApplicationHandler for Viewer {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = env::args().collect();
+    if args.get(1).is_some_and(|s| s == "--level") {
+        let selected = args.get(2).and_then(|s| s.parse().ok()).and_then(ts2::campaign::level);
+        let Some(selected) = selected else {
+            eprintln!("--level requires a campaign number from 1 to 15");
+            process::exit(2);
+        };
+        let game = args.get(3).map(std::path::PathBuf::from)
+            .or_else(|| env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from))
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Program Files\Disney Interactive\Toy Story 2"));
+        println!("Campaign {}: {} (internal ID {})", selected.number, selected.name, selected.internal_id);
+        if !selected.script_available() {
+            eprintln!("Level assets are available; this level's gameplay script is not ported yet.");
+        }
+        args = vec![args[0].clone(), selected.path(&game).to_string_lossy().into_owned()];
+    }
     let Some(path) = args.get(1) else {
-        eprintln!("usage: ts2-viewer <path\\to\\levelNN\\level.ngn> [creature]");
+        eprintln!("usage: ts2-viewer <path\\to\\levelNN\\level.ngn> [creature]\n       ts2-viewer --level <1..15> [game_dir]");
         process::exit(2);
     };
     let bytes = fs::read(path).unwrap_or_else(|e| {
@@ -1986,9 +2001,10 @@ fn main() {
     // Hit shapes from each character's .all file.
     if let (Some(cr), Some(data)) = (creatures.as_mut(), std::path::Path::new(path).parent().and_then(|d| d.parent())) {
         cr.load_shapes(data);
+        cr.load_animations(&ngn);
     }
 
-    // Pushable boxes and the level's own script (level 1 only so far).
+    // Pushable boxes and the level script, selected by executable ID.
     let mut specials = specials;
     let level_lists = fs::read(level_path.with_extension("dat")).ok().and_then(|b| ts2::formats::leveldat::parse(&b).ok()).unwrap_or_default();
     let level_no = exe::level_number(level_path);

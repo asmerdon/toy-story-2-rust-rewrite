@@ -278,6 +278,16 @@ pub fn creature_batches_scaled(ngn: &Ngn, c: &Creature, origin: [f32; 3], angles
     creature_batches_placed(ngn, c, place, anim, None)
 }
 
+/// Transform a point on an animated creature node using the same matrices as rendering.
+/// The result is in level units; gameplay callers convert it to object units (x32).
+pub fn creature_node_point(origin: [f32; 3], angles: [f32; 3], scale: f32,
+    animation: &Animation, frame: f32, node: usize, point: [f32; 3]) -> Option<[f32; 3]> {
+    let matrix = animation.matrix_at(node, frame)?;
+    let mut place = Place::turned(origin, angles);
+    for row in &mut place.m { for value in row { *value *= scale; } }
+    Some(place.apply(transform(Some(&matrix), point)))
+}
+
 /// Point on the base layer's root node that the overlay follows (0x43BA80).
 const ROOT_ANCHOR: [f32; 3] = [0.0, -200.0, 0.0];
 

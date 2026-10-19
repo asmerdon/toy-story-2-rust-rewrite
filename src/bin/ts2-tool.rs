@@ -15,6 +15,7 @@ const OBJ_SCALE: f32 = 1.0 / 256.0;
 fn main() {
     let args: Vec<String> = env::args().collect();
     let result = match args.get(1).map(String::as_str) {
+        Some("audit-levels") if args.len() == 3 => audit_levels(Path::new(&args[2])),
         Some("scan-models") if args.len() == 3 => scan_models(Path::new(&args[2])),
         Some("export-obj") if args.len() == 4 => export_obj(Path::new(&args[2]), Path::new(&args[3])),
         Some("export-all") if args.len() == 4 => export_all(Path::new(&args[2]), Path::new(&args[3])),
@@ -25,7 +26,7 @@ fn main() {
         Some("export-pose") if args.len() == 7 => export_pose(Path::new(&args[2]), &args[3], &args[4], &args[5], Path::new(&args[6])),
         _ => {
             eprintln!(
-                "usage:\n  ts2-tool scan-models <game_dir>\n  ts2-tool export-obj <file.all> <out.obj>\n  ts2-tool export-all <game_dir> <out_dir>\n  \
+                "usage:\n  ts2-tool audit-levels <game_dir>\n  ts2-tool scan-models <game_dir>\n  ts2-tool export-obj <file.all> <out.obj>\n  ts2-tool export-all <game_dir> <out_dir>\n  \
                  ts2-tool scan-ngn <game_dir>\n  ts2-tool export-level <file.ngn> <out_dir>\n  ts2-tool export-level-raw <file.ngn> <out_dir>   (meshes untransformed)\n  \
                  ts2-tool export-pose <file.ngn> <creature> <anim|all> <frame|all> <out_dir>
   ts2-tool anim-info <file.ngn> <creature>"
@@ -217,5 +218,34 @@ fn export_all(game_dir: &Path, out_dir: &Path) -> Res {
         let out = out_dir.join(format!("{}.obj", label(&f).replace('/', "_")));
         export_obj(&f, &out)?;
     }
+    Ok(())
+}
+
+/// Parse all four companion formats, rather than treating empty level11..15 folders
+/// as evidence of missing data. Report every level even if one is damaged.
+fn audit_levels(game: &Path) -> Res {
+    use ts2::formats::{leveldat, packets, terrain};
+    let mut failed = 0;
+    for level in &ts2::campaign::LEVELS {
+        let path = level.path(game);
+        let check = || -> Result<String, Box<dyn std::error::Error>> {
+            let n = ngn::parse(&fs::read(&path)?)?;
+            let lists = leveldat::parse(&fs::read(path.with_extension("dat"))?)?;
+            let pk = packets::parse(&fs::read(path.with_extension("raw"))?)?;
+            let t = terrain::parse(&fs::read(terrain::path_for(&path).ok_or("no terrain mapping")?)?)?;
+            let spawns = pk.iter().flat_map(packets::spawns).count();
+            if n.textures.is_empty() || n.creatures.is_empty() || t.objects.is_empty() || spawns == 0 {
+                return Err("parsed but essential data is empty".into());
+            }
+            Ok(format!("{} textures, {} models, {spawns} spawns, {} lists, {} collision objects", n.textures.len(), n.creatures.len(), lists.len(), t.objects.len()))
+        };
+        match check() {
+            Ok(counts) => println!("{:02} {:24} OK: {counts}; script {}\n   {}", level.number, level.name,
+                if level.script_available() { "ported (playtesting status varies)" } else { "not ported" }, path.display()),
+            Err(e) => { failed += 1; println!("{:02} {} FAILED: {}: {e}", level.number, level.name, path.display()); }
+        }
+    }
+    if failed > 0 { return Err(format!("{failed} level asset sets failed validation").into()); }
+    println!("All 15 campaign asset sets parsed. This verifies data availability, not gameplay completion.");
     Ok(())
 }

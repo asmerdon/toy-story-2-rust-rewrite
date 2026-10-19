@@ -78,3 +78,34 @@ fn reward_sparkles_twinkle_near_the_camera() {
     }
     assert_eq!(live(&parts), 0, "all put out");
 }
+
+/// Zurg's shot metadata must not be interpreted as vertical velocity/gravity.
+#[test]
+fn zurg_projectiles_home_bounce_and_end_in_the_hole() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let e = Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(game.join("data/level02/TERR1.ALL")).unwrap()).unwrap();
+    let world = ts2::game::World::from_terrain(&t);
+    let mut parts = Particles::new(Some(&e), vec![128; 2048]);
+    let origin = [0, -100000, 65536];
+    let buzz = [50000, -80000, 65536];
+    parts.camera = origin;
+    let homing = parts.create(origin, [0, -2, 0], 0, 0, 0, 0x6d).unwrap();
+    assert_ne!(parts.slots[homing].flags & 8, 0);
+    let distance = |at: [i32; 3]| (0..3).map(|k| (at[k] as f64 - buzz[k] as f64).powi(2)).sum::<f64>();
+    let start = distance(origin);
+    for _ in 0..30 { parts.tick(&world, (buzz, 0)); }
+    assert!(parts.slots[homing].life > 0);
+    assert!(distance(parts.slots[homing].pos) < start, "shot approaches Buzz");
+    assert!(parts.slots[homing].pos[0] > origin[0], "shot turns towards Buzz");
+    let ball = parts.create([0, -77000, 65536], [0, 1024, 0], 256, 0, 0, 0x6c).unwrap();
+    let mut bounced = false;
+    for _ in 0..10 {
+        parts.tick(&world, (buzz, 0));
+        bounced |= parts.slots[ball].vel[1] < 0;
+    }
+    assert!(bounced, "ball bounces on arena floor");
+    let hole = parts.create([-0xbd7c, -100000, 0x99], [0; 3], 0, 0, 0, 0x6c).unwrap();
+    parts.tick(&world, (buzz, 0));
+    assert_eq!(parts.slots[hole].life, 0, "central hole consumes shots");
+}

@@ -148,8 +148,9 @@ impl PlayerStart {
     }
 }
 
-/// Game level number for a level file: `levelNN\level.*` is level NN and `levelNN\level1.*` is
+/// Internal executable level ID (not campaign order) for a level file: `levelNN\level.*` is level NN and `levelNN\level1.*` is
 /// NN + 10 (the exe's InitLevelPlay subtracts 10 and switches to the `level1` files).
+/// Campaign positions 3 and 6 are swapped; use `crate::campaign` for user-facing selection.
 pub fn level_number(path: &std::path::Path) -> Option<usize> {
     let dir = path.parent()?.file_name()?.to_str()?.to_ascii_lowercase();
     let nn: usize = dir.strip_prefix("level")?.parse().ok()?;
