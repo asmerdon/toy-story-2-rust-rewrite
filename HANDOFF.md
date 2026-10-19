@@ -1,168 +1,325 @@
-# Handoff: Toy Story 2 Rust rewrite
+# Handover: Toy Story 2 Rust rewrite
 
-Read this first, then `PROJECT.md`, `docs/re/functions.md` and `docs/formats/*.md` (`terrain.md`, `ngn.md`, `anim.md`, `packets.md`, `all.md`).
+Last updated 2026-10-19. **Level 1 is complete and signed off by the user.** Levels 2–10 have
+their scripts ported but haven't been playtested. This file explains how the project works,
+what has been done, what went wrong along the way, and how to carry on with the next levels.
 
-## Setup on this machine
-- Project: `C:\Users\alexs\Documents\Toy Story 2 - Rust Rewrite` (local git repo, no remote)
-- Game install: `C:\Program Files\Disney Interactive\Toy Story 2` (PC, 1999-10-29 build)
-- Rust: stable via rustup, MSVC build tools. Audio output uses `rodio` 0.19 (no default features).
-- Ghidra 12.1.4: `C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC`; JDK 21 in `C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot`
-- Decompiled output: `re/out/c/<address>.c` (**2,811 functions**), `re/out/functions.tsv`, `re/out/strings.tsv`. **Git-ignored; never commit.** Re-run on the existing project (about 10 min):
-  ```
-  set JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot
-  C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC\support\analyzeHeadless.bat re\proj TS2 -process toy2.exe -noanalysis -scriptPath tools\ghidra -postScript DumpAround.java re\out
-  ```
-- Disassembly: `re/out` hides call arguments, jump tables and some offsets. A scratch Python venv with `capstone` + `pefile` (scripts: disassemble a range, hex-dump exe data, scan the whole `.text` for operands mentioning an address) fills the gap. Recreate in the session scratchpad.
-- Tests: `set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`, then `cargo test --release` (all passing). `cargo clippy --all-targets` fails only on an old `6.283` in `examples/wander.rs`.
-- Viewer: `cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"`
-- Diagnostics (`cargo run --release --example <name> -- <args>`): `rotfit`, `spikes`, `wander` (fall-through stress test), `pickups <levelNN dir>`, `overlap <level.ngn>` (coplanar overlaps by mesh set/zone), `sprites <level.ngn>` (billboard groups), `movers <levelNN dir>` (type-8 and room-map objects), `boxes` and `creatures [levelNN]` (need TS2_GAME_DIR), `stress [runs] [ticks]` (level 1 played by random input with everything on; reports fall-throughs), `gaps <levelNN dir>` (visible floor without collision; noisy: counts ceilings too).
-- The user mentioned github.com/morluto/rea (an MCP wrapper over Ghidra/IDA). Not installed: our Ghidra dump + capstone cover it. If the user installs it, its tools appear in a new session.
+Read this first. Then read `docs/re/functions.md` (every identified exe function, with what we
+know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `all`).
 
-## Rules
-- No game data, exe bytes or decompiled code in the repo. Everything is read from the user's install at runtime (exe tables via `src/formats/exe.rs`).
-- Write original Rust from understood behaviour. Don't paste decompiler output.
-- The user tests the viewer themselves (don't launch it). Build, run the tests, commit, then report what to try.
+---
+
+## 1. What this project is
+
+A clean-room reimplementation of the 1999 PC game *Toy Story 2: Buzz Lightyear to the Rescue*,
+in Rust. The original exe (`toy2.exe`, 1999-10-29 build) is decompiled with Ghidra and read
+with a disassembler. Its behaviour is understood, then rewritten as original Rust. Game data
+(levels, models, textures, sounds, tables inside the exe) is read **at runtime** from the
+user's own install.
+
+`ts2-viewer` is the playable front end: a free camera, with F to play as Buzz. It runs Buzz,
+creatures and the level script at the original's 60 Hz with the original's integer maths.
+
+GitHub: <https://github.com/asmerdon/toy-story-2-rust-rewrite>. Work goes to the **`dev`**
+branch (local `master` tracks `origin/dev`). There is no `main` yet; the user may ask for one.
+
+## 2. Ground rules (the user's and the project's)
+
+- **No game data, exe bytes or decompiled code in the repo.** `re/` (the Ghidra project and
+  output) is git-ignored and must never be committed. Game file types (`*.all`, `*.anm`,
+  `*.ngn`, `*.raw`, `*.obj`) are ignored. Screenshots in the project folder (`level1.png`,
+  `screenshot1.png`) are game imagery: leave them uncommitted.
+- Write original Rust from understood behaviour; don't paste decompiler output. Name things by
+  what they do and cite the exe address in comments (`0x417680`, `0x52F300`).
 - Record every identified function in `docs/re/functions.md`.
-- The user prefers long autonomous runs: do as much as possible before reporting; don't ask permission for harmless commands.
-- Write files with LF endings. Bash heredocs break on quotes and backslashes in this shell: write patch scripts to a scratch file with the Write tool and run them with the venv's python.
+- After each piece of work: build, run the tests, commit, push to `dev`.
+- **The user tests in the viewer themselves.** Don't launch the viewer; tell them what to try.
+  If the viewer is running, `cargo build` can't replace `ts2-viewer.exe` ("Access is denied"):
+  build with `--lib --tests --examples` instead and tell them to close it.
+- The user likes long autonomous runs and plain reports: what changed, what to test, what is
+  a guess. Ask for screenshots and repro steps when something can't be reproduced.
+- **Deviations are allowed when the user asks** (some are listed in §7). Mark each one in a
+  code comment ("Deviation: …") and in the README.
 
-## Code map
+## 3. Setup on this machine
+
+| What | Where |
+|---|---|
+| Project | `C:\Users\alexs\Documents\Toy Story 2 - Rust Rewrite` |
+| Game install | `C:\Program Files\Disney Interactive\Toy Story 2` (levels 1–10 only) |
+| CD image | `C:\Users\alexs\Downloads\Disney-Pixar-Toy-Story-2-…\ToyStory2.iso`: music as WAVs (`Setup\Toy2\CD\audio\*.wav`, `tracks.txt`) and FMVs (`Setup\Toy2\CD\rtlibs\*.dll`). Levels 11–15 are empty here too. 7-Zip (`C:\Program Files\7-Zip\7z.exe`) can list or extract it. |
+| Rust | stable via rustup, MSVC build tools; audio through `rodio` 0.19 |
+| Ghidra | 12.1.4 at `C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC`, JDK 21 at `C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot` |
+| Decompiled output | `re/out/c/<address>.c` (2,811 functions), `re/out/functions.tsv`, `re/out/strings.tsv` |
+| Disassembler | a Python venv with `capstone` + `pefile` in the session scratchpad (`dis.py`: `dis <va> <len>` / `hex <va> <len>`; `xref.py <hex>`: every instruction mentioning an address; `floats.py <va> <n>`). Recreate it in a new session if the scratchpad is gone. |
+
+Commands:
+
+```bash
+cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"
+```
+(change `level01` for other levels; F plays as Buzz)
+
+```bash
+set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
+cargo test --release
+```
+(about 100 tests; those needing game data skip without `TS2_GAME_DIR`)
+
+To re-run the Ghidra dump on the existing project (about 10 minutes):
+```bash
+set JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot
+C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC\support\analyzeHeadless.bat re\proj TS2 -process toy2.exe -noanalysis -scriptPath tools\ghidra -postScript DumpAround.java re\out
+```
+Some functions aren't in the dump (level 10's start-up 0x425B60 wasn't): disassemble those.
+
+### Viewer keys
+WASD move, Space jump (×2 double jump), E stomp (Circle), mouse 1 / Square laser (hold to
+charge), Q first person (mouse look), X target lock, F play / free camera. Debug keys: T
+toggles the colour-key transparency (coins get green backgrounds; the user hit it by accident
+once), C cycles vertex-colour modes, Z shows zone-0 meshes, N creatures at their spawns, P
+places a creature.
+
+## 4. How the code is laid out
+
 | File | What |
 |---|---|
-| `src/game.rs` | `World` (swept sphere vs TERRAIN.ALL; movers switchable/placeable through `Cell`s; room map at ¼ scale; surfaces) and `Player` (Buzz's 60 Hz integer controller; pre-move hook; spin attack; hurt/death/respawn; health and lives) |
-| `src/buzz.rs` | Move-table animation player (0x401000 stepper), state numbers |
-| `src/camera.rs` | Original follow camera (0x4045E0 main path) |
-| `src/audio.rs` | Sound ids → samples, positional volume/pan, jingles (negative ids) |
-| `src/scene.rs` | Level/creature batches; instance matrices; billboards (codes 5/6); sprites; special objects |
-| `src/specials.rs` | Run-time special-object transforms (0x4CCxxx) |
-| `src/pickups.rs` | Coins, batteries, tokens, lives, power-ups; dropped coins |
-| `src/boxes.rs` | Pushable objects along level.dat paths (0x433700) |
-| `src/level1.rs` | Level 1's setup/script (0x417680): doors, fan, plank, tops; crib bars; Bo Peep, Hamm, Mr Potato Head conversations; RC race |
-| `src/creatures.rs` | Creature slots, behaviour script interpreter, movement, animation, contacts (ellipsoids from .all), hits, death, laser ray test |
-| `src/laser.rs` | Laser beams: auto-aim, rays, bounce, ribbons |
-| `src/hud.rs` | HUD elements 0-6 (lives, health, coins, spin, laser, sheep, laps), sprite table |
-| `src/particles.rs` | Particle slots, spawn modes and types from the exe's tables, update, death actions, drawing, touches |
-| `src/look.rs` | First-person look mode (0x4038E0): targets, marker/aim dot, helmet and arms |
-| `src/dialog.rs` | Speech box (layout, typing, box) and the HUD font |
-| `src/cutscene.rs` | Talk cutscenes (0x4027F0 / 0x402A10): placing, camera glide, token at the end |
-| `src/formats/` | `ngn`, `terrain`, `leveldat` (lists, pickups, special-object records), `packets`, `anim`, `exe`, `all` |
-| `src/bin/ts2-viewer.rs` | Viewer and play mode (two-pass level draw, per-frame billboards/specials/creatures) |
+| `src/game.rs` | `World`: swept sphere against `TERRAIN.ALL`, with movers that can be switched, moved and turned, a room map, surfaces. `Player`: Buzz's 60 Hz controller (move, jump, double jump, stomp, spin, super spin, laser, poles, ledges, mantle, zip lines, water, updrafts, hurt, death). |
+| `src/buzz.rs` | Move-table animation player (0x401000), state numbers |
+| `src/camera.rs` | The follow camera (0x4045E0) |
+| `src/look.rs` | First person (0x4038E0): targets, aim dot, helmet and arms (specials 0x2D–0x2F) |
+| `src/creatures.rs` | Creature slots (0x52C840 + 0x9C × slot), the behaviour-script interpreter (0x4076F0), movement, animation, contacts, hits (0x408A60), death, and per-type routines (the jump table at 0x407058) |
+| `src/script.rs` | `Script` trait and `Common` (shared level state: conversations, info scenes, look-at scenes, HUD bits, token reveals, sounds, particles). Shared routines: `hamm`, `hint_character`, `call`, `finder`, `potato`, `Tilt` (0x49EC00), `PathRunner` (0x48ACC0). `for_level` builds the script for levels 1–10. |
+| `src/level1.rs` … `src/level10.rs` | Each level's start-up and frame script, with a module doc listing what's ported and what isn't |
+| `src/pickups.rs` | Coins, batteries, tokens (with the appear animation), lives, shield, power-ups, info signposts, ability cages, dropped coins |
+| `src/boxes.rs` | Push boxes along `level.dat` paths (0x433700 / 0x4346C0) |
+| `src/rewards.rs` | Reward sparkles (list 58, 0x49FB40) |
+| `src/particles.rs` | Particles from the exe's spawn and type tables |
+| `src/laser.rs` | Laser beams, auto-aim, ribbons |
+| `src/hud.rs`, `src/dialog.rs`, `src/cutscene.rs` | HUD (0x49FD40), speech box (0x401C30), talk scenes (0x4027F0 / 0x402A10) |
+| `src/audio.rs` | Sound ids → samples, positional volume and pan (0x4A3810), jingles |
+| `src/scene.rs`, `src/specials.rs` | Draw batches (levels, creatures, billboards, sprites, specials); run-time special-object transforms (0x4CCxxx) |
+| `src/formats/` | `ngn`, `terrain`, `leveldat`, `packets` (incl. the backdrop picture), `anim`, `exe`, `all`, `bmp` |
+| `src/bin/ts2-viewer.rs` | The viewer: rendering (sky pass, low-detail pass, detailed pass, HUD), input, audio output, token sequence and menu, glue between everything |
+| `examples/` | About 45 diagnostics (§9) |
+| `tests/` | Integration tests, one file per level plus systems |
 
-## Status (what the user has confirmed)
-- Play mode (F) in level 1: movement, jumps, stomp, climbing, camera, sounds: feel matches the original.
-- Pickups: collections work, coins etc. look correct. Starting lives: 5.
-- Earlier round's flicker/banister fixes, level objects, creatures, combat: not reported as broken.
+### Units and conventions
+- Object units = level units × 32. `Player::pos` is in level units (f32); `pos_obj()` gives object units.
+- +Y is **down**. Floors face −Y.
+- Angles are 12-bit (0x1000 a turn) in game code, and 16-bit in `.ngn` instance rotations. The mover table uses 0x4000 a turn (>> 2 for 12-bit).
+- 60 ticks a second (0x490860 counts elapsed ms × 60 / 1000).
+- Scripts address movers by terrain link id − 1. A room is the low byte of a room-map object's flags.
+- `level.dat` lists: table 0x559C70 + 4 × type. 58 is rewards / box spots, 60 ledges (bar pairs), 61 poles (bottom / top pairs), 62 zip lines, 63 pickups, 65 room portals.
+- Buzz's object is at 0x52F300 (pos +0, vel +0x68 / +0x6C / +0x70, facing +0xE, state +0x90).
 
-## Round 5 (2026-10-14): done, not yet tested by the user
-The user asked for first-person mode (with the crib in level 1) and to carry on with the plan. Done and committed:
-- **First person** (`src/look.rs`): Q = L1 toggles, WASD looks, X = R1 cycles targets (hold to lock), mouse 1 fires. Helmet/arms model (specials 0x2D-0x2F) shown at the eyes, hidden otherwise (it used to sit on the living-room floor).
-- **Crib** (room 1): two COTBIT bars shootable only from inside the crib; both down -> the side goes and the crib parts drop. Test `tests/crib.rs`.
-- **Conversations**: speech box + talk cutscene camera; Buzz frozen, jump continues, Square skips. Bo Peep (find 5 sheep -> token 1, HUD sheep count), Hamm (50 coins -> token 0), Mr Potato Head (find his ear, the "Other" pickup -> cosmic shield ability bit; the shield's use isn't ported).
-- **RC race** (room 2): touch the car, talk, then race 3 laps round the room; win -> token 2, HUD laps counter; leaving the room resets it. Test `rc_race_runs_and_counts_laps` in `tests/bopeep.rs`.
-- `World::room_at` now asks 24 units above the point (feet sit below the floor surface; it returned None at floor height in room 2).
-- New examples: `kinds <levelNN dir> <level>` (pickups by kind), `room <levelNN dir> x y z` (room-map lookups).
+## 5. What has been done
 
-- **Tin Man boss** (room 5, after the round-5 handoff): walk up to his platform -> challenge conversation -> fight. Hit him with the laser while he's open (animations 3 / 5); he flashes, flinches; below 10 health he dies and token 4 appears. Boss health bar (HUD element 7), camera turns towards him, engine hum. Test `tin_man_fight_ends_with_a_token`. - **Room 5 see-saw** (0x49EC00): movers can now turn (`World::turn_mover`, collision rotated about the mover's position; `ride_turn` carries Buzz standing on it). It rests tipped one way (±39°) and tips towards where Buzz stands, harder when he lands. Kind-8 movers now ignore terrain flag 0x100 (the original's mover loop does). Test `tests/seesaw.rs`.
+### Systems (all levels)
+- **Buzz:** the full controller (§4), checked against the original again and again with the
+  user. Pad mask 0x309 while flag 4 is set (dizzy, getting up, launched, token sequence). No
+  jump while pushing.
+- **Collision:** the original `TERRAIN.ALL`; movers move, turn and switch, and carry Buzz. A
+  rising tilting plank lifts an airborne Buzz back on top. Harmful surfaces hurt on any
+  contact.
+- **Creatures:**
+  - The script interpreter, chase and steering, hits, knock-back, death, coin drops.
+  - Routines for:
+    - zurg3, the Tin Man, sheep and the RC car;
+    - the lawnmower, army man, Zurg car and kite;
+    - the friend types, pod, drill, plane, box, dino, boat, clown and car boss;
+    - level 9's flails and minions, and the spider.
+  - All stay in play everywhere; only those in the original's range of the camera make sound or call out.
+- **Conversations and scenes:** the talk camera (position from track 2, look-at from the second
+  track), typed speech box, info signposts, look-at scenes (counted down for every level).
+- **Tokens:** the appear animation, the token sequence and "keep playing / exit level" menu
+  (0x830CC4), the victory jump with Buzz turning to the camera and the camera following him.
+- **HUD:** lives, batteries, coins, charge meters, challenge counters, boss bars, power-up bar.
+  Batches keep draw order.
+- **Pickups:** everything in level 1, the shield ball riding with Buzz, the laser power-up
+  (1200, −10 a shot), Mr Potato Head's missing part hidden on his model until handed over.
+- **Rendering:**
+  - The sky pass: the PS1 backdrop picture plus sky and ground colours.
+  - Then the whole low-detail set, then (depth cleared) the detailed set.
+  - Back-face culling on opaque level geometry.
+  - Reversed-Z depth.
+  - Data fixes: billboards, black faces lit, keyed glass.
+- **Audio:** positional sound with the camera's pitch, loops that follow their owner, jingles.
+  Characters only call when nearby.
 
-- **Room gadgets**: room 2 lift (climb pole 8: special 6 and the pole sink 1472 units, speeding up), room 3 spring (stomp onto surface 8 next to Hamm: thrown ~5400 up along heading 0x11E onto a shelf; new `Player::launched` flight mode), room 4 fountain squirts, steam vents and a hot spot that costs a battery. Tests `tests/rooms.rs`.
+### Level 1, Andy's house: complete
+Crib escape, Bo Peep's sheep, Hamm's coins, Mr Potato Head and his ear (cosmic shield cage),
+the RC race, the Tin Man boss, attic see-saw, room 2 lift, springs (room 3 stomp spring, room 4
+trampoline box), the fountain, steam and hot spot, push boxes (including the basement door and
+the spring box), the swing bars (ledges), zip lines, the plank, the fan, the pop-up
+platforms, the garage drill bits, info signposts, hint Hamm, reward sparkles, the token menu
+and exit.
 
-- **Hint Hamm** (slot 0x23, list 0x27, 0x4A1E60): calls now and then (slot 70); touched, gives the hint for the next token not yet collected (texts via pointers at 0x4F0F7C), or "you have all the tokens". `Level1::tokens` is set by the viewer from `Pickups::tokens`. Bo Peep calls out (sound 0xB2, 0x4A26F0) until she has her sheep. No dedicated test yet (builds, suite passes).
+### Levels 2–10: scripts ported, not playtested
+Each `src/levelN.rs` module doc lists what it covers. In short:
 
-- **Reward sparkles** (`src/rewards.rs`, 0x49FB40, all levels): list 58's box spots (0x71) and challenge rewards (0x73) twinkle near the camera; level 1 puts out reward 1 at the start and on the trampoline, reward 0 on the spring.
-- **Info pickups** (the 9 tutorial signposts, 0x402610): touching one plays its scene with the tutorial text. **Cosmic shield cage**: the shield pickup (id 0x31) is caged and can't be taken until Mr Potato Head gets his ear; then the cage (special 0x19, mover 10) goes and it shows at double size. Tests in `tests/rooms.rs`.
+| Level | Ported | Not ported |
+|---|---|---|
+| 2 | see-saws, water, Hamm, hint Hamm, the sarge's troops, stomp switches → door → spring, rope lift, the Zurg kite boss | drawbridge, tree, ball, squash pad, boxes list, kite string effects |
+| 3 | the slime boss (rounds, regrowth, look-at scenes) | lights, fog, drips, camera shake |
+| 4 | hanging platforms and rigs, shuttles, presses, drawbridge, button lift, water, characters, timed challenge, the drill boss | the crane combination puzzle (token 3), drips, lights |
+| 5 | gliding platforms, see-saws, trampoline, water, the clown, characters, challenge | the bubble machine, the falling gate, drips, fog |
+| 6 | the boss arena | music change, camera drift |
+| 7 | path movers and locks, spring, trampoline, egg challenge and gate, characters, the dino | bobbing platform and button race, rockets, chicks pushed by boxes, drips, sparks |
+| 8 | spinners, characters, flying race, water, the car boss | the claw machine, 0x422D20, the room 2 cannon, swaying specials, lights |
+| 9 | the boss, flails, minion rounds, chase, beam | flail call-up animation, sparks |
+| 10 | spinners, air shafts, fans, wind, lifts, vents, stomp-switch puzzle, sparks, characters, runaway token, the spider | lifts pausing while Buzz mantles onto them (0x559E80), lights, electric beams |
 
-### Round 10 (2026-10-16)
-- Level geometry is drawn with back faces culled (front = counter-clockwise; 97% of triangles on walkable floor wind upwards; the back faces are mostly baked pure black). Drawing both sides showed black walls (attic entrance post) and box insides fighting the lit fronts. Billboards, creatures, specials, HUD are not culled. The "decal" list for instance flag 0x80000 stays with a zero nudge (that flag is ordinary geometry).
-- The low-detail set is drawn whole under the detailed one (it fills gaps), not from 10000 out.
-- Talk camera: position from the point-2 track, looking at the (n − 2) / 2 + 2 track (0x402A10 command 10 → 0x402030(target, position)); it was swapped.
-- Specials naming the same instance: the later id keeps it (level 1: 0x1A and the helmet 0x2D on instance 0).
-- Creatures out of the original reach make no sound.
-- Harmful surfaces (types 0–3, 16–19) count when touched from the side too (0x487AB0 reads any contact); scripts' `player.surface` stays the floor's.
-- Open: the garage drills (movers 6–8, no surface type: what hurts in the original isn't found), the second set of bars (list 60 ledges; grabbing works in code, needs the user's repro), glass jars (likely the PS1 subtractive blend), talk box empty when Space is held.
+Also not ported anywhere: rocket boots (0x4A4D60 etc.), the grappling hook (0x4A5370, list 59),
+lights (0x44F200), floor shadows, homing particles, footstep dust, music and FMVs, a front end
+or level select. Levels 11–15 have no data.
 
-### Rounds 8–9 (2026-10-16): user feedback on level 1
-- Look-at scenes now count down for every level (the viewer ticks them unless the script did: `Common::look_ticked`); the token camera no longer sticks. The token menu takes Space (it arrives as a speech-box press).
-- Creatures stay in play everywhere (`always_active`, deviation: the original freezes them beyond ~3200 of the camera); `Creature::in_reach` keeps the original test, and characters only call out within it (Bo Peep no longer heard in the attic).
-- Audio: the listener's forward includes the camera pitch (as 0x4A3810's matrix rows); looping owned sounds (engines) follow their owner's balance (`Looped` / `Gains`).
-- First-person mouse: 0.8 units of 4096 a count, fractions carried.
-- Background: level.raw packet 36 is the PS1 backdrop picture (192×128, 8-bit palette; `packets::backdrop` / `backdrop_rgba`, `examples/backdrop`). The PC (0x48FB70) only clears to its first / last pixel colours above / below a horizon line; the viewer draws the picture itself (deviation, user's choice), tiled round the view, turning with it, sky colour above, ground below (`sky_batch`).
-- Mr Potato Head (creature id 9): node = the level's item number hidden until handed over (0x4A2080 / 0x4A2480 via 0x4CE570 → 0x4CAB80 part flag bit 0; item 1 also 0xB, 0xC, 0xF). `CreatureNode::hidden`.
-- Box hint sparkles (list 58 group 0) go once that box is pushed (0x433700 → 0x49FAB0).
-- Coin sprites are alpha-tested and write depth (they drew over banister billboards).
-- Shield pickup: its object becomes the ball riding with Buzz (0x4A5170, `Pickups::follow_shield`).
-- Instances with flag 0x80000 (attic boxes' second copies) are drawn a hair nearer (`DECAL`), so shared faces don't fight.
-- Checked, original values: laser power-up 1200 − 10 a shot = 120 shots (0x434B9E `sub eax, 0xa`); 60 Hz ticks (0x490860). Tin Man's script and chase match the original.
-- Open, need the user's detail: text sometimes not showing (Bo Peep / Potato), the floating first-person model downstairs (helmet specials and zone-0 instances are hidden), which swing poles miss their loop, dark lighting textures, black texture by the attic entrance, the rope lift, the exit animation camera, hint camera clipping.
+## 6. Problems met, and what they taught
 
-### Round 7 (2026-10-16): levels 5–9, and the user's round-6 feedback
-- User feedback (8 points) and what was done (none tested yet):
-  1. Lamp / attic-box flicker: z-fighting; the renderer now uses reversed-Z depth (`perspective_infinite_reverse_rh`, compare Greater, clear 0). Ask whether it's gone.
-  2. Tin Man chase: compared line by line with the original; zone round his home, constants and steering match. Ask the user what exactly looks wrong.
-  3. Moving while dizzy / getting up after a long fall: pad mask 0x309 while Buzz flag 4 is set (0x49DFE0): dizzy, fall recovery, launched, token sequence (`Player::input_locked`).
-  4. Q first person: presses latched until a tick runs; no jump / spin in first person; mouse look added (deviation).
-  5. Talk prompts: Space skips the typing (dialog `fast` latch); input masked while talking; jump blocked until Space is released.
-  6. Tokens: the appear animation (0x4A0DB0: 180-tick look-at, burst at 100, sound 0x33, 16 sparkles) and the token sequence 0x830CC4 (stop, wait for Buzz to stand still, then the menu; boss levels the victory state).
-  7. Laser power-up: 0x53C824 = 1200 from the Timer pickup; held fire shoots green (kind 3) every 6 ticks, −10 a shot; HUD bar.
-  8. Health: 14 batteries at the start, the 15th hit kills — the original's values.
-- Level 5 (`src/level5.rs`): glide movers, see-saws, trampoline, water, the clown, characters, the challenge.
-- Level 6 (`src/level6.rs`): the boss arena (everything always in play there, as in 0x4086F0).
-- Level 7 (`src/level7.rs`): paths, locks, spring, trampoline, egg challenge, characters, the dino boss (0x1A).
-- Level 8 (`src/level8.rs`): spinners, characters, flying race, water, the car boss (0x2F).
-- Level 9 (`src/level9.rs`, 0x424390 / 0x424490): the boss (slot 0, type 54) with six flails and the minion rounds (pairs from 0x4F2F58; the boss is held out of reach at 600 until each pair is beaten), the chase, its beam. The flails' call-up animation (0x405CF0 anim 1 seq 0x17) and the sparks while calling aren't drawn.
-- Tests `tests/level5.rs`–`level9.rs`.
-- Not ported: level 4 crane puzzle, level 8 claw machine, level 5 bubble machine, level 7 rockets and button race, level 2 drawbridge / tree / ball.
-- Level 10 (`src/level10.rs`): spinners, air shafts, fans, wind, the two lifts, vents, the stomp-switch puzzle, sparks, characters, the runaway token race, the spider boss (creature 0x1F, 0x425700). Player gained `updraft`, `push_by`, `floating`; pickups `move_token` / `hide_token`. Not ported: lifts freezing while Buzz mantles onto them (0x559E80), lights, the electric beams in rooms 7 / 12. Tests `tests/level10.rs`.
-- Next: the unported pieces above, then particles and the rest of "Next steps".
+These cost real time. Most are worth checking first when something similar turns up.
 
-### Round 6 (2026-10-15): the other levels
-- Levels 11–15 are not in the install (CD only): the playable set is 1–10.
-- `src/script.rs`: every level's script is a `Script` (deref to `Common`: conversations, info scenes, HUD bits, token reveals, sounds, particles, sparkles, the random stream) built by `script::for_level`. Shared routines: `hamm`, `hint_character`, `call`, `finder`, `potato`, `Tilt` (0x49EC00, any yaw/mode). Ability gates are generic in `Pickups::open_gates`.
-- Token setups for every level's start-up (pickups).
-- Creature routines for levels 2–10: lawnmower 0xC, army man 0xD, Zurg car 0xE, kite 0xF (level 2 boss), pod 0x14 (ground laser, ribbons via `Lasers::ribbons`, hurts via `Creatures::hurts`), plane 0x18 / box 0x19, boat 0x1B, the find-them characters 0x13 / 0x17 / 0x1C / 0x26 / 0x2B.
-- Water (`Player::water`, flag 0x100: quarter-scale airborne step).
-- Level 2 (`src/level2.rs`): see-saws, water, Hamm, hint Hamm, the sarge and his troops (troop 4 starts untouchable: something in the level frees it, not found yet), stomp switches → door → spring, the rope lift, the kite boss. Tests `tests/level2.rs`.
-- Level 3 (`src/level3.rs`): the slime boss (rounds, regrowth, look-at scenes; `Common::look`, creature `scale` / `hit_size`). Test `tests/level3.rs`.
-- Moving platforms: `script::PathRunner` (0x48ACC0 path programs), `World::move_mover` / `mover_motion`, Buzz rides movers.
-- Level 4 (`src/level4.rs`): hanging platforms and rigs, shuttles, presses, drawbridge, button lift, water, characters, timed challenge, the drill boss (creature 0x16). The crane combination puzzle (token 3) is not ported. Tests `tests/level4.rs`.
-- Next: level 5 (0x41E390 / 0x41E880), 6 (boss, 0x41FFB0 / 0x420060), 7, 8, 9 (boss), 10. Each: read the start (scratchpad `starts.py` lists its calls) and frame script, port characters with the shared routines, then the level's bosses/gadgets, a test file per level.
+**Reading the exe**
+- **Flag bytes vs flag words.** A hit clears `byte +0x41 & 0xFB`, which is flag word bit 0x400.
+  It was ported as flag 4 (walking), so bumped walkers such as the RC car stopped for good.
+  When the decompiler shows a byte write at an odd offset, convert it to the word bit.
+- **Uninitialised "last health".** Bosses compare their health with a remembered value. The
+  Tin Man's wasn't set to his starting health, so his first opening looked like a hit and he
+  flinched shut. Set those values at start-up, as the original does.
+- **Swapped roles.** The talk camera's two tracks were the wrong way round: position and
+  look-at. `0x402030(target, position)` sorted it out. Check argument order from a second
+  call site.
+- **State set at the event.** The ledge grab sets Buzz's state itself (0x435100), and the
+  animation override then leaves it alone. Without that, a grab from a double jump stayed in
+  the jump pose. When "sometimes it animates" comes up, look for a state written directly at
+  the event.
+- **Special-object ids sharing an instance.** In level 1, ids 0x1A and 0x2D both name
+  instance 0, the first-person helmet, which then showed in the living room. The later id now
+  keeps it.
+- **Which objects are which.** The "drills" were first taken for specials 1–3, which are
+  wooden push boxes. The real bits are specials 9 / 0x11 / 0x12, which the level script also
+  spins (0x417510). Use `examples/under` and `zones` and compare with the user's screenshots
+  before changing anything.
+- **Behaviour missing from the exe.** The garage drills moving and hurting couldn't be found
+  anywhere: no script, creature, path or surface. They were added as a deviation, timed with
+  the user. Some behaviour may live in data that isn't decoded yet.
 
-Ask the user to try (none of round 5 is user-tested yet):
-- Tin Man: climb the plant and rope to the attic (room 5), get challenged, shoot him while he's open; health bar at the top, token 4 when he dies.
-- Room 5 see-saw: stand / land on either end.
-- Room 2 lift: climb pole 8 (by the RC car's room door, about (1271, 6746, -3030)).
-- Room 3 spring: jump and stomp onto it next to Hamm (about (17601, 6695, -8278)): thrown up onto a high shelf.
-- Room 4: fountain squirts / steam; the hot spot near (23462, 4601, -13082) costs a battery.
-- Talk to the hint Hamm.
-- Earlier round-5 items: Q in the bedroom crib and shoot both bars; talk to Bo Peep / Hamm / Mr Potato Head; collect the sheep and the ear; race the RC car in room 2.
+**Engine and rendering**
+- **Creature activity.** The original freezes creatures beyond about 3200 units of the camera,
+  which looked broken at our draw distance. They now always run, but the original range still
+  gates sounds and calls. Otherwise far-off enemies and characters are heard through floors.
+- **Black faces.** The level data has faces baked pure black: back faces, and a few front
+  faces such as the attic shaft wall. Back-face culling handles most; objects that are partly
+  lit fill in the rest. "Decal" depth nudges were tried first and were wrong; flag 0x80000 is
+  ordinary geometry.
+- **Low-detail set.** Clipping it per pixel from 10000 out left holes. It is now drawn whole
+  under the detailed set.
+- **Colour-key glass.** The kitchen jars are blended faces mapped onto pure key green. They're
+  drawn green only for non-flat objects; windows must stay see-through.
+- **HUD order.** Grouping HUD quads by texture drew the speech text under its box whenever the
+  power-up bar was showing. Keep draw order.
+- **See-saw.** Standing feet sit a few units below the floor surface (by design), so any "did
+  the floor rise past his feet" check needs a margin and an airborne condition.
 
-## User feedback, round 4 (2026-10-14), and what was done
-- Audio, HUD, laser look: user happy. Attic box works.
-- **No push animation** -> state 0x19 while pushing (Player.pushing, set by Boxes).
-- **Charging cut by the idle fidget** -> fidgets give way to idle while laser/spin/charge run (0x4011D0); the whole-body-state rule then no longer cancels them.
-- **W/S snap freezes** -> each snap restarts the skid's frame list (+0x92 = 0xFFFF), so the 26-tick skid plays in full each time. Keyboard headings are now relative to the camera's orbit yaw (0x52F3AC is its ideal position).
-- **Mantle missing** -> 0x435F30 ported (jump at a ledge whose top passes your head height: put on top, 82-tick climb animation, state 9). Also the ledge grab 0x435100 (level.dat list 60, 7 in level 1, on the basement walls 2750 up) and zip lines 0x4359D0 (list 62, 2 in level 1). Tests: `mantle_climbs_onto_a_high_ledge`, `level_1_ledge_is_grabbed_and_climbed`, `level_1_zip_line_is_ridden`.
-- Hurt (state 5) and dying (7) animations now play.
-- Then (not yet tested by the user): particles (src/particles.rs: laser impacts and sparks, spin rings, death bursts), ZURG3 shooting (0x406220) with shots that hurt Buzz or bounce off his spin (0x4100F0), dropped coins as the original bouncing coin particle (type 0x3D) picked up by touch.
+**Tools and environment**
+- A rebase with `core.autocrlf=true` checked everything out as CRLF, and multi-line
+  perl / sed patches then silently didn't match. The repo is now `core.autocrlf=input`.
+- `perl -pi -e 's|…|…|'` with `|` as the delimiter mangled patterns containing `||` and put
+  code at the top of a file twice. Use the Edit tool for anything non-trivial, or a different
+  delimiter.
+- `python -` (reading a script from stdin) hangs in this shell. Write scripts to the
+  scratchpad and run them with the venv's python, using `-I`.
+- Bash heredocs drop backslashes; use `chr(92)` in Python, or write files with the Write tool.
 
-## User feedback, round 3 (2026-10-14), and what was done
-1. **Pickup sound plays several times; push scrape awful.** Scrape: sounds with bit 15 in their slot word are owned loops (0x4A3980): now one looping buffer per (slot, owner), stopped 16 ticks after the owner last played it. Pickup: the exe's jingle −1 plays PICKUP5 six times (PS1 pitches unused on PC) yet the user hears it once in the running game; now only its first note plays (deviation, noted in the viewer). Ask again.
-2. **Stuck pushing the attic box (box 6, path with a 90° corner).** The original lets go when the stick points more than 90° from the push (tail of 0x4346C0); ported, plus the grab compares the facing, and facing is held to the push angle. Test `attic_box_goes_round_its_corner`.
-3. **Charging gun/spin doesn't work.** Most likely the meters were invisible (item 5) and the whine/whirr were broken by the buffer pool; both fixed. Logic is unit-tested. Ask the user to check again.
-4. **W/S spam snaps with the skid sound.** The original's turn code snaps and skids on every reversal too, but the keyboard goes through a d-pad table (0x433F40): W+S held together = forward, not "no input"; ported (`game::dpad_heading`, camera-to-Buzz angle). Skid now also needs no laser. If still different, ask what the original does exactly (does Buzz turn smoothly? no sound?).
-5. **HUD bars missing.** Screen sprites draw last-queued first (0x4B8DD0); the dark meter frames were covering the bars. Reversed.
-6. **Laser thickness wrong.** Ribbon UVs were transposed: the sprite's 31-px axis runs along the beam, the 8-px axis across (0x4B9100). Fixed, with cell 2 at the muzzle end. Position was confirmed good.
+## 7. Deviations from the original (keep the README's list in sync)
+- Every creature stays in play (the original freezes distant ones); only nearby ones make
+  sound or call out.
+- First-person mouse look (0.8 units of 4096 a count).
+- The PS1 backdrop picture is drawn behind windows and the sky (the PC only used two colours
+  from it).
+- Pure-black faces in otherwise lit objects take the object's average light. Fully keyed glass
+  on non-flat objects is drawn dark green at half alpha.
+- Coins are alpha-tested and write depth (no distance fade), so cut-out billboards hide them.
+- Level 1's drill bits rise and fall (700 units over 3 s, out of step) and hurt within 200
+  across.
+- Pushing can start just after leaving the floor (coyote ticks), for the sloped kitchen shelf.
+- The push animation only plays while the box moves (the grunt still plays on grab, as the
+  original).
+- The pickup jingle plays its first note only (the user hears it once in the original).
 
-## Next steps (in priority order)
-1. **Where I stopped (2026-10-14):** level 1 script 0x417680 is ported except the items below. Remaining small level 1 items: a test for the hint Hamm, the camera-height limits while on pole 10 (0x53C5E4 = 0x3C), the spring's camera lag. Then move on to the other levels (user: "once you have finished with level 1, proceed with rest"). ("Room 1 falling toys" from earlier notes isn't in 0x417680.)
-2. Particles still to do: homing (flag 8, kinds 0x1D/0x26), 0x410850 explosions (death actions 1/2/4), lights 0x44F200, floor shadows (0x54F098), Buzz's footstep dust 0x4A2D80.
-3. Token sequence / menu (0x49FD40 with 0x830CC4 = 9), rocket/hover boots (0x4A4D60 / 0x4A4F80 / 0x4A4EC0, 0x4A4BB0; level 1 has no boots pickup), grappling hook in first person (0x4A5370, list 59).
-4. Original collision resolver if gaps persist; slippery surface 13; riding movers 0x488E10.
+## 8. How to port and finish a level (the plan for levels 2–10)
 
-## Useful facts
-- Level 1 slots: crib bars 0 / 2, Bo Peep 1, RC car 0x1D, Hamm 0x1E, Mr Potato Head 0x1F. Talk lists: 0x19 Potato, 0x1A Tin Man, 0x1B RC, 0x1C Bo Peep, 0x1D Hamm; RC waypoints list 30.
-- Units: object units = level units × 32; 12-bit angles in game code, 16-bit in `.ngn` instance rotations; +Y is down.
-- Buzz's object is at 0x52F300 (`docs/re/functions.md`). Creatures: 0x52C840 + 0x9C × slot.
-- `level.dat` list table: 0x559C70 + 4 × type (58 rewards/box spots, 61 poles, 63 pickups); special-object records after section 2.
-- Scripts address movers by link id − 1. Room = low byte of the room-map object's flags.
-- Sound table 0x502950; jingles 0x503828.
-- Music is CD audio, FMVs are on the CD too: neither is in the install (ask the user for a BIN/CUE rip or the CD's tracks).
+Every level's script is already ported, so what's left is mostly playtesting with the user and
+fixing what they find, plus porting the gadgets listed as "not ported". The method that worked
+for level 1:
+
+1. **Read the level's module doc** (`src/levelN.rs`) and its frame script in
+   `re/out/c/<frame address>.c`. Start-ups and frames are at tables 0x4A1AB8 / 0x4A1B68 by
+   level − 1. Frames: 0x417680, 0x4190C0, 0x41AA10, 0x41C640, 0x41E880, 0x420060, 0x421340,
+   0x423200, 0x424490, 0x425F60.
+2. **Map the level's objects** before touching behaviour:
+   - `examples/creatures levelNN` (slots, types, records, behaviour scripts; `WORDS=140` for
+     long scripts);
+   - `examples/lists <dir>` (`ALL=1` for every point);
+   - `examples/pickups <dir>` (specials and pickups);
+   - `examples/boxes`;
+   - `examples/movers <dir>`;
+   - `examples/under <ngn> x0 y0 z0 x1 y1 z1` (what's in a region, with special ids);
+   - `examples/zones`;
+   - `examples/surfaces <dir> x y z r`.
+3. **Ask the user to play it** in the viewer and send screenshots of anything that looks or
+   behaves wrong. Most level 1 bugs were found this way, and each needed the user's description
+   of the original.
+4. **For each bug, find the original code first.** Use Grep over `re/out/c` for globals
+   (`52f3`, `53c6`, etc.) and `xref.py` for every reference to an address. Disassemble where
+   the decompiler drops arguments or values passed on the FPU stack (0x4A3810). Compare line
+   by line before deciding the port is wrong. Several "bugs" turned out to be the original's
+   behaviour, such as the power-up's 120 shots and the Tin Man's chase zone.
+5. **Write a diagnostic before a fix** when the cause isn't obvious: a small `examples/` that
+   loads the level and simulates the case (`pushsim`, `bars`, `rope`, `seesaw`, `tinman`,
+   `potato`, `dialog`). These found most of the subtle issues without the viewer.
+6. **Fix, add or extend a test** in `tests/levelN.rs`, run the full suite, commit, push.
+7. **Report** to the user: what was wrong, what changed, what to try, and which parts are
+   guesses or deviations.
+
+Suggested order: **level 2** (the next in play order, with lots of gadgets still to port:
+drawbridge, tree, ball, squash pad, boxes), then levels 3–5, the level 4 crane puzzle, level 6,
+then 7–10. Bigger items after that:
+- a front end and level select (load the next level after "exit level";
+  `exe::level_number`, `data\levelNN`);
+- the rocket boots and grappling hook (abilities from Mr Potato Head in later levels);
+- music from the CD WAVs (`tracks.txt` maps them);
+- lights (0x44F200) and floor shadows.
+
+### Facts worth knowing for the next levels
+- Mr Potato Head's item and gift per level: table 0x503A22 + 2 × level (level 1: 8 / cosmic
+  shield, 4: 9 / disk launcher, 7: 1 / rocket boots, 10: 4 / grappling hook, 13: 5).
+- Common routines take (slot, camera list, texts…). Camera lists for conversations are
+  `level.dat` lists; text pointers are exe addresses (`load_story` loads them).
+- Token ids: the start-up's 0x4A0C80(table, reward start); `pickups::level_setup`.
+- The box list per level: `boxes::box_list` (level 1: 0x4F0F90).
+- Backdrop colours for each level: `examples/sky` (level 2 is dusk purple, 3 near black, 7
+  blue / brown).
+- Level 9 and 10 boss arenas use `always_active` semantics in the original only for level 6.
+
+## 9. Diagnostics (`cargo run --release --example <name> -- …`, most need `TS2_GAME_DIR`)
+
+| Example | What it does |
+|---|---|
+| `creatures [levelNN]` | Creature slots, records and behaviour scripts (`WORDS=n`) |
+| `lists <dir>` | `level.dat` point lists (`ALL=1`) |
+| `pickups <dir>`, `kinds` | Pickups, specials, level.dat objects |
+| `boxes`, `pushsim <dir>` | Push boxes, and a simulated push of each |
+| `movers <dir>`, `surfaces <dir> x y z r` | Movers; collision objects and surface types near a point |
+| `under <ngn> box`, `zones <ngn> [zone]`, `flagged <ngn>` | Instances in a region, by zone, by upper flags |
+| `dark`, `blackfaces`, `winding`, `keyed`, `blended`, `materials`, `texsample` | Rendering data: vertex colours, black faces, winding, keyed texels, blends, material modes |
+| `overlap <ngn>` | Coplanar overlapping faces (z-fighting) |
+| `backdrop <dir> out.png`, `sky` | The level's background picture and its colours |
+| `poles`, `rope`, `bars`, `seesaw`, `tinman <dist>`, `arena` | Simulations of poles, rope exits, ledge bars, the see-saw, the Tin Man fight, a creature's zone |
+| `potato`, `dialog` | Conversations through the level script; speech-box typing |
+| `shared_specials`, `floorline`, `room`, `wander`, `stress`, `gaps` | Misc: shared specials, floor heights, room lookups, fall-through stress tests |
+
+## 10. Where to find more
+- `docs/re/functions.md`: every exe function and global identified, with behaviour notes.
+- `docs/formats/`: the file formats.
+- Each `src/levelN.rs` module doc: that level's script, objects, and what's not ported.
+- `git log`: one commit per fix, with the reason in the message.
