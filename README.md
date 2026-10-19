@@ -15,6 +15,8 @@ The original game's behaviour was worked out by reverse-engineering the exe with
 cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"
 ```
 
+Change `level01` to `level02` … `level10` for the other levels. Press F to play as Buzz.
+
 ## Ported so far
 
 - **Buzz:**
@@ -40,20 +42,29 @@ cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy
 - **Sound:** positional sound with jingles.
 - **Pickups:** tokens, power-ups, the info signposts and ability-locked items.
 - **Level scripts:**
-  - **Level 1 (Andy's House):** complete. This includes the crib escape, Bo Peep's sheep, Hamm's coins, Mr Potato Head, the RC race, the Tin Man boss, the see-saw, the lift, the spring and the tutorial signposts.
-  - **Levels 2–5:** mostly done, including their characters, gadgets and bosses (the Zurg kite, the slime, the drill and the clown).
-  - **Level 6:** the boss fight is in progress.
-- **Tests:** 70+ tests drive the real game data, covering movement, combat, bosses, races and gadgets.
+  - **Level 1 (Andy's House): complete and playable start to finish.** This includes the crib escape, Bo Peep's sheep, Hamm's coins, Mr Potato Head and his missing ear, the RC race, the Tin Man boss, the attic see-saw, the lift, springs, push boxes, swing bars, the garage drills and the tutorial signposts. Collecting a token brings up the "keep playing / exit level" menu and the exit animation.
+  - **Levels 2–10:** each level's own script is ported, including its characters, gadgets, challenges and bosses (the Zurg kite, the slime, the drill, the clown, the dino, the car, the level 9 boss with its minions and the spider). These still need playtesting.
+- **Rendering:** the original two-pass level draw, back-face culling, the PS1 background picture behind the windows and sky, and fixes for the level data's black faces and glass.
+- **Tests:** about 100 tests, many driving the real game data, covering movement, combat, bosses, races and gadgets.
 
 ## Not done yet
 
-- Level 6's boss can't be beaten yet.
-- Levels 7–10 have only the shared enemy and character code; none of their own level logic is ported yet.
-- A few puzzles and gadgets are skipped, the biggest being level 4's crane puzzle.
-- There is no token or menu screen.
-- There is no music or FMVs; these are on the game CD, not in the install.
-- The boots and the grappling hook aren't ported.
-- Levels 11–15 can't be done from the PC install, because their data is only on the CD.
+- Levels 2–10 are ported but not yet playtested, so expect bugs there.
+- A few puzzles and gadgets are skipped, the biggest being level 4's crane puzzle and level 8's claw machine.
+- There is no front end or level select yet: you pick a level on the command line.
+- There is no music or FMVs. The music and cutscene videos are on the game CD, and aren't used yet.
+- The rocket boots and the grappling hook aren't ported.
+- Levels 11–15 can't be done, because their data isn't in the install or on the CD image tried so far.
+
+## Deviations from the original
+
+A few things are deliberately different, mostly to fix what looked wrong when drawn further or sharper than the original:
+
+- Every creature keeps moving wherever the camera is (the original freezes distant ones); only nearby ones make sound.
+- First-person mode has mouse look.
+- The PS1 background picture is drawn behind windows and the sky (the PC version only used two colours from it).
+- Faces stored pure black in otherwise lit objects take the object's light, and fully transparent-textured glass (the kitchen jars) is drawn as green glass.
+- Level 1's garage drill bits move and hurt, matched to the original by eye.
 
 ## Requirements
 
