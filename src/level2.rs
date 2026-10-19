@@ -11,9 +11,9 @@
 //!   (mover 6) and the spring (special 0x15, surface 10) appears.
 //! - A rope on pole 0 that lowers special 0x19 once climbed, stretching special 0x1B.
 //!
-//! Not ported: the falling drawbridge (specials 5 / 0xB), the tree (0x1E / 0x1F), the ball
-//! (special 6, mover 7), the squash pad (surface 11), the boxes list (0x4335D0) and the
-//! kite's string and sky effects.
+//! Pushable drawbridge (5 / 0xB) and tree (0x1E / 0x1F) swap collision as they fall.
+//! Not ported: the kite's string and sky effects.
+//! The pool ball (special 6, mover 7) inflates from the squash pad (surface 11).
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
@@ -48,6 +48,18 @@ pub struct Level2 {
     rope: [i32; 3],
     /// Pole 0 has been put where the rope hangs (0x418E50 does it at the start).
     pole_set: bool,
+    /// Pool ball and pump, 0x52F648 / 0x52F6B4 / 0x52F674.
+    ball: [i32; 3],
+    ball_scale: i32,
+    ball_velocity: [i32; 2],
+    pad: i32,
+    pad_target: i32,
+    pad_cooldown: i32,
+    inflating: bool,
+    bridge_angle: i32,
+    bridge_speed: i32,
+    tree_angle: i32,
+    tree_speed: i32,
     common: Common,
 }
 
@@ -72,6 +84,17 @@ impl Level2 {
             rope_v: 0,
             rope,
             pole_set: false,
+            ball: specials.pos_obj(6).unwrap_or_default(),
+            ball_scale: 0xFFF,
+            ball_velocity: [0; 2],
+            pad: 0,
+            pad_target: 0,
+            pad_cooldown: 0,
+            inflating: false,
+            bridge_angle: 0x2EE,
+            bridge_speed: 0,
+            tree_angle: 0,
+            tree_speed: 0,
             common: Common { given: [false, false, false, true, false], ..Default::default() },
         };
         // 0x488AA0: the see-saws' turns.
@@ -86,6 +109,109 @@ impl Level2 {
         self.load_story(exe, lists, &texts, Some(INFO_TABLE));
     }
 
+
+    /// The two pushed obstacles, after the pump/switch/rope updates in 0x4190C0.
+    fn obstacles(&mut self, world: &World, specials: &mut Specials, player: &mut Player, boxes: &Boxes) {
+        if self.bridge_speed != i32::MIN {
+            self.bridge_speed = if self.bridge_angle < 0x299 { self.bridge_speed + 1 }
+                else if boxes.pushing_index() == 1 { 8 } else { 0 };
+            let before = self.bridge_angle;
+            self.bridge_angle -= self.bridge_speed / 2;
+            if before >= 0x299 && self.bridge_angle < 0x299 {
+                world.set_mover(2, false);
+                world.set_mover(3, false);
+                world.set_mover(4, true);
+                boxes.release(player);
+            }
+            if self.bridge_angle < 1 {
+                self.bridge_speed = -(self.bridge_speed >> 2);
+                self.bridge_angle = 0;
+                if self.bridge_speed.abs() < 4 { self.bridge_speed = i32::MIN; }
+                else if let Some(pos) = specials.pos_obj(5) { self.sounds.push((0x34, pos)); }
+            }
+            specials.turn_from_own(5, [0, 0, self.bridge_angle]);
+            specials.turn_from_own(0xB, [0, 0, self.bridge_angle]);
+        }
+        if self.tree_angle == 0 {
+            if player.pos_obj()[1] < -0x102F9 {
+                if boxes.progress(1) != 0 {
+                    self.tree_angle = 1;
+                    world.set_mover(0xB, false);
+                    world.set_mover(0xC, true);
+                    player.vel[0] = 0;
+                    player.vel[2] = 0;
+                    boxes.release(player);
+                }
+            } else { boxes.reset_progress(1); }
+        } else {
+            if boxes.pushing_index() == 2 { boxes.release(player); }
+            if self.tree_angle < 0x245 {
+                self.tree_angle += self.tree_speed;
+                if self.tree_angle >= 0x245 {
+                    self.tree_angle = 0x245;
+                    if let Some(pos) = specials.pos_obj(0x1E) { self.sounds.push((0x34, pos)); }
+                }
+                specials.turn_from_own(0x1E, [0, 0, 0xFFF - self.tree_angle]);
+                specials.turn_from_own(0x1F, [0, 0, 0xFFF - self.tree_angle]);
+                self.tree_speed += 1;
+            }
+        }
+    }
+
+    /// Pump and buoyant ball (0x4190C0). Velocities and positions are object units.
+    fn pool_ball(&mut self, world: &World, specials: &mut Specials, player: &Player) {
+        self.pad_cooldown = (self.pad_cooldown - 1).max(0);
+        if player.surface == Some(11) && player.coyote != 0 {
+            if self.pad_cooldown == 0 && self.pad_target == 0 {
+                self.put_out.push((3, 1));
+                self.sounds.push((0x38, player.pos_obj()));
+                self.pad_cooldown = 30;
+                self.pad_target = 0xC00;
+            }
+        } else {
+            self.pad_target = 0;
+        }
+        if self.ball_scale == 0x1000 {
+            let on_ball = player.floor_mover.is_some_and(|(id, _)| id == 7)
+                && !player.wall_mover.is_some_and(|(id, _)| id == 7);
+            if player.stomp == -40 && on_ball && player.pos_obj()[1] < 0x4400 {
+                self.ball_velocity[1] = 0x5A8;
+            }
+            specials.set_pos(6, self.ball.map(|v| v >> 5));
+            self.ball_velocity[0] = (self.ball_velocity[0] - 4).max(0);
+            self.ball_velocity[1] = if self.ball[1] < 0x4400 {
+                (self.ball_velocity[1] + 0x30).min(0x600)
+            } else { self.ball_velocity[1] - 0x30 };
+            self.ball[0] += self.ball_velocity[0];
+            let y = self.ball[1] + self.ball_velocity[1];
+            if y >= 0x4400 && self.ball[1] < 0x4400 {
+                let splash = [self.ball[0], 0x4400, self.ball[2]];
+                self.spawns.push((splash, 0x39, 2, 0, None));
+                if player.stomp == 0 {
+                    self.ball_velocity[1] = if self.ball_velocity[1] > 0x21F { self.ball_velocity[1] >> 1 } else { 0x21F };
+                }
+                let sound_pos = [self.ball[0], y, self.ball[2]];
+                self.sounds.push((0x39, sound_pos));
+            }
+            self.ball[1] = y;
+            let pos = glam::Vec3::from([self.ball[0], y - 0x1000, self.ball[2]].map(|v| v as f32 / 32.0));
+            if let Some(old) = world.mover_pos(7) { world.move_mover(7, pos - old); }
+        } else {
+            if self.inflating {
+                self.ball_scale += if player.stomp < 0 { 0x30 } else { 0x20 };
+                if self.ball_scale >= 0x1000 {
+                    self.ball_scale = 0x1000;
+                    self.ball_velocity = [0x352, -0x712];
+                    let pos = self.ball;
+                    self.sounds.push((0xB, pos));
+                }
+            } else { self.ball_scale = (self.ball_scale - 10).max(0x400); }
+            specials.set_scale(6, [0x1000, self.ball_scale, 0x1000]);
+        }
+        if self.pad != 0 { specials.set_scale(7, [0x1000, 0x1000 - self.pad, 0x1000]); }
+        self.inflating = self.pad - self.pad_target < -0x80;
+        self.pad -= (self.pad - self.pad_target) / 8;
+    }
 
     /// The switches, planks, door and spring (see the module notes).
     fn switches(&mut self, world: &World, specials: &mut Specials, player: &mut Player) {
@@ -269,7 +395,7 @@ impl std::ops::DerefMut for Level2 {
 }
 
 impl Script for Level2 {
-    fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
+    fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
         if !std::mem::replace(&mut self.pole_set, true) {
             player.move_pole(0, self.rope[1]);
@@ -277,8 +403,10 @@ impl Script for Level2 {
         self.saws[0].step(world, specials, player, 0, 0, 0x961, 0, -0x1C0, 0x1C0, 8);
         self.saws[1].step(world, specials, player, 1, 1, 0xB4A, 0, -0x1C0, 0xE0, 8);
         player.water = if player.pos_obj()[0] < -0x246FF { (1, 0x4400) } else { (2, 0x1800) };
+        self.pool_ball(world, specials, player);
         self.switches(world, specials, player);
         self.rope(specials, player);
+        self.obstacles(world, specials, player, boxes);
     }
 
     fn step_creatures(&mut self, _world: &World, _specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {

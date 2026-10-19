@@ -35,3 +35,5 @@ pub mod rewards;
 pub mod script;
 pub mod scene;
 pub mod specials;
+
+pub mod music;

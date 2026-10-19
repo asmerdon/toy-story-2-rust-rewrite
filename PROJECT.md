@@ -23,7 +23,7 @@ Install: `C:\Program Files\Disney Interactive\Toy Story 2` (180 MB).
 | `sfx\*.wav` | ~250 standard WAVs (SFX + voice) |
 | **Not in the install (on CD)** | Music (CD audio tracks; exe logs "Base CD track is %d"), FMV cutscenes, `validate.tta` (CD check) |
 
-**Action for the owner:** make a BIN/CUE image of the game CD at some point, so music and FMV can be supported.
+**2026-10-19 update:** the supplied ISO contains all 23 music WAVs and 22 MPEG videos. Level music now plays from extracted disc files; no alternate source is needed for music. FMV playback remains unimplemented. See `docs/re/asset-audit.md`.
 
 ## Architecture (target)
 

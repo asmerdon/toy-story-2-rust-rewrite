@@ -17,3 +17,21 @@
 - No original data or decompiler output added to Git; no Program Files changes or save changes.
 - Next: user visual validation of Zurg; port 11/13/14/15 from recovered data and original
   frame routines; finish outstanding gadgets in 2–10; music/FMV playback, menu and saves.
+
+
+## 2026-10-19: level 2 and original music
+
+- Removed blanket zone-0 culling: neighbourhood houses/fences/tree are zone 0.
+  Special instances still have their separate draw path; first-person models stay hidden
+  outside that mode. Regression confirms level 1's former zone-0 set is all specials.
+- Music names from 0x413150 table 0x4ECCD8, level-to-campaign inverse from 0x4986D0
+  table 0x50268C. Stereo PCM retained; dedicated looping rodio sink with M mute.
+  Local ignored media config references the private disc extract, no assets committed.
+- Ported 0x4190C0 pump/ball, drawbridge and tree behavior, including mover changes,
+  sounds, splash requests and release of pushing state; 0x418E50 box list 0x4F1518.
+- Integrated tests exercise inflation through repeated pad contact, buoyancy/collision,
+  bridge fall, tree height gate and final angles. Existing level-1 box tests pass.
+- Visual/audio playtesting left to the user. Kite string/sky, music theme transitions
+  and FMV remain outstanding; no claim of full level-2 visual sign-off.
+- Final validation: 107 tests passed with installed data and CD tracks; release binaries
+  build successfully; diff whitespace check clean. Kept local for the batch push.

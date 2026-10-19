@@ -8,3 +8,8 @@
 *.ngn
 *.raw
 *.obj
+
+# Local disc media path and original audio/video
+ts2-media.txt
+*.wav
+*.mpg

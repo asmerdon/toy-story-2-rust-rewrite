@@ -72,7 +72,7 @@ campaign level. It reports script availability separately from asset availabilit
 - Levels 2–10 are ported but not yet playtested, so expect bugs there.
 - A few puzzles and gadgets are skipped, the biggest being level 4's crane puzzle and level 8's claw machine.
 - There is no graphical front end yet. Command-line campaign selection supports levels 1–15.
-- Music and FMV playback are not integrated. The supplied disc contains 23 music WAVs and 22 MPEG videos named `.dll`; see `docs/re/asset-audit.md` for decode results.
+- Original stereo level music loops in the viewer; **M** mutes/unmutes music independently of sound effects. Set `TS2_CD_DIR` to the extracted disc folder containing `audio/`, or put that folder path in local ignored `ts2-media.txt` (already configured on this machine). Track selection follows the original executable, including campaign levels 3/6. Boss/race theme transitions and FMV playback remain to do. The disc contains 23 WAVs and 22 MPEG videos named `.dll`; see `docs/re/asset-audit.md`.
 - The rocket boots and the grappling hook aren't ported.
 - Levels 11, 13, 14 and 15 have their complete core asset sets available, but their level scripts are not ported yet.
 - Level 12 (Zurg): entrance, attacks, hit recovery, arena boundaries, death and completion are ported and simulation-tested with real data. Visual playtesting remains; lighting and the nearest-light marker are omitted.

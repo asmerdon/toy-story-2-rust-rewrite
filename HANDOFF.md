@@ -9,6 +9,32 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 
 ---
 
+## Latest continuation: neighbourhood scenery, music and gadgets
+
+- User confirmed levels 3/6 ordering and signed off level 1. Focus is now level 2;
+  Zurg polish is deferred until their ordered playthrough.
+- Fixed missing neighbourhood house/fences/tree: zone 0 is not a camera-only zone.
+  The static pass excludes special-object instances, not zone-0 scenery. Camera
+  models remain under first-person control. Removed the old Z visibility toggle.
+- Original stereo level themes loop on a separate rodio sink. **M** toggles music
+  mute; SFX remain independent. `src/music.rs` reads names from exe table 0x4ECCD8
+  and campaign ordering from 0x50268C. PCM8/16 mono/stereo decoder validates chunks.
+- `TS2_CD_DIR` overrides the media root; local ignored `ts2-media.txt` is already
+  configured to the private extracted CD folder under the Codex chat's work/disc.
+  If that folder moves, update the config to the folder containing `audio/`.
+- Level 2: loaded the two pushable objects from exe table 0x4F1518; ported the
+  falling drawbridge and tree collision swaps, pump inflation, ball launch,
+  buoyancy, stomp interaction and splashes. Box push/progress cells allow scripts
+  to release a pushed object or reset tree progress through the existing interface.
+- Remaining level-2 visual effects: kite string and sky effects. Music currently
+  stays on the level theme; miniboss/race/completion theme changes remain to port.
+- Headless regressions cover scenery inclusion and level-1 camera exclusion,
+  all 15 music tracks, malformed/stereo PCM, pump/ball and bridge/tree transitions.
+  No viewer launched: user continues visual and listening checks themselves.
+- Verification: **107 passed** with `TS2_GAME_DIR` set and local CD music configured;
+  `cargo build --release --bins` and `git diff --check` passed.
+- Changes kept local for the user's preferred batch push. No game assets added.
+
 ## 2026-10-19 continuation: read before the historical notes below
 
 **The missing-level diagnosis below was wrong. All 15 core asset sets are installed.**

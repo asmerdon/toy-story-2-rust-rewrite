@@ -7,7 +7,7 @@
 //!   right mouse + move   look          WASD          move
 //!   Space / Ctrl         up / down     Shift         move faster
 //!   N                    show / hide creatures at their spawn points (from level*.raw)
-//!   Z                    hide / show zone-0 meshes (first-person helmet view; hidden by default)
+//!   M                    mute / unmute music (sound effects stay on)
 //!   P                    place creature in front of camera
 //!   F                    play as Buzz (drops him below the camera) / back to free camera
 //!     in play mode: WASD run, Space jump, right-drag orbit camera,
@@ -125,6 +125,7 @@ struct AudioOut {
     _stream: rodio::OutputStream,
     handle: rodio::OutputStreamHandle,
     bank: ts2::audio::SoundBank,
+    music: Option<rodio::Sink>,
     /// Buzz's voice channel: one voice line at a time (0x49EA60 / 0x4A3E60).
     voice: Option<rodio::Sink>,
     /// DirectSound buffers per sample slot (0x47DE50 loads six copies of each sample): a free
@@ -312,7 +313,6 @@ struct Viewer {
     /// (index into ngn.creatures, position) for each spawn whose creature is in this level.
     spawns: Vec<(usize, [f32; 3])>,
     show_spawns: bool,
-    hide_zone0: bool,
     /// Current animation per creature (index into `anims[creature]`).
     creature_anim: Vec<usize>,
     /// Level geometry (detailed and far sets), handed to the GPU on first resume.
@@ -419,10 +419,10 @@ struct LevelSets {
     far_bb: Vec<scene::Billboard>,
 }
 
-/// Leaves out zone-0 instances when `hide_zone0`, and the special objects (drawn each frame).
-fn level_sets(ngn: &ngn::Ngn, hide_zone0: bool, specials: &ts2::specials::Specials) -> LevelSets {
+/// Special objects have their own draw pass. Zone 0 also contains ordinary scenery.
+fn level_sets(ngn: &ngn::Ngn, specials: &ts2::specials::Specials) -> LevelSets {
     let dynamic: std::collections::HashSet<(usize, usize)> = specials.instances().collect();
-    let keep = |l: usize, n: usize, i: &ngn::Instance| (!hide_zone0 || i.flags & 0xFFFF != 0) && !dynamic.contains(&(l, n));
+    let keep = |l: usize, n: usize, _i: &ngn::Instance| !dynamic.contains(&(l, n));
     let (near, near_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL == 0 && keep(l, n, i));
     let (decal, mut decal_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL != 0 && keep(l, n, i));
     let (far, far_bb) = scene::level_parts_where(ngn, |l, n, i| l > 0 && keep(l, n, i));
@@ -1718,19 +1718,12 @@ impl Viewer {
                 self.player_yaw_offset = (self.player_yaw_offset + std::f32::consts::FRAC_PI_2) % std::f32::consts::TAU;
                 println!("player model turned to {:.0} degrees", self.player_yaw_offset.to_degrees());
             }
-            KeyCode::KeyZ => {
-                // Hide instances whose placement flags have zone 0 (low 16 bits); in level01 these
-                // are hidden menu/HUD models. Unconfirmed for other levels, hence a toggle.
-                self.hide_zone0 = !self.hide_zone0;
-                let hide = self.hide_zone0;
-                let sets = level_sets(&self.ngn, hide, &self.specials);
-                if let Some(g) = self.gfx.as_mut() {
-                    g.level = upload(&g.device, &sets.near, g.texture_bgs.len() - 1);
-                    g.level_decal = upload(&g.device, &sets.decal, g.texture_bgs.len() - 1);
-                    g.level_far = upload(&g.device, &sets.far, g.texture_bgs.len() - 1);
+            KeyCode::KeyM => {
+                if let Some(music) = self.audio.as_ref().and_then(|a| a.music.as_ref()) {
+                    let muted = music.volume() > 0.0;
+                    music.set_volume(if muted { 0.0 } else { 0.5 });
+                    println!("music {}", if muted { "muted" } else { "on" });
                 }
-                self.billboards = [sets.near_bb, sets.far_bb];
-                println!("zone-0 meshes {}", if hide { "hidden" } else { "shown" });
             }
             KeyCode::KeyV => {
                 self.use_orig_cam = !self.use_orig_cam;
@@ -1954,9 +1947,9 @@ fn main() {
         }
     });
     let specials = ts2::specials::Specials::new(&ngn);
-    // Zone-0 instances are camera-attached models (first-person helmet view), not level
-    // geometry: hidden by default and never collided with.
-    let LevelSets { near: level, decal: level_decal, far: level_far, near_bb, far_bb } = level_sets(&ngn, true, &specials);
+    // Camera models are specials, excluded here and controlled by first-person mode.
+    // Zone 0 also includes houses, fences and the tree in the neighbourhood.
+    let LevelSets { near: level, decal: level_decal, far: level_far, near_bb, far_bb } = level_sets(&ngn, &specials);
     // Collision: the original's TERRAIN.ALL / TERR1.ALL next to the level, else the render mesh.
     let terrain = ts2::formats::terrain::path_for(std::path::Path::new(path))
         .and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)))
@@ -2041,7 +2034,20 @@ fn main() {
         match rodio::OutputStream::try_default() {
             Ok((stream, handle)) => {
                 println!("sound: {} samples for level {level}", bank.sample_count());
-                Some(AudioOut { _stream: stream, handle, bank, voice: None, buffers: Default::default(), owned: Default::default() })
+                let music = (|| -> Result<rodio::Sink, String> {
+                    use rodio::Source;
+                    let root = ts2::music::media_root(level_path.ancestors().nth(3).unwrap())
+                        .ok_or("CD music not found; set TS2_CD_DIR to the folder containing audio/")?;
+                    let name = ts2::music::level_track(e, level)?;
+                    let path = root.join("audio").join(format!("{name}.wav"));
+                    let wav = ts2::music::decode_pcm(&fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)?;
+                    let sink = rodio::Sink::try_new(&handle).map_err(|e| e.to_string())?;
+                    sink.set_volume(0.5);
+                    sink.append(rodio::buffer::SamplesBuffer::new(wav.channels, wav.rate, wav.samples).repeat_infinite());
+                    println!("music: {name} (M to mute)");
+                    Ok(sink)
+                })().map_err(|e| println!("no music: {e}")).ok();
+                Some(AudioOut { _stream: stream, handle, bank, music, voice: None, buffers: Default::default(), owned: Default::default() })
             }
             Err(err) => {
                 println!("no sound output: {err}");
@@ -2103,7 +2109,6 @@ fn main() {
         creature_pos: None,
         spawns,
         show_spawns: true,
-        hide_zone0: true,
         anim_idx: 0,
         anim_time: 0.0,
         speed: 1.0,
@@ -2259,5 +2264,45 @@ impl Source for Looped {
     }
     fn total_duration(&self) -> Option<std::time::Duration> {
         None
+    }
+}
+
+
+#[cfg(test)]
+mod scenery_tests {
+    use super::*;
+    #[test]
+    fn zone_zero_scenery_is_drawn_and_camera_models_are_separate() {
+        let Some(game) = std::env::var_os("TS2_GAME_DIR") else { return };
+        for level in [1, 2] {
+            let path = ts2::campaign::level(level).unwrap().path(std::path::Path::new(&game));
+            let n = ngn::parse(&fs::read(path).unwrap()).unwrap();
+            let specials = ts2::specials::Specials::new(&n);
+            let dynamic: std::collections::HashSet<_> = specials.instances().collect();
+            for id in ts2::look::MODEL {
+                let s = specials.get(id).unwrap();
+                assert!(dynamic.contains(&(s.layer,s.instance)));
+            }
+            if level == 1 {
+                // Preserve the signed-off house: every old zone-0 mesh is a special.
+                for (l,layer) in n.layers.iter().enumerate() {
+                    for (i,inst) in layer.instances.iter().enumerate() {
+                        assert!(inst.flags & 0xffff != 0 || dynamic.contains(&(l,i)), "unhandled L{l}#{i}");
+                    }
+                }
+            } else {
+                assert!(!dynamic.contains(&(0,3)), "house must be static scenery");
+                let house = scene::level_batches_where(&n, |l,i,_| l == 0 && i == 3);
+                assert!(house.iter().any(|b| !b.vertices.is_empty()));
+                let sets = level_sets(&n,&specials);
+                // Each triangle of the formerly hidden house survives the static draw pass.
+                for b in house {
+                    for tri in b.vertices.chunks_exact(3) {
+                        assert!(sets.near.iter().chain(&sets.decal).any(|out|
+                            out.vertices.chunks_exact(3).any(|t| t.iter().zip(tri).all(|(a,b)| a.pos == b.pos))));
+                    }
+                }
+            }
+        }
     }
 }

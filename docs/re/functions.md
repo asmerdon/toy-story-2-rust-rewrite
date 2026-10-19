@@ -369,3 +369,16 @@ Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid
 | 0x42B090 / 0x42B250 | ported | Zurg lobbed shot arena floor/wall bounce and trail; homing-shot trail; central-hole removal for both. Shadows omitted. |
 | 0x410F40 flag 8 | partial | Buzz-targeted homing: vertical velocity stores target -1, gravity stores yaw; yaw eases by 1/8, pitch by 1/20. Creature-targeted and special-period homing remain unported. |
 | 0x49F460 | confirmed | Strict x/z rectangle membership test, used for arena/death boundaries. |
+
+
+### 2026-10-19 neighbourhood/music continuation
+
+- 0x418E50 passes box list 0x4F1518 to 0x4335D0 (two objects).
+- 0x4190C0: pump surface 11 uses Buzz's +0x9C coyote/contact counter. The pad
+  compresses toward 0xC00, inflating ball special 6 up to 0x1000; launch speeds
+  are 0x352/-0x712. Mover 7 follows the ball with a -0x1000 object-unit Y offset.
+  Bridge specials 5/0xB swap movers 2/3 to 4 below angle 0x299. Tree specials
+  0x1E/0x1F swap 0xB to 0xC when box 1 progress is nonzero above Y -0x102F9.
+- 0x413150: audio filename pointers at 0x4ECCD8, indexes 0..21; joins CD root,
+  audio/, name and .wav. 0x4986D0 campaign order table 0x50268C maps the first
+  15 tracks to internal levels. Runtime reader avoids filename guesses.

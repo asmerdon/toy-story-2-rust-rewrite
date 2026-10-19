@@ -25,8 +25,8 @@ fn load() -> Option<L2> {
     let world = World::from_terrain(&t);
     let mut specials = ts2::specials::Specials::new(&n);
     let random = fs::read(game.join("data/rand.dat")).unwrap();
-    let script = ts2::script::for_level(2, &world, &mut specials, Some(&e), &lists, Some(random.clone())).unwrap();
     let boxes = ts2::boxes::Boxes::new(2, &lists, Some(&e), &world, &mut specials);
+    let script = ts2::script::for_level(2, &world, &mut specials, Some(&e), &lists, Some(random.clone())).unwrap();
     let pk = packets::parse(&fs::read(dir.join("level.raw")).unwrap()).unwrap();
     let spawns: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
     let mut cr = Creatures::new(&spawns, Some(&e), random);
@@ -119,4 +119,89 @@ fn pool_water_slows_falls() {
     eprintln!("in water {}, fastest fall {top:#x}", p.in_water);
     assert!(p.in_water);
     assert!(top <= 0x400);
+}
+
+
+#[test]
+fn pool_ball_deflates_then_pumping_launches_it_with_collision() {
+    let Some(mut l) = load() else { return };
+    let mut p = Player::new(Vec3::ZERO);
+    let home = l.specials.get(6).unwrap().clone();
+    for _ in 0..400 { l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes); }
+    assert!((l.specials.get(6).unwrap().scale[1] - home.scale[1] / 4.0).abs() < 0.001);
+    let mut launched = false;
+    for _ in 0..20 {
+        p.surface = Some(11); p.coyote = 6; p.stomp = -40;
+        for _ in 0..30 { l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes); }
+        p.surface = None; p.coyote = 0; p.stomp = 0;
+        for _ in 0..30 { l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes); }
+        if l.specials.get(6).unwrap().scale[1] == home.scale[1] { launched = true; break; }
+    }
+    assert!(launched, "repeated pump presses should fill the ball");
+    assert_ne!(l.specials.get(6).unwrap().pos, home.pos);
+    assert!(l.script.put_out.contains(&(3,1)));
+    assert!(l.script.sounds.iter().any(|(id,_)| *id == 0xB));
+    for _ in 0..500 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        let pos = l.specials.get(6).unwrap().pos;
+        assert!((pos[1] - 0x4400 as f32 / 32.0).abs() < 2500.0, "ball escaped water: {pos:?}");
+        let collision = l.world.mover_pos(7).unwrap();
+        assert!((collision.y - (pos[1] - 128.0)).abs() < 60.0);
+    }
+    assert!(l.script.spawns.iter().any(|(_,kind,_,_,_)| *kind == 0x39));
+}
+
+
+/// Supply the collision contact a player walking into a box would produce; exercise the
+/// real box path update and level script together, including releasing the push latch.
+fn push_obstacle(l: &mut L2, p: &mut Player, index: usize) {
+    let angle = l.boxes.push_state().2[index];
+    p.set_facing(angle);
+    p.target = angle;
+    p.stick_pushed = true;
+    p.on_floor = true;
+    p.coyote = 6;
+    let a = angle as f32 * std::f32::consts::TAU / 4096.0;
+    p.wall_mover = Some((l.boxes.boxes[index].mover, Vec3::new(-a.sin(),0.0,-a.cos())));
+    l.boxes.tick(p, &l.world, &mut l.specials);
+    l.script.step(&l.world, &mut l.specials, p, &l.boxes);
+}
+
+#[test]
+fn pushed_drawbridge_falls_and_swaps_collision() {
+    let Some(mut l) = load() else { return };
+    assert_eq!(l.boxes.boxes.len(),2);
+    let home = l.specials.angles(5).unwrap()[2] - 0x2EE;
+    let mut p = Player::new(Vec3::from(l.boxes.boxes[0].pos.map(|v| v as f32 / 32.0)));
+    assert!(!l.world.mover_enabled(4));
+    for _ in 0..50 {
+        push_obstacle(&mut l, &mut p, 0);
+        if l.world.mover_enabled(4) { break; }
+    }
+    assert!(l.world.mover_enabled(4));
+    assert!(!l.world.mover_enabled(2) && !l.world.mover_enabled(3));
+    assert_eq!(l.boxes.pushing_index(),0);
+    for _ in 0..300 { l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes); }
+    assert_eq!(l.specials.angles(5).unwrap()[2], home & 0xFFF);
+    assert!(l.script.sounds.iter().any(|(id,_)| *id == 0x34));
+}
+
+#[test]
+fn tree_only_tips_when_pushed_from_its_upper_platform() {
+    let Some(mut l) = load() else { return };
+    let home = l.specials.angles(0x1E).unwrap()[2];
+    let mut p = Player::new(Vec3::from(l.boxes.boxes[1].pos.map(|v| v as f32 / 32.0)));
+    p.pos.y = 0.0;
+    for _ in 0..20 { push_obstacle(&mut l, &mut p, 1); }
+    assert_eq!(l.boxes.progress(1),0);
+    assert!(!l.world.mover_enabled(0xC));
+    p.pos.y = -0x10300 as f32 / 32.0;
+    push_obstacle(&mut l, &mut p, 1);
+    assert!(l.world.mover_enabled(0xC));
+    assert!(!l.world.mover_enabled(0xB));
+    assert_eq!(l.boxes.pushing_index(),0);
+    assert_eq!([p.vel[0],p.vel[2]],[0,0]);
+    for _ in 0..100 { l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes); }
+    assert_eq!(l.specials.angles(0x1E).unwrap()[2], (home + 0xFFF - 0x245) & 0xFFF);
+    assert!(l.script.sounds.iter().any(|(id,_)| *id == 0x34));
 }
