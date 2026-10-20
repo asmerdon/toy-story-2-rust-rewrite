@@ -865,6 +865,13 @@ pub struct Player {
     pub hook_target: Option<[i32; 3]>,
     /// The rope to draw this tick (from the hand to its end), object units.
     pub rope: Option<([i32; 3], [i32; 3])>,
+    /// This tick's acceleration (0x436220's profile: 0x28, less in water).
+    accel_now: i32,
+    /// 0x53C60C: footprints left after wading (ticks in the high half, kind in the low:
+    /// 1 surface 0, 2 surface 4 or out of deep water, 3 surface 5, 0x18 out of shallow
+    /// water); 0x830D30: his height last tick, to see him come out of water.
+    pub footprints: i32,
+    last_y: i32,
 }
 
 /// 0x451FD0: a direction scaled to length 4096.
@@ -972,6 +979,9 @@ impl Player {
             hook_ammo: 0,
             hook_target: None,
             rope: None,
+            accel_now: ACCEL,
+            footprints: 0,
+            last_y: 0,
             push: Vec3::ZERO,
             push_ramp: 0,
         }
@@ -1095,6 +1105,80 @@ impl Player {
     fn hand(&self) -> [i32; 3] {
         let p = self.pos_obj();
         [p[0], p[1] - 0x2C00, p[2]]
+    }
+
+    /// 0x4A2D80's footsteps (frame-list markers 0x81 / 0x82, on the ground). On surface 0, 4
+    /// or 5 a step kicks up its particles and starts 180 ticks of footprints; on ordinary
+    /// floor (no surface, or 0xD) each step then leaves a print turned his way. Coming out of
+    /// water starts them too. Each step sounds at that foot: 0 on ordinary floor, else by
+    /// the prints' kind (1 → 1, 2 → 3, 3 → 4, 0x18 → 5).
+    fn foot_effects(&mut self) {
+        let feet = self.anim.as_mut().map_or(0, |a| std::mem::take(&mut a.feet));
+        let feet = if self.on_floor { feet } else { 0 };
+        let y = self.y_obj();
+        let (mode, surface) = self.water;
+        let wading = mode != 0 && y > surface;
+        let f = self.facing;
+        let foot = if feet & 2 != 0 {
+            [sin12(f - 0x400) >> 4, sin12(f) >> 4]
+        } else {
+            [sin12(f + 0x400) >> 4, sin12(f - 0x800) >> 4]
+        };
+        let p = self.pos_obj();
+        let at = [p[0] + foot[0], p[1], p[2] + foot[1]];
+        if feet != 0 && !wading {
+            let kind = self.footprints & 0xFFFF;
+            match self.surface {
+                Some(0) => {
+                    self.footprints = 0xB4 << 16 | 1;
+                    for _ in 0..4 {
+                        self.effects.push((at, 0x1E, 4, 0));
+                    }
+                }
+                Some(4) => {
+                    self.footprints = 0xB4 << 16 | 2;
+                    self.effects.push((at, 0x1C, 2, 0));
+                }
+                Some(5) => {
+                    self.footprints = 0xB4 << 16 | 3;
+                    for _ in 0..4 {
+                        self.effects.push((at, 0x1D, 4, 0));
+                    }
+                }
+                None | Some(0xD) if self.footprints > 0 => {
+                    self.effects.push((at, 0x1E + kind as u8, 2, (-f - 0x400) & 0xFFF));
+                }
+                _ => {}
+            }
+        }
+        if self.footprints > 0 {
+            self.footprints = (self.footprints - 0x10000).max(0);
+        }
+        // In water no prints; just out of it, prints of the water's kind.
+        if mode != 0 {
+            if wading {
+                self.footprints = 0;
+            } else if surface < self.last_y {
+                match mode {
+                    1 => self.footprints = 0xB4 << 16 | 2,
+                    2 => self.footprints = 0xB4 << 16 | 0x18,
+                    _ => {}
+                }
+            }
+        }
+        self.last_y = y;
+        if feet != 0 {
+            let id = match (self.surface, self.footprints & 0xFFFF) {
+                (None, _) => 0,
+                (_, 1) => 1,
+                (_, 2) => 3,
+                (_, 3) => 4,
+                (_, 0x18) => 5,
+                _ => 0,
+            };
+            let foot_at = Vec3::new((p[0] + foot[0] * 8) as f32, p[1] as f32, (p[2] + foot[1] * 8) as f32) / 32.0;
+            self.sounds_at.push((Sound { id, voice: false }, foot_at));
+        }
     }
 
     /// 0x4A5370: the hook fired at a list-59 point (level units). Sound 0x51. A wall in the
@@ -1430,6 +1514,31 @@ impl Player {
                 side_decel = SKID_SIDE_DECEL;
             }
         }
+        // Pushing a box: top speed 0x180. In water (0x436220 with flag 0x100): swimming
+        // (mode 1) 0x280 with gentle slowing; wading through concrete, slime or shallows
+        // (modes 2 / 3) only 0x100.
+        let mut top = MAX_SPEED;
+        self.accel_now = ACCEL;
+        if self.pushing {
+            top = 0x180;
+        }
+        if self.in_water {
+            match self.water.0 {
+                1 => {
+                    top = 0x280;
+                    side_decel = 0x20;
+                    friction = 8;
+                    self.accel_now = 0xA;
+                }
+                2 | 3 => {
+                    top = 0x100;
+                    side_decel = 0x10;
+                    friction = 8;
+                    self.accel_now = 0x14;
+                }
+                _ => {}
+            }
+        }
         // Rocket boots (0x4A4F80 in place of 0x4346C0): less friction, and he keeps going.
         let rocket = self.rocket > 0;
         if rocket {
@@ -1477,11 +1586,11 @@ impl Player {
             // First person (code 8 of 0x436220): gravity and slowing down only.
             0 if self.first_person != 0 => {
                 self.airborne(jump_held);
-                self.accelerate(side_decel, friction, MAX_SPEED, false);
+                self.accelerate(side_decel, friction, top, false);
             }
             // Off a ledge or a zip line: steer with the stick, accelerate, no gravity.
             _ if climb == 1 && steer => {
-                let mut max = MAX_SPEED;
+                let mut max = top;
                 if pushing {
                     let angle = (stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32;
                     max = (max * (magnitude * 16384.0) as i32) >> 14;
@@ -1493,7 +1602,7 @@ impl Player {
             }
             // Just let go of a pole: steer and accelerate, no airborne step this tick.
             _ if climb == 1 => {
-                let max = MAX_SPEED;
+                let max = top;
                 self.turn(None);
                 self.accelerate(side_decel, friction, max, false);
             }
@@ -1506,7 +1615,7 @@ impl Player {
                 } else {
                     self.airborne(jump_held);
                 }
-                let mut max = MAX_SPEED;
+                let mut max = top;
                 if rocket {
                     // Always thrusting at up to 0x800; the stick only steers.
                     if pushing {
@@ -1594,6 +1703,7 @@ impl Player {
                 self.sound(id);
             }
         }
+        self.foot_effects();
 
         if self.pos.y > world.hi.y + 4000.0 {
             let (spawn, facing, anim) = (self.spawn, self.spawn_facing, self.anim.take());
@@ -1912,7 +2022,7 @@ impl Player {
         } else {
             (side_decel, friction, max, MAX_FORWARD)
         };
-        let accel = if self.rocket > 0 { 0xA0 } else { ACCEL };
+        let accel = if self.rocket > 0 { 0xA0 } else { self.accel_now };
         let (s, c) = (sin12(self.facing), cos12(self.facing));
         let [vx, _, vz] = self.vel;
         let toward_zero = |v: i32, by: i32| if v < 0 { (v + by).min(0) } else { (v - by).max(0) };
@@ -2760,6 +2870,25 @@ mod tests {
         }
         assert_eq!(p.hover, 0);
         assert!(p.on_floor);
+    }
+
+    /// Wading through concrete or slime (water mode 2, feet below its surface) he runs at
+    /// most 0x100, under a third of his normal top speed.
+    #[test]
+    fn wading_caps_his_speed() {
+        let w = flat_world();
+        let mut p = Player::new(Vec3::ZERO);
+        p.water = (2, -0x800);
+        for _ in 0..120 {
+            p.tick(&w, [0.0, 1.0], false, false);
+        }
+        // Under the cap a whole step (0x14 + friction 8) is added, so it settles just over.
+        assert!(p.forward <= 0x100 + 0x1C && p.forward > 0xC0, "forward {:#x}", p.forward);
+        p.water = (0, 0);
+        for _ in 0..120 {
+            p.tick(&w, [0.0, 1.0], false, false);
+        }
+        assert!(p.forward > 0x300, "forward {:#x}", p.forward);
     }
 
     /// The grappling hook: fired in first person at a locked hook point, it flies out, pulls

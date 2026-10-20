@@ -58,10 +58,12 @@ pub struct BuzzAnimator {
     pos: u32,
     /// Sound ids from the list's event markers since the last drain.
     pub sounds: Vec<u16>,
+    /// Footsteps since the last drain (0x53C634 bits 1 / 2: markers 0x81 right, 0x82 left).
+    pub feet: u8,
 }
 
-/// Sound for a frame-list event marker (0x401000): 0x83–0x86. 0x81/0x82 are footsteps,
-/// which the original turns into surface-dependent sounds elsewhere (not ported yet).
+/// Sound for a frame-list event marker (0x401000): 0x83–0x86. 0x81/0x82 are footsteps (see
+/// `feet`), which `Player::foot_effects` (0x4A2D80) turns into sounds and prints.
 fn marker_sound(code: u8) -> Option<u16> {
     match code {
         0x83 => Some(0x30),
@@ -81,7 +83,7 @@ pub struct BuzzPose {
 
 impl BuzzAnimator {
     pub fn new(moves: Vec<BuzzMove>) -> BuzzAnimator {
-        BuzzAnimator { moves, current: None, pos: 0, sounds: Vec::new() }
+        BuzzAnimator { moves, current: None, pos: 0, sounds: Vec::new(), feet: 0 }
     }
 
     fn list(&self) -> &[u8] {
@@ -109,7 +111,11 @@ impl BuzzAnimator {
                 // Back n entries (n = 1 holds the last frame).
                 0xFF => self.pos = self.pos.wrapping_sub((at(self, i + 1) as u32) << 16),
                 code => {
-                    self.sounds.extend(marker_sound(code));
+                    match code {
+                        0x81 => self.feet |= 1,
+                        0x82 => self.feet |= 2,
+                        _ => self.sounds.extend(marker_sound(code)),
+                    }
                     self.pos += 0x10000;
                 }
             }

@@ -104,6 +104,7 @@ struct Paint {
     drain: i32,
     /// 0x52F770: targets done (bits 1, 2, 4).
     done: u32,
+    started: bool,
 }
 
 /// 0x4F1B64: every 8 ticks one entry: done targets show their lit sign (special) or swap
@@ -157,8 +158,16 @@ impl Level4 {
             return;
         }
         let buzz = player.pos_obj();
+        if !self.paint.started {
+            // The start-up (0x41C190): lit (+0x34 = 1) with no colour yet, and empty: height
+            // +0x2E = 0, width and depth 0x1000.
+            self.paint.started = true;
+            let c = &mut cr.slots[PAINT];
+            c.lit = true;
+            c.light = [0; 3];
+            c.scale_y = Some(0);
+        }
         cr.slots[PAINT].pos = crane;
-        cr.slots[PAINT].lit = true;
         let p = &mut self.paint;
         // The same colour twice: it drains.
         if p.timer < 1 && matches!(p.first + p.second * 3, 4 | 8 | 12) {
