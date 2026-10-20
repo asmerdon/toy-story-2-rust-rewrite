@@ -279,6 +279,7 @@ struct Gfx {
     /// Detailed level geometry (first mesh set) and the low-detail set drawn far away.
     level: Vec<GpuBatch>,
     level_decal: Vec<GpuBatch>,
+    level_two_sided: Vec<GpuBatch>,
     level_far: Vec<GpuBatch>,
     /// Billboards of the near and far sets, this frame.
     billboards: [Vec<GpuBatch>; 2],
@@ -318,6 +319,7 @@ struct Viewer {
     /// Level geometry (detailed and far sets), handed to the GPU on first resume.
     level: Vec<Batch>,
     level_decal: Vec<Batch>,
+    level_two_sided: Vec<Batch>,
     level_far: Vec<Batch>,
     /// Camera-facing quads of the near and far sets, rebuilt each frame.
     billboards: [Vec<scene::Billboard>; 2],
@@ -412,6 +414,8 @@ fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgp
 /// (second) mesh sets.
 struct LevelSets {
     near: Vec<Batch>,
+    /// Detailed-set triangles with no back-face twin, drawn from both sides.
+    two_sided: Vec<Batch>,
     /// Detailed-set instances drawn a hair nearer (`DECAL`).
     decal: Vec<Batch>,
     far: Vec<Batch>,
@@ -423,12 +427,24 @@ struct LevelSets {
 fn level_sets(ngn: &ngn::Ngn, specials: &ts2::specials::Specials) -> LevelSets {
     let dynamic: std::collections::HashSet<(usize, usize)> = specials.instances().collect();
     let keep = |l: usize, n: usize, _i: &ngn::Instance| !dynamic.contains(&(l, n));
-    let (near, near_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL == 0 && keep(l, n, i));
+    let flat = |l: usize, i: &ngn::Instance| scene::mesh_is_flat(ngn, l, i.mesh);
+    let (near, near_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL == 0 && !flat(l, i) && keep(l, n, i));
+    let (sheets, _) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL == 0 && flat(l, i) && keep(l, n, i));
+    // Flat sheets are drawn from both sides, except their baked-black faces (the data's back
+    // faces, which would fight a lit twin in the same plane).
+    let (mut near, mut two_sided) = (near, Vec::new());
+    for b in sheets {
+        for t in b.vertices.chunks_exact(3) {
+            let black = t.iter().all(|v| v.color[1] == 0 && v.color[2] == 0 && v.color[3] == 0);
+            let to = if black || b.blend != scene::Blend::Opaque { &mut near } else { &mut two_sided };
+            scene::push(to, b.texture, b.blend, [t[0], t[1], t[2]]);
+        }
+    }
     let (decal, mut decal_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL != 0 && keep(l, n, i));
     let (far, far_bb) = scene::level_parts_where(ngn, |l, n, i| l > 0 && keep(l, n, i));
     let mut near_bb = near_bb;
     near_bb.append(&mut decal_bb);
-    LevelSets { near, decal, far, near_bb, far_bb }
+    LevelSets { near, two_sided, decal, far, near_bb, far_bb }
 }
 
 /// Instance flag 0x80000 (meaning unknown; 288 ordinary instances in level 1). They're kept in
@@ -628,7 +644,7 @@ impl Gfx {
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
         let level_far = upload(&device, level_far, texture_bgs.len() - 1);
-        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1] }
+        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1] }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -674,7 +690,7 @@ impl Gfx {
         let passes: [(&[(usize, &[GpuBatch], bool)], bool); 4] = [
             (&[(3, &self.sky, false)], true),
             (&[(0, &self.level_far, true), (0, &self.billboards[1], false)], false),
-            (&[(1, &self.level, true), (4, &self.level_decal, true), (1, &self.billboards[0], false), (2, &self.creature, false)], false),
+            (&[(1, &self.level, true), (1, &self.level_two_sided, false), (4, &self.level_decal, true), (1, &self.billboards[0], false), (2, &self.creature, false)], false),
             (&[(3, &self.hud, false)], false),
         ];
         for (draws, first) in passes {
@@ -1523,9 +1539,10 @@ impl Viewer {
                         // +0x34: lit up in the light colour (a hurt boss's flash at 0x2000, double
                         // strength; level 4's paint in its mixed colour).
                         if c.lit {
+                            // Vertex colour bytes 1–3 are red, green, blue (the shader's yzw).
                             for v in cb.iter_mut().flat_map(|b| b.vertices.iter_mut()) {
                                 for k in 0..3 {
-                                    v.color[k] = (v.color[k] as i32 * c.light[k] / 0x1000).clamp(0, 255) as u8;
+                                    v.color[k + 1] = (v.color[k + 1] as i32 * c.light[k] / 0x1000).clamp(0, 255) as u8;
                                 }
                             }
                         }
@@ -1810,6 +1827,7 @@ impl ApplicationHandler for Viewer {
         self.gfx = Some(Gfx::new(window, &self.ngn, &level, &level_far, self.backdrop_image.as_ref()));
         if let Some(g) = self.gfx.as_mut() {
             g.level_decal = upload(&g.device, &self.level_decal, g.texture_bgs.len() - 1);
+            g.level_two_sided = upload(&g.device, &self.level_two_sided, g.texture_bgs.len() - 1);
         }
         self.last = Instant::now();
     }
@@ -1969,7 +1987,7 @@ fn main() {
     let specials = ts2::specials::Specials::new(&ngn);
     // Camera models are specials, excluded here and controlled by first-person mode.
     // Zone 0 also includes houses, fences and the tree in the neighbourhood.
-    let LevelSets { near: level, decal: level_decal, far: level_far, near_bb, far_bb } = level_sets(&ngn, &specials);
+    let LevelSets { near: level, two_sided: level_two_sided, decal: level_decal, far: level_far, near_bb, far_bb } = level_sets(&ngn, &specials);
     // Collision: the original's TERRAIN.ALL / TERR1.ALL next to the level, else the render mesh.
     let terrain = ts2::formats::terrain::path_for(std::path::Path::new(path))
         .and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)))
@@ -2096,6 +2114,7 @@ fn main() {
         backdrop_image,
         level,
         level_decal,
+        level_two_sided,
         level_far,
         billboards: [near_bb, far_bb],
         world,

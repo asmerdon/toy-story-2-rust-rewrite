@@ -1874,8 +1874,13 @@ impl Player {
             }
             return 7;
         } else {
-            // Impact: dust and a camera shake in the original (not drawn yet).
+            // Impact (0x434D20): the swirl at his feet, particles 0x12 (mode 0xB) and 0x13
+            // (mode 0xC) 0x400 up, and sound 0xF. The camera shake isn't drawn yet.
             self.stomp = STOMP_RECOVERY;
+            let p = self.pos_obj();
+            let at = [p[0], p[1] - 0x400, p[2]];
+            self.effects.push((at, 0x12, 0xB, 0));
+            self.effects.push((at, 0x13, 0xC, 0));
             self.sound(0xF);
         }
         0

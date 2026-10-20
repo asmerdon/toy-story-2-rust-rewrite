@@ -28,6 +28,23 @@ fn texture_index(ngn: &Ngn, name: &str) -> Option<usize> {
     ngn.textures.iter().position(|t| t.name == name)
 }
 
+/// A flat sheet (a fence panel, a board): the mesh's thinnest extent, in its own space, under
+/// a fiftieth of its largest. It has no inside, so both its sides are drawn: the data models
+/// such sheets once, and with back faces culled they'd vanish when seen from behind.
+pub fn mesh_is_flat(ngn: &Ngn, layer: usize, mesh: u32) -> bool {
+    let Some(m) = ngn.layers.get(layer).and_then(|l| l.meshes.get(mesh as usize)) else { return false };
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for v in &m.vertices {
+        for k in 0..3 {
+            lo[k] = lo[k].min(v.pos[k]);
+            hi[k] = hi[k].max(v.pos[k]);
+        }
+    }
+    let size = [0, 1, 2].map(|k| hi[k] - lo[k]);
+    let (min, max) = size.iter().fold((f32::MAX, 0f32), |(a, b), &s| (a.min(s), b.max(s)));
+    max > 0.0 && min * 50.0 < max
+}
+
 pub fn push(batches: &mut Vec<Batch>, texture: Option<usize>, blend: Blend, tri: [GpuVertex; 3]) {
     match batches.iter_mut().find(|b| b.texture == texture && b.blend == blend) {
         Some(b) => b.vertices.extend_from_slice(&tri),
