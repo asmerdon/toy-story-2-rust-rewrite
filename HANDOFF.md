@@ -1,13 +1,35 @@
 # Handover: Toy Story 2 Rust rewrite
 
-Last updated 2026-10-19. **Level 1 is complete and signed off by the user.** Levels 2–10 have
-their scripts ported but haven't been playtested. This file explains how the project works,
-what has been done, what went wrong along the way, and how to carry on with the next levels.
+Last updated 2026-10-20. **Level 1 is complete and signed off by the user.** Every level
+(2–15) now has its script ported; none of 2–15 has been playtested. This file explains how the
+project works, what has been done, what went wrong along the way, and how to carry on.
 
 Read this first. Then read `docs/re/functions.md` (every identified exe function, with what we
 know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `all`).
 
 ---
+
+## 2026-10-20: levels 11, 13–15 (Claude session)
+
+- **Context:** a PS1 static recompilation exists (github.com/PeriBluGaming/ToyStory2Recomp).
+  It's machine-generated C with almost no symbols, so it isn't ported from; it serves as a
+  playable reference for how levels behave. The PC exe stays the source of truth.
+- Levels 13–15 (written by the ChatGPT session, which hit its limit mid-level-14) were
+  checked, formatted, given level 14 tests and committed. Two bugs fixed in them:
+  `set_script` takes a **word** index (pass `0x1C / 2`, as levels 2–10 do; the drafts passed
+  byte offsets), and `story.hints` must be set **before** `load_story` or the hint texts
+  aren't loaded.
+- Level 11 (Al's Penthouse) ported in `src/level11.rs`: water levels, valves, plug, pipes
+  and the boat's routes, floats, six turrets and their buttons, doors, spring, horse
+  challenge, critters, gunslinger. New creature routines 0x28 / 0x29 / 0x2E.
+- `Boxes::pushed()` exposes 0x53C648. `campaign::script_available` is true for all 15.
+- Verification: **117 passed** with `TS2_GAME_DIR`; release build clean. Nothing pushed.
+- Remaining (in order): level 4 crane puzzle, level 8 claw machine, rocket boots, grappling
+  hook, front end and level select, saves, boss/race music changes, FMV playback; then the
+  playtest-and-fix pass over levels 2–15.
+- Lesson: `python -` (stdin) still hangs this shell. A command that starts with it blocks the
+  whole chain; write scripts to the scratchpad. The capstone venv lives in the session
+  scratchpad (`re/dis.py`: `dis|hex|i32 <va> <n>`).
 
 ## Latest continuation: neighbourhood scenery, music and gadgets
 

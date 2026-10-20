@@ -66,12 +66,18 @@ fn box_list(level: usize) -> Option<u32> {
     match level {
         1 => Some(0x4F0F90),
         2 => Some(0x4F1518),
+        11 => Some(0x4F3E60),
         13 => Some(0x4F46A4),
         _ => None,
     }
 }
 
 impl Boxes {
+    /// 0x53C648: the 1-based box being pushed, 0 for none.
+    pub fn pushed(&self) -> usize {
+        self.pushing.get()
+    }
+
     pub fn new(level: usize, lists: &[PointList], exe: Option<&Exe>, world: &World, specials: &mut Specials) -> Boxes {
         let paths = lists.iter().filter(|l| l.kind >= 0 && l.kind < 0x3F).map(|l| (l.kind, l.points.clone())).collect();
         let mut b = Boxes { boxes: Vec::new(), paths, pushing: Cell::new(0), offset: [0; 2], push_angle: 0, voice_timer: 0, put_out: Vec::new(), still: u8::MAX };

@@ -55,6 +55,14 @@ impl Level14 {
             started: false,
         };
         if let Some(e) = exe {
+            // The hints go first: load_story reads their texts.
+            s.story.hints = (0..5)
+                .filter_map(|k| {
+                    e.at(0x4F4C54 + 4 * k, 4)
+                        .ok()
+                        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                })
+                .collect();
             s.load_story(
                 e,
                 lists,
@@ -70,13 +78,6 @@ impl Level14 {
                 ],
                 Some(0x4F4C40),
             );
-            s.story.hints = (0..5)
-                .filter_map(|k| {
-                    e.at(0x4F4C54 + 4 * k, 4)
-                        .ok()
-                        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
-                })
-                .collect();
         }
         s.reset_puzzle(specials);
         s
@@ -261,7 +262,7 @@ impl Level14 {
         }
         if self.boss_phase == 1 && self.cutscene.is_none() {
             self.boss_phase = 2;
-            cr.slots[K].set_script(0x1C);
+            cr.slots[K].set_script(0x1C / 2);
             cr.slots[K].rec.face = 0;
             self.health = cr.slots[K].health;
         }
@@ -277,7 +278,7 @@ impl Level14 {
             c.rec.state = if self.hurt > 0 { 4 } else { 6 };
             self.boss_bar = Some((c.health - 9) * 54 / 20);
             if c.health < 10 {
-                c.set_script(0x5A);
+                c.set_script(0x5A / 2);
                 c.rec.state = 4;
                 c.flags &= !0x108;
                 c.rec.speed = 16;
@@ -293,7 +294,7 @@ impl Level14 {
                 }
                 let c = &mut cr.slots[K];
                 if c.anim == 3 && c.time >> 16 > 46 {
-                    c.set_script(0x20);
+                    c.set_script(0x20 / 2);
                     c.rec.speed = 16;
                     c.flags &= !0xC;
                 }

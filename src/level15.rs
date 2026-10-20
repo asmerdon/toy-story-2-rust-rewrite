@@ -121,7 +121,7 @@ impl Level15 {
                 self.defeated += 1;
                 self.last = k;
                 self.shot[k] = 0;
-                c.set_script(if k == 1 { 0x68 } else { 0x5A });
+                c.set_script(if k == 1 { 0x68 / 2 } else { 0x5A / 2 });
                 c.rec.state = 4;
                 c.flags &= if k == 1 { !0x100 } else { !0x108 };
                 c.rec.speed = 16;
@@ -181,7 +181,7 @@ impl Level15 {
                 }
                 let c = &mut cr.slots[k];
                 if c.anim == 3 && c.time >> 16 > if k == 0 { 46 } else { 21 } {
-                    c.set_script(0x20);
+                    c.set_script(0x20 / 2);
                     c.rec.speed = 16;
                     c.flags &= !0xC;
                 }
@@ -326,7 +326,7 @@ impl Script for Level15 {
                 for (i, vy) in [-0x600, -0x800, -0x900].into_iter().enumerate() {
                     let c = &mut cr.slots[i];
                     c.health = 29;
-                    c.set_script(0x1C);
+                    c.set_script(0x1C / 2);
                     c.rec.face = 0;
                     c.vel = [0x400, vy, 0];
                 }

@@ -188,3 +188,91 @@ fn tarmac_plane_turns_and_boss_intro_damage_and_reward() {
     assert_eq!(l.script.boss_bar, Some(0));
     assert!(l.script.reveals.contains(&4));
 }
+
+fn stomp_on(p: &mut Player, mover: i32) {
+    p.stomp = -40;
+    p.on_floor = true;
+    p.floor_mover = Some((mover, -Vec3::Y));
+}
+
+#[test]
+fn penthouse_valves_raise_the_water_and_the_plug_drains_it() {
+    let Some(mut l) = load(11) else { return };
+    let mut p = Player::new(Vec3::ZERO);
+    // Valve 3 (mover 6) fills to −0xFA00 at 0x40 a tick.
+    stomp_on(&mut p, 6);
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    p.stomp = 0;
+    p.floor_mover = None;
+    for _ in 0..0x400 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    }
+    assert_eq!(p.water, (1, -0xFA00 + 0x2EA18));
+    assert!(l.script.put_out.contains(&(1, 1)));
+    // Special 0x5B has grown in at that level.
+    assert!(!l.specials.get(0x5B).unwrap().hidden);
+    // The plug drains it at 0x200 a tick.
+    p.pos = Vec3::new(0x2CC2E as f32, 0x2EE2B as f32, -0x2FC03 as f32) / 32.0;
+    for _ in 0..0x80 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    }
+    assert_eq!(p.water, (0, 0));
+}
+
+#[test]
+fn penthouse_turret_button_looks_then_wrecks_its_turret() {
+    let Some(mut l) = load(11) else { return };
+    let mut p = Player::new(Vec3::ZERO);
+    stomp_on(&mut p, 2);
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    assert_eq!(l.script.look.map(|l| l.ticks), Some(0xB4));
+    p.stomp = 0;
+    p.floor_mover = None;
+    for _ in 0..0x3C {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    }
+    assert!(l.specials.get(0x32).unwrap().hidden);
+    assert!(!l.specials.get(0x42).unwrap().hidden);
+}
+
+#[test]
+fn penthouse_pipe_switch_moves_flow_and_the_boat_sails() {
+    let Some(mut l) = load(11) else { return };
+    let mut p = Player::new(Vec3::new(1.0e6, 0.0, 0.0));
+    let boat = l.specials.pos_obj(0x26).unwrap();
+    // Pipes start 1, 4 and 0x20; switch 2 (mover 3) moves 4 on to 8.
+    assert!(!l.specials.get(0x1F).unwrap().hidden);
+    stomp_on(&mut p, 3);
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    assert!(l.specials.get(0x1F).unwrap().hidden);
+    assert!(!l.specials.get(0x20).unwrap().hidden);
+    p.stomp = 0;
+    p.floor_mover = None;
+    for _ in 0..120 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    }
+    let now = l.specials.pos_obj(0x26).unwrap();
+    let moved = (0..3).map(|k| ((now[k] - boat[k]) as f64).powi(2)).sum::<f64>().sqrt();
+    assert!(moved > 1000.0, "boat moved {moved}");
+}
+
+#[test]
+fn penthouse_gunslinger_intro_fight_and_token() {
+    let Some(mut l) = load(11) else { return };
+    let mut p = Player::new(Vec3::new(-0xA8000 as f32, 0x1F000 as f32, -0x30000 as f32) / 32.0);
+    l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+    assert!(l.script.cutscene.is_some());
+    l.script.cutscene = None;
+    p.pos.y = 0x1F000 as f32 / 32.0;
+    l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+    assert!(l.script.boss_hud);
+    assert_eq!(l.script.boss_bar, Some((29 - 9) * 0x36 / 0x14));
+    l.cr.slots[11].health = 9;
+    l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+    assert_eq!(l.script.boss_bar, Some(0));
+    assert!(!l.script.reveals.contains(&4));
+    for _ in 0..0x78 {
+        l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+    }
+    assert!(l.script.reveals.contains(&4));
+}

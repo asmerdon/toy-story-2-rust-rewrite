@@ -704,6 +704,10 @@ impl Creatures {
             0x1C => self.friend(c, 0x77, 0x77, 0x3C, false),
             0x26 => self.friend(c, 0x80, 0xB8, 300, false),
             0x2B => self.friend(c, 0xA2, 0xA2, 0x3C, true),
+            // 0x428650, level 11's critters: they squeak whether found or not.
+            0x28 => self.friend(c, 0x96, 0x96, 0x3C, false),
+            0x29 => self.hummer(c, s),
+            0x2E => self.side_shooter(c),
             5 => self.tin_man(slot, c, s),
             6 => self.sheep(c),
             8 => self.rc(slot, c, s),
@@ -1434,6 +1438,45 @@ impl Creatures {
             let f = c.angles[1];
             self.particles.push(ParticleRequest { pos: at, vel: [sin(f) >> 2, -0xC00, cos(f) >> 2], gravity: 0x80, angle: 0, spin: 0, typ: 0x5C });
         }
+    }
+
+    /// 0x406C70 (0x29): hums (sound 0x57) every tick, with sound 0x58 when its health drops;
+    /// its animation is 1 while Buzz is in its zone, else 0 (written directly, as the original).
+    fn hummer(&mut self, c: &mut Creature, s: &Step) {
+        if c.timer != c.health {
+            if c.timer != 0 {
+                self.sounds.push((0x58, c.pos));
+            }
+            c.timer = c.health;
+        }
+        self.sounds.push((0x57, c.pos));
+        c.anim = (s.chase & 1) as u16;
+    }
+
+    /// 0x406A90 (0x2E): when its script arms the timer (+0x8A), a shot (particle 0x61, sound
+    /// 0x56) from its side (0xE0 round from its facing), aimed at Buzz if he's within 0x100
+    /// of its facing; with flag 1, five sparks too.
+    fn side_shooter(&mut self, c: &mut Creature) {
+        if c.timer == 0 {
+            return;
+        }
+        let f = c.angles[1];
+        let (ox, oz) = (sin(f + 0xE0), sin(f + 0x4E0));
+        let at = [c.pos[0], c.pos[1] - 0x3000, c.pos[2]];
+        let aim = atan(self.buzz[0] - at[0] - ox, self.buzz[2] - at[2] - oz);
+        let a = if ((aim - f + 0x100) & 0xFFF) > 0x200 { f } else { aim };
+        let v = [sin(a) >> 3, 0, cos(a) >> 3];
+        // 0x48C860 trims the shot to the first wall within 0x50 steps and sets the particle's
+        // life from that; a request carries no life, so the shot runs its type's full life.
+        self.particles.push(ParticleRequest { pos: [at[0] + ox, at[1], at[2] + oz], vel: v, gravity: 0, angle: 0, spin: 0, typ: 0x61 });
+        self.sounds.push((0x56, c.pos));
+        if c.flags & 1 != 0 {
+            for _ in 0..5 {
+                let spin = self.rand() as i32 - 0x80;
+                self.spawns.push((at, 100, 0xF, spin));
+            }
+        }
+        c.timer = 0;
     }
 
     /// 0x405D20 mode 1 on slot `i`: its death (animation, coin, burst).

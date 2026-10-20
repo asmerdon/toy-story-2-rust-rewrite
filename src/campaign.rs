@@ -106,6 +106,6 @@ impl Level {
     }
 
     pub fn script_available(&self) -> bool {
-        self.internal_id <= 10 || matches!(self.internal_id, 12..=15)
+        self.internal_id <= 15
     }
 }

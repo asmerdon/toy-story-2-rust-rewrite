@@ -72,6 +72,14 @@ impl Level13 {
             started: false,
         };
         if let Some(e) = exe {
+            // The hints go first: load_story reads their texts.
+            s.story.hints = (0..5)
+                .filter_map(|i| {
+                    e.at(0x4F46AC + i * 4, 4)
+                        .ok()
+                        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                })
+                .collect();
             s.load_story(
                 e,
                 lists,
@@ -91,13 +99,6 @@ impl Level13 {
                 ],
                 None,
             );
-            s.story.hints = (0..5)
-                .filter_map(|i| {
-                    e.at(0x4F46AC + i * 4, 4)
-                        .ok()
-                        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
-                })
-                .collect();
         } else {
             s.story.lists = lists.iter().map(|l| (l.kind, l.points.clone())).collect();
         }
@@ -248,7 +249,7 @@ impl Level13 {
         if self.boss_phase == 1 && self.cutscene.is_none() {
             self.boss_phase = 2;
             let c = &mut cr.slots[SLOT];
-            c.set_script(0x1C);
+            c.set_script(0x1C / 2);
             c.rec.face = 0;
         }
         if self.boss_phase == 2 {
@@ -270,7 +271,7 @@ impl Level13 {
             c.lit = self.hurt > 0 && self.clock & 1 != 0;
             self.boss_bar = Some((c.health - 9) * 54 / 20);
             if c.health < 10 {
-                c.set_script(0x5A);
+                c.set_script(0x5A / 2);
                 c.rec.state = 4;
                 c.flags &= !0x108;
                 c.rec.speed = 0;
@@ -288,7 +289,7 @@ impl Level13 {
                 }
                 let c = &mut cr.slots[SLOT];
                 if c.anim == 3 && c.time >> 16 > 21 {
-                    c.set_script(0x20);
+                    c.set_script(0x20 / 2);
                     c.rec.speed = 16;
                     c.flags &= !0xC;
                 }
