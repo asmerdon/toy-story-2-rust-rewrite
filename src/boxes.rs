@@ -66,6 +66,7 @@ fn box_list(level: usize) -> Option<u32> {
     match level {
         1 => Some(0x4F0F90),
         2 => Some(0x4F1518),
+        13 => Some(0x4F46A4),
         _ => None,
     }
 }
