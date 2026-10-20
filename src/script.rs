@@ -44,6 +44,8 @@ pub struct Common {
     /// Tokens to move (level units) or hide again this tick.
     pub token_moves: Vec<(usize, [i32; 3])>,
     pub hides: Vec<usize>,
+    /// Tokens made untouchable (false: radius byte +0xD cleared) or touchable again (+0x28).
+    pub token_touch: Vec<(usize, bool)>,
     /// The tokens Buzz has collected (bits, `0x52F0D7[level]`), set by the caller.
     pub tokens: u8,
     /// 0x830D48: the level's missing item (from 0x503A22; negative once Buzz has it, 0 once
@@ -577,6 +579,12 @@ pub fn sin_table(a: i32) -> i32 {
 pub fn near(p: [i32; 3], q: [i32; 3], r: i32) -> bool {
     let d = [0, 1, 2].map(|k| (p[k] - q[k]) >> 8);
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < r * r
+}
+
+/// Within `r` of `q` across the ground, ignoring height (0x49F3C0).
+pub fn near_xz(p: [i32; 3], q: [i32; 3], r: i32) -> bool {
+    let (dx, dz) = ((p[0] - q[0]) >> 8, (p[2] - q[2]) >> 8);
+    dx * dx + dz * dz < r * r
 }
 
 /// The script for level `level` (1-based), set up as its start-up function does.

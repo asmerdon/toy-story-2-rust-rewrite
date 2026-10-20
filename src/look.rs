@@ -60,7 +60,13 @@ pub struct FirstPerson {
     breath: i32,
     /// Sounds requested (flat).
     pub sounds: Vec<u16>,
+    /// The level's hook points (`level.dat` list 59, level units); with hooks in hand they
+    /// can be targeted too, as target 1000 + their index.
+    pub hooks: Vec<[i32; 3]>,
 }
+
+/// Targets from here on are hook points (0x50A4FC ≥ 1000).
+const HOOK: usize = 1000;
 
 fn sin14(a: i32) -> i32 {
     ((a & 0xFFF) as f64 / 4096.0 * std::f64::consts::TAU).sin().mul_add(16384.0, 0.0).round() as i32
@@ -118,27 +124,41 @@ impl FirstPerson {
             p.first_person = 0;
         }
         if p.first_person == 0 {
+            p.hook_target = None;
             for id in MODEL {
                 specials.set_scale(id, [0; 3]);
             }
         }
     }
 
+    /// Where target `t` is (object units): a creature's middle or a hook point.
+    fn target_at(&self, creatures: &Creatures, t: usize) -> [i32; 3] {
+        match t.checked_sub(HOOK) {
+            Some(k) => self.hooks.get(k).map_or([0; 3], |h| h.map(|v| v * 32)),
+            None => creatures.ellipsoid_at(t).0,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn look(&mut self, p: &mut Player, creatures: &mut Creatures, particles: &mut Particles, specials: &mut Specials, world: &World, pad: Pad) {
         let eye = Self::eye(p);
+        let within = |at: [i32; 3]| {
+            let d = [0, 1, 2].map(|k| ((at[k] - eye[k]) >> 5) as i64);
+            d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 0x100_0000
+        };
+        // With hooks in hand, the hook points in reach too.
+        let hooks: Vec<usize> = if p.hook_ammo > 0 { (0..self.hooks.len()).filter(|&k| within(self.hooks[k].map(|v| v * 32))).map(|k| HOOK + k).collect() } else { Vec::new() };
         // The creatures that can be targeted.
-        let list: Vec<usize> = (0..creatures.slots.len())
+        let mut list: Vec<usize> = (0..creatures.slots.len())
             .filter(|&i| {
                 let c = &creatures.slots[i];
                 if c.id == 0 || !c.active || c.health <= 0 || c.rec.state == 0 || c.hurt < 0 {
                     return false;
                 }
-                let (centre, _) = creatures.ellipsoid_at(i);
-                let d = [0, 1, 2].map(|k| ((centre[k] - eye[k]) >> 5) as i64);
-                d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 0x100_0000
+                within(creatures.ellipsoid_at(i).0)
             })
             .collect();
+        list.extend(hooks);
         let found = self.target.and_then(|t| list.iter().position(|&s| s == t));
         let advance = match found {
             Some(_) => pad.r1_pressed && self.lock,
@@ -169,7 +189,7 @@ impl FirstPerson {
             self.target = next;
         }
         if let Some(t) = self.target {
-            let (at, _) = creatures.ellipsoid_at(t);
+            let at = self.target_at(creatures, t);
             let m = match self.marker.filter(|&m| particles.slots[m].life > 0 && particles.slots[m].typ == 0x30) {
                 Some(m) => Some(m),
                 None => particles.spawn(at, 0x30, 2),
@@ -205,7 +225,7 @@ impl FirstPerson {
                 && let (Some(t), false) = (self.target, self.fresh)
             {
                 self.sounds.push(0x28);
-                let (at, _) = creatures.ellipsoid_at(t);
+                let at = self.target_at(creatures, t);
                 let d = [0, 1, 2].map(|k| (at[k] - eye[k]) >> 5);
                 let a = crate::boxes::angle12(d[0] as f32, d[2] as f32);
                 let h = (d[0] as f32).hypot(d[2] as f32);
@@ -234,6 +254,11 @@ impl FirstPerson {
         self.cam_pitch = (self.cam_pitch + wrap(self.pitch - self.cam_pitch) / 8) & 0xFFF;
         self.cam_yaw = (self.cam_yaw + wrap(p.facing - self.cam_yaw) / 8) & 0xFFF;
         p.look = [self.cam_pitch, self.cam_yaw];
+        // Locked on a hook point (0x50A540 with 0x50A4FC ≥ 1000): firing throws the hook.
+        p.hook_target = match self.target {
+            Some(t) if self.lock && t >= HOOK => self.hooks.get(t - HOOK).copied(),
+            _ => None,
+        };
         // Where the view meets something: the dot, red over a creature.
         let pc = wrap(self.cam_pitch);
         let o = [eye[0], eye[1] + 0x400, eye[2]];

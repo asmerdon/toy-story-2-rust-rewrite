@@ -269,10 +269,15 @@ pub fn creature_batches_turned(ngn: &Ngn, c: &Creature, origin: [f32; 3], angles
 
 /// As `creature_batches_turned`, scaled by `scale` (1 = as built) in its own frame.
 pub fn creature_batches_scaled(ngn: &Ngn, c: &Creature, origin: [f32; 3], angles: [f32; 3], scale: f32, anim: Option<(&Animation, f32)>) -> Vec<Batch> {
+    creature_batches_scaled_xyz(ngn, c, origin, angles, [scale; 3], anim)
+}
+
+/// As [`creature_batches_scaled`], scaled per model axis (the slot's +0x2C / +0x2E / +0x30).
+pub fn creature_batches_scaled_xyz(ngn: &Ngn, c: &Creature, origin: [f32; 3], angles: [f32; 3], scale: [f32; 3], anim: Option<(&Animation, f32)>) -> Vec<Batch> {
     let mut place = Place::turned(origin, angles);
-    for row in place.m.iter_mut() {
+    for (row, s) in place.m.iter_mut().zip(scale) {
         for v in row.iter_mut() {
-            *v *= scale;
+            *v *= s;
         }
     }
     creature_batches_placed(ngn, c, place, anim, None)

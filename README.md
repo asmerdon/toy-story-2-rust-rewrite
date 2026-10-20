@@ -70,10 +70,10 @@ campaign level. It reports script availability separately from asset availabilit
 ## Not done yet
 
 - Levels 2–10 are ported but not yet playtested, so expect bugs there.
-- A few puzzles and gadgets are skipped, the biggest being level 4's crane puzzle and level 8's claw machine.
+- Level 4's paint puzzle and level 8's claw machine are ported and simulation-tested. A few small gadgets are still skipped (level 8's electric arcs and cannon, drips and lights).
 - There is no graphical front end yet. Command-line campaign selection supports levels 1–15.
 - Original stereo level music loops in the viewer; **M** mutes/unmutes music independently of sound effects. Set `TS2_CD_DIR` to the extracted disc folder containing `audio/`, or put that folder path in local ignored `ts2-media.txt` (already configured on this machine). Track selection follows the original executable, including campaign levels 3/6. Boss/race theme transitions and FMV playback remain to do. The disc contains 23 WAVs and 22 MPEG videos named `.dll`; see `docs/re/asset-audit.md`.
-- The rocket boots and the grappling hook aren't ported.
+- The rocket boots, hover boots and grappling hook are ported but not playtested. To use the hook: pick up hooks, go into first person (Q), lock on to a hook point (X), and fire.
 - Levels 11 (Al's Penthouse), 13 (Airport Infiltration), 14 (Tarmac Trouble) and 15 (Prospector Showdown) have their scripts ported and simulation-tested, but not playtested. Every campaign level now has its script.
 - Level 12 (Zurg): entrance, attacks, hit recovery, arena boundaries, death and completion are ported and simulation-tested with real data. Visual playtesting remains; lighting and the nearest-light marker are omitted.
 

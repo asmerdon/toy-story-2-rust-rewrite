@@ -24,9 +24,16 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
   challenge, critters, gunslinger. New creature routines 0x28 / 0x29 / 0x2E.
 - `Boxes::pushed()` exposes 0x53C648. `campaign::script_available` is true for all 15.
 - Verification: **117 passed** with `TS2_GAME_DIR`; release build clean. Nothing pushed.
-- Remaining (in order): level 4 crane puzzle, level 8 claw machine, rocket boots, grappling
-  hook, front end and level select, saves, boss/race music changes, FMV playback; then the
-  playtest-and-fix pass over levels 2–15.
+- Then ported: level 4's "crane" (really a paint-mixing puzzle: the crane is a push box,
+  slot 5 is the PAINT creature lit in the mixed colour; token 3), level 8's claw machine
+  (token 3 is the prize), rocket boots, hover boots and the grappling hook (hook points =
+  list 59, targeted in first person as 1000 + index; hook ammo = pickups `ammo_a`).
+  Creatures gained `light` (+0x24–0x28) and `scale_y` (+0x2E); the viewer tints lit
+  creatures by `light` and scales by `scale_y`. Level 4's `given[3]` is now false (the
+  puzzle reveals it). 123 tests pass.
+- Remaining (in order): front end and level select, saves, boss/race music changes, FMV
+  playback; then the playtest-and-fix pass over levels 2–15. Small gadgets still skipped:
+  level 8's electric arcs (0x422D20) and cannon, drips, lights, floor shadows.
 - Lesson: `python -` (stdin) still hangs this shell. A command that starts with it blocks the
   whole chain; write scripts to the scratchpad. The capstone venv lives in the session
   scratchpad (`re/dis.py`: `dis|hex|i32 <va> <n>`).

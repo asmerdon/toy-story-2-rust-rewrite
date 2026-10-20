@@ -198,6 +198,8 @@ pub struct Pickups {
     respawn: Option<(usize, i32)>,
     /// The last shield picked up (it shrinks back to twice its size when another is taken).
     shield_item: Option<usize>,
+    /// The rocket boots in use (0x882924): hidden until they run out, then back.
+    launch_item: Option<usize>,
     /// The shield ball's place (level units) and spin about Z (0x882960), set each tick by
     /// `follow_shield`.
     shield_at: Option<[i32; 3]>,
@@ -280,6 +282,7 @@ impl Pickups {
             frame: 0,
             respawn: None,
             shield_item: None,
+            launch_item: None,
             shield_at: None,
             shield_spin: 0,
             shield_back: std::cell::Cell::new(None),
@@ -445,6 +448,15 @@ impl Pickups {
         }
     }
 
+    /// Token `k`'s radius byte (+0xD): cleared to the top bit (untouchable) or given 0x28.
+    pub fn set_token_touchable(&mut self, k: usize, touchable: bool) {
+        if let Some(&id) = self.token_ids.get(k)
+            && let Some(p) = self.by_id(id)
+        {
+            p.radius = if touchable { p.radius | 0x28 } else { p.radius & 0x80 };
+        }
+    }
+
     /// 0x4A0E60: token `k` goes out of sight again (not collected).
     pub fn hide_token(&mut self, k: usize) {
         if let Some(&id) = self.token_ids.get(k)
@@ -537,6 +549,13 @@ impl Pickups {
         events
     }
 
+    /// The rocket boots ran out (0x4A4EC0) or were cancelled (0x4A4E60): their pickup is back.
+    pub fn end_launch(&mut self) {
+        if let Some(i) = self.launch_item.take() {
+            self.restore(i);
+        }
+    }
+
     fn restore(&mut self, i: usize) {
         if let Some(p) = self.items.get_mut(i) {
             p.removed = false;
@@ -599,7 +618,13 @@ impl Pickups {
             }
             Kind::Collectable => self.collectables += 1,
             Kind::Timer => self.timer = 1200,
-            Kind::Launch | Kind::Other => {}
+            // 0x4A4D60: boots taken while others run bring the others back first.
+            Kind::Launch => {
+                if let Some(prev) = self.launch_item.replace(i) {
+                    self.restore(prev);
+                }
+            }
+            Kind::Other => {}
         }
         let p = &mut self.items[i];
         match fate {

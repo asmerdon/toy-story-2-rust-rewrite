@@ -16,8 +16,10 @@
 //!   the finder (slot 0x12, list 0x20: five little tykes, token 1).
 //! - The drill boss (slot 0x18, list 0x22, token 4).
 //!
-//! Not ported: the crane combination puzzle (surfaces 0x20–0x23, slot 4's arm; token 3), the
-//! dripping and lights.
+//! - The paint puzzle (token 3): see [`Paint`]. The crane and a crate are push boxes
+//!   (0x4F1C88).
+//!
+//! Not ported: the dripping and lights.
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
@@ -75,8 +77,39 @@ pub struct Level4 {
     lanes: u32,
     /// The timed challenge's clock tick (every 64 ticks).
     in_water: bool,
+    paint: Paint,
     common: Common,
 }
+
+/// The paint puzzle (in 0x41C640). The crane (mover 0, pushed along list 3 like a box)
+/// carries the paint (slot 5, creature PAINT): its colour is the slot's light, its fill the
+/// slot's height. Stops 5–7 of list 3 are under the red, blue and yellow taps; stomping the
+/// matching button (surfaces 0x21–0x23) there pours that colour. Two different colours mix;
+/// the mix goes to its target at stops 1–3 (purple, orange, green). The same colour twice
+/// drains away. All three targets done: token 3.
+#[derive(Default)]
+struct Paint {
+    /// 0x52F7C0: the button stomped (surface − 0x1F); 0x52F7D8: the pour's countdown (60).
+    colour: i32,
+    timer: i32,
+    /// 0x52F7C4: the crane's stop (1-based, 0 between stops).
+    stop: i32,
+    /// 0x52F80C / 0x52F764: the first and second colours in (1 red, 2 blue, 3 yellow).
+    first: i32,
+    second: i32,
+    /// 0x52F868: a third pour was refused.
+    full: bool,
+    /// 0x52F86C: the fill height; 0x52F760: draining (32 down to 0).
+    fill: i32,
+    drain: i32,
+    /// 0x52F770: targets done (bits 1, 2, 4).
+    done: u32,
+}
+
+/// 0x4F1B64: every 8 ticks one entry: done targets show their lit sign (special) or swap
+/// back (negative: hide −special, show −special + 3).
+const SIGNS: [(u32, i32); 8] = [(1, 0x30), (2, 0x31), (4, 0x32), (0, 0), (1, -0x30), (2, -0x31), (4, -0x32), (0, 0)];
+const PAINT: usize = 5;
 
 impl Level4 {
     pub fn new(world: &World, specials: &mut Specials, exe: Option<&Exe>) -> Level4 {
@@ -103,8 +136,10 @@ impl Level4 {
             lift_v: 0,
             lanes: 0,
             in_water: false,
+            paint: Paint::default(),
             // 0x503A2A: level 4's missing item (9) and gift (bit 4, the disk launcher).
-            common: Common { given: [false, false, false, true, false], item: 9, show_collectables: Some(false), ..Default::default() },
+            // Token 3 is the paint puzzle's (0x41C640 reveals it once 0x52F770 = 7).
+            common: Common { given: [false; 5], item: 9, show_collectables: Some(false), ..Default::default() },
         }
     }
 
@@ -113,6 +148,129 @@ impl Level4 {
         let mut texts = vec![crate::script::HAMM_THANKS, crate::script::HAMM_ASK, crate::script::ALL_TOKENS, CHALLENGE_ASK, CHALLENGE_HURRY, CHALLENGE_DONE, FINDER_ASK, FINDER_THANKS, DRILL_TEXT];
         texts.extend(POTATO_TEXTS);
         self.load_story(exe, lists, &texts, Some(INFO_TABLE));
+    }
+
+    /// The paint puzzle: see [`Paint`].
+    fn paint(&mut self, world: &World, specials: &mut Specials, player: &Player, cr: &mut Creatures) {
+        let Some(crane) = world.mover_pos(0).map(|p| [p.x, p.y, p.z].map(|v| (v * 32.0) as i32)) else { return };
+        if cr.slots.len() <= PAINT {
+            return;
+        }
+        let buzz = player.pos_obj();
+        cr.slots[PAINT].pos = crane;
+        cr.slots[PAINT].lit = true;
+        let p = &mut self.paint;
+        // The same colour twice: it drains.
+        if p.timer < 1 && matches!(p.first + p.second * 3, 4 | 8 | 12) {
+            p.drain = 0x20;
+            p.first = 0;
+            p.second = 0;
+            self.common.sounds.push((0xFFFA, buzz));
+        }
+        let p = &mut self.paint;
+        p.stop = 0;
+        let mut poured = false;
+        if p.drain > 0 {
+            p.full = false;
+            cr.slots[PAINT].scale_y = Some(p.fill * p.drain / 32);
+            p.drain -= 1;
+        } else {
+            let surface = player.surface.unwrap_or(0) as i32;
+            if player.on_floor && player.stomp != 0 && (0x20..0x24).contains(&surface) && p.timer < 1 {
+                p.colour = surface - 0x1F;
+                p.timer = 0x3C;
+                for k in 0..3 {
+                    self.common.put_out.push((k, 1));
+                }
+            }
+            let p = &mut self.paint;
+            if let Some(stops) = self.common.story.lists.get(&3) {
+                for (k, s) in stops.iter().enumerate() {
+                    if ((crane[0] >> 5) - s[0]).abs() < 200 {
+                        p.stop = k as i32 + 1;
+                    }
+                }
+            }
+            if p.timer == 0x3C {
+                poured = true;
+                if p.stop > 4 && p.stop - 3 == p.colour {
+                    if p.first == 0 {
+                        p.first = p.stop - 4;
+                    } else if p.second == 0 {
+                        p.second = p.stop - 4;
+                        p.full = false;
+                    } else {
+                        p.full = true;
+                    }
+                }
+            }
+        }
+        let p = &mut self.paint;
+        if p.timer > 0 {
+            // The poured drop (special colour + 0x1F): squashed in, whole, then gone.
+            let drop = p.colour + 0x1F;
+            if p.colour > 1 {
+                let s = if poured || p.timer > 0x34 { [0x1000, (0x3C - p.timer) * 0x200, 0x1000] } else if p.timer > 0xB { [0x1000; 3] } else { [0; 3] };
+                specials.set_scale(drop, s);
+            }
+            if !p.full && p.stop - 3 == p.colour && (5..=7).contains(&p.stop) {
+                let t = p.timer;
+                let c = &mut cr.slots[PAINT];
+                let mixed = match p.second * 3 - 1 + p.first {
+                    0 => Some((0x3C, Some([0x680, 0, 0]))),
+                    1 => Some((0x3C, Some([0, 0, 0x600]))),
+                    2 => Some((0x3C, Some([0x600, 0x580, 0]))),
+                    3 | 7 | 0xB => Some((0x7C, None)),
+                    4 => Some((0x7C, Some([(0x3C - t) * 0xE, 0, t * 8 + 0x420]))),
+                    5 => Some((0x7C, Some([0x600, t * 10 + 0x328, 0]))),
+                    6 => Some((0x7C, Some([t * 0xC + 0x3B0, 0, (0x3C - t) * 0x12]))),
+                    8 => Some((0x7C, Some([(t * 3 + 0xC) * 8, t * 6 + 0x418, 0]))),
+                    9 => Some((0x7C, Some([t * 2 + 0x608, (0x3C - t) * 0xC, 0]))),
+                    10 => Some((0x7C, Some([0, (0x3C - t) * 0x10, (t * 3 + 0xC) * 8]))),
+                    _ => None,
+                };
+                if let Some((top, light)) = mixed {
+                    if let Some(l) = light {
+                        c.light = l;
+                    }
+                    p.fill = (top - t) * 0x20;
+                }
+                c.scale_y = Some(p.fill);
+            }
+            p.timer -= 1;
+        }
+        // At a target with its mix: done.
+        let mix = p.second * 3 - 1 + p.first;
+        let hit = match p.stop {
+            1 => matches!(mix, 4 | 6),
+            2 => matches!(mix, 5 | 9),
+            3 => matches!(mix, 8 | 10),
+            _ => false,
+        };
+        if hit {
+            p.done |= 1 << (p.stop - 1);
+            p.drain = 0x20;
+            p.first = 0;
+            p.second = 0;
+            self.common.sounds.push((0xFFFB, buzz));
+        }
+        let p = &self.paint;
+        let c = &mut cr.slots[PAINT];
+        if c.scale_y.unwrap_or(c.scale) < 0x180 {
+            c.flags &= !1;
+        }
+        if self.common.every(8) {
+            let (mask, s) = SIGNS[(self.common.clock as usize % 64) >> 3];
+            if mask & p.done != 0 {
+                let (on, off) = if s < 0 { (-s + 3, -s) } else { (s, s + 3) };
+                specials.set_scale(off, [0; 3]);
+                specials.set_scale(on, [0x1000; 3]);
+            }
+        }
+        if p.done == 7 && !self.common.given[3] {
+            self.common.given[3] = true;
+            self.common.reveals.push(3);
+        }
     }
 
     /// 0x41BEE0: the rig under hanging platform `k`: the rope (special 0x39 + k) stretched
@@ -438,7 +596,8 @@ impl Script for Level4 {
         self.in_water = wet;
     }
 
-    fn step_creatures(&mut self, _world: &World, _specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
+    fn step_creatures(&mut self, world: &World, specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
+        self.paint(world, specials, player, cr);
         self.boss_hud = false;
         let open = self.race == 0;
         self.call(cr, CHALLENGE.0, 0xB5, open);

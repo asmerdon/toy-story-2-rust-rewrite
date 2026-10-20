@@ -106,12 +106,16 @@ pub struct Creature {
     pub active: bool,
     /// Running the shared death script (pointer 0x4E02CC) instead of its own.
     dying_script: bool,
-    /// +0x34: drawn lit up (the Tin Man's flash when hurt).
+    /// +0x34: drawn lit up (the Tin Man's flash when hurt), in the light colour +0x24–0x28
+    /// (0x1000 = as built per channel; the flashes use 0x2000).
     pub lit: bool,
+    pub light: [i32; 3],
     /// Within the original's activity reach of the camera this tick (0x4086F0).
     pub in_reach: bool,
-    /// +0x2C–0x30: the model's scale (0x1000 = as built).
+    /// +0x2C–0x30: the model's scale (0x1000 = as built); a script's height alone (+0x2E),
+    /// as level 4 fills the paint.
     pub scale: i32,
+    pub scale_y: Option<i32>,
     /// A script's override of its hit ellipsoid (offset y, radius), as level 3 grows and
     /// shrinks the slime's table.
     pub hit_size: Option<(i32, i32)>,
@@ -388,6 +392,8 @@ impl Creatures {
                 active: false,
                 dying_script: false,
                 lit: false,
+                light: [0x2000; 3],
+                scale_y: None,
                 in_reach: false,
                 scale: 0x1000,
                 hit_size: None,

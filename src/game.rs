@@ -845,6 +845,32 @@ pub struct Player {
     /// Flag 0x40 of +0x40: thrown by something (room 3's spring). Until he lands, no friction
     /// and speeds up to 0xB80 each way (0x436220's profile).
     pub launched: bool,
+    /// 0x53C5E0: rocket boots ticks left (250 from the pickup, 0x4A4D60). He charges forward
+    /// on his own at up to 0x800, steering without skids, and jumps at −0x640.
+    pub rocket: i32,
+    /// 0x882920: hover boots ticks left (600, 0x4A4B70), and the height he holds above the
+    /// floor (0x882928, 0x2000–0xC000; jump held raises it).
+    pub hover: i32,
+    pub hover_height: i32,
+    /// The grappling hook (0x4A5370 / 0x4A5540): 0x882950 = 0 off, 1 flying out, 3 flying
+    /// to a wall (it comes back), 2 pulling him in; where it's going (0x882940, object
+    /// units), its clock (0x882930) and length (0x88292C). Hooks left (0x882938, set by the
+    /// caller from the pickups), and the hook point first person has locked on (list 59,
+    /// level units).
+    pub grapple: u8,
+    pub grapple_at: [i32; 3],
+    grapple_t: i32,
+    grapple_len: i32,
+    pub hook_ammo: i32,
+    pub hook_target: Option<[i32; 3]>,
+    /// The rope to draw this tick (from the hand to its end), object units.
+    pub rope: Option<([i32; 3], [i32; 3])>,
+}
+
+/// 0x451FD0: a direction scaled to length 4096.
+fn normalize4096(d: [i32; 3]) -> [i32; 3] {
+    let len = d.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
+    if len == 0.0 { [0; 3] } else { d.map(|v| (v as f64 * 4096.0 / len) as i32) }
 }
 
 /// Idle voice lines alternate between these two sound ids, at most every 0x708 ticks (30 s).
@@ -936,6 +962,16 @@ impl Player {
             water: (0, 0),
             in_water: false,
             floating: false,
+            rocket: 0,
+            hover: 0,
+            hover_height: 0x2000,
+            grapple: 0,
+            grapple_at: [0; 3],
+            grapple_t: 0,
+            grapple_len: 0,
+            hook_ammo: 0,
+            hook_target: None,
+            rope: None,
             push: Vec3::ZERO,
             push_ramp: 0,
         }
@@ -1030,6 +1066,188 @@ impl Player {
 
     fn sound(&mut self, id: u16) {
         self.sounds.push(Sound { id, voice: false });
+    }
+
+    /// 0x433ED0: whatever Buzz is doing stops (mantle, climb, zip line, spin, stomp, laser,
+    /// ledge, float), and so do the boots.
+    fn clear_moves(&mut self) {
+        self.mantle = 0;
+        self.fall_timer = 0;
+        self.climb = 0;
+        self.zip = 0;
+        self.charge = 0;
+        self.spin = 0;
+        self.stomp = 0;
+        self.laser = 0;
+        self.laser_charge = 0;
+        self.ledge = 0;
+        self.floating = false;
+        self.rocket = 0;
+        self.hover = 0;
+        // 0x4A5340: a hook in use is lost.
+        if self.grapple != 0 {
+            self.hook_ammo = (self.hook_ammo - 1).max(0);
+            self.grapple = 0;
+        }
+    }
+
+    /// The hand the hook leaves from: the eyes' ray origin (0x2C00 up).
+    fn hand(&self) -> [i32; 3] {
+        let p = self.pos_obj();
+        [p[0], p[1] - 0x2C00, p[2]]
+    }
+
+    /// 0x4A5370: the hook fired at a list-59 point (level units). Sound 0x51. A wall in the
+    /// way stops it there and it will come back (3); else it flies out (1). Its length is the
+    /// distance along the main axis of its direction over half that axis's share; it travels
+    /// 2 a tick. Buzz holds still meanwhile (flag 4).
+    fn fire_grapple(&mut self, world: &World, point: [i32; 3]) {
+        self.sound(0x51);
+        let from = self.hand();
+        let to = [point[0] * 32, (point[1] - 0xC0) * 32, point[2] * 32];
+        let mut d = [0, 1, 2].map(|k| to[k] - from[k]);
+        let o = Vec3::from(from.map(|v| v as f32 / 32.0));
+        let dv = Vec3::from(d.map(|v| v as f32 / 32.0));
+        let hit = world.sweep(o, dv, 1.0);
+        if let Some(h) = hit {
+            d = (dv * h.t * 32.0).to_array().map(|v| v as i32);
+        }
+        self.grapple = if hit.is_some() { 3 } else { 1 };
+        self.grapple_at = [0, 1, 2].map(|k| from[k] + d[k]);
+        let n = normalize4096([0, 1, 2].map(|k| (self.grapple_at[k] - from[k]) >> 2));
+        let p = self.pos_obj();
+        let (mut along, mut share) = if (n[1] / 2).abs() < (n[0] / 2).abs() { (self.grapple_at[0] - p[0], n[0] / 2) } else { (self.grapple_at[1] - p[1] + 0x1600, n[1] / 2) };
+        if share.abs() <= (n[2] / 2).abs() {
+            along = self.grapple_at[2] - p[2];
+            share = n[2] / 2;
+        }
+        self.grapple_len = (along / if share == 0 { 1 } else { share }).abs();
+        self.grapple_t = 0;
+        self.laser = 0xC;
+    }
+
+    /// 0x4A5540, each tick of the hook. Flying out, Buzz faces it and the rope pays out; at
+    /// its end (sound 0x52) a wall sends it back (a hook used), else it catches and he's
+    /// pulled along the rope (sound 0x53, a third of the way's direction a tick from the
+    /// tenth tick), and at the end he's put on the point.
+    fn grapple_tick(&mut self) {
+        self.rope = None;
+        if self.grapple == 0 {
+            return;
+        }
+        self.fall_timer = 0;
+        let hand = self.hand();
+        let to = self.grapple_at;
+        if self.grapple & 1 != 0 {
+            self.target = crate::boxes::angle12((to[0] - hand[0]) as f32, (to[2] - hand[2]) as f32);
+            self.grapple_t += 2;
+            if self.grapple_t > self.grapple_len {
+                self.sound(0x52);
+                if self.grapple == 3 {
+                    self.hook_ammo = (self.hook_ammo - 1).max(0);
+                    self.grapple = 0;
+                    return;
+                }
+                self.grapple = 2;
+                self.grapple_t = 0;
+                // Pulled, he leaves first person.
+                if self.first_person != 0 {
+                    self.first_person = 5;
+                }
+            } else {
+                let (t, len) = (self.grapple_t, self.grapple_len.max(1));
+                let end = [0, 1, 2].map(|k| hand[k] + (to[k] - hand[k]) * t / len);
+                self.rope = Some((hand, end));
+            }
+        }
+        if self.grapple == 2 {
+            if self.grapple_t <= self.grapple_len * 4 / 3 + 10 {
+                self.sound(0x53);
+                self.rope = Some((hand, to));
+                let p = self.pos_obj();
+                let n = normalize4096([(to[0] - p[0]) >> 3, (to[1] - p[1] + 0x1600) >> 3, (to[2] - p[2]) >> 3]);
+                if self.grapple_t > 9 {
+                    self.vel = n.map(|v| v / 3);
+                }
+                self.grapple_t += 1;
+                return;
+            }
+            self.hook_ammo = (self.hook_ammo - 1).max(0);
+            self.grapple = 0;
+            self.pos = Vec3::new(to[0] as f32, (to[1] + 0x1600) as f32, to[2] as f32) / 32.0;
+            self.vel = [0; 3];
+        }
+    }
+
+    /// 0x4A4D60: the rocket boots (the caller hides their pickup until they run out): 250
+    /// ticks, two exhaust trails (particle 0x2F), launch sound 0x4C.
+    pub fn start_rocket(&mut self) {
+        self.clear_moves();
+        self.rocket = 0xFA;
+        let at = self.pos_obj();
+        self.effects.push((at, 0x2F, 2, -0x20));
+        self.effects.push((at, 0x2F, 2, 0x20));
+        self.sound(0x4C);
+    }
+
+    /// 0x4A4B70: the hover boots, 600 ticks at the lowest height.
+    pub fn start_hover(&mut self) {
+        self.clear_moves();
+        self.hover = 600;
+        self.hover_height = 0x2000;
+    }
+
+    /// 0x4A4EC0, each tick of the rocket boots: under water they lift him (to −0x300), the
+    /// engine sounds (0x40), and they run down.
+    fn rocket_tick(&mut self) {
+        if self.rocket == 0 {
+            return;
+        }
+        let (mode, surface) = self.water;
+        if mode != 0 && surface < self.y_obj() && self.vel[1] > -0x300 {
+            self.vel[1] -= 0x80;
+        }
+        self.sound(0x40);
+        self.rocket = (self.rocket - 1).max(0);
+    }
+
+    /// 0x4A4BB0, in place of the airborne step while hovering: he eases (±0x20 a tick, at most
+    /// 0x180) towards the hover height above the floor below; jump held raises it 0x400 a
+    /// tick, else it sinks back. Jets every 4 ticks (particles 0x51, 0x52 rising, 0x53
+    /// flickering in the last 120 ticks), sound 0x50.
+    fn hover_step(&mut self, world: &World, jump_held: bool) {
+        self.fall_timer = 0;
+        let y = self.y_obj();
+        let floor = world.floor_below(self.pos.x, self.pos.z, self.pos.y).map_or(y, |f| (f * 32.0) as i32);
+        let vy = &mut self.vel[1];
+        *vy = if y < floor - self.hover_height { (*vy + 0x20).min(0x180) } else { (*vy - 0x20).max(-0x180) };
+        let mut jet = if jump_held {
+            self.hover_height = (self.hover_height + 0x400).min(0xC000);
+            1
+        } else {
+            self.hover_height = (self.hover_height - 0x400).max(0x2000);
+            0
+        };
+        // The 4- and 8-tick flags (0x52F1C4 / 0x52F1C8), counted on the boots' own clock.
+        let (every4, every8) = (self.hover % 4 == 0, self.hover % 8 == 0);
+        if every4 {
+            let emit = if self.hover < 0x78 {
+                jet = 2;
+                !every8
+            } else {
+                if every8 && jet == 1 {
+                    jet = 0;
+                }
+                true
+            };
+            if emit {
+                let at = self.pos_obj();
+                self.effects.push((at, 0x51 + jet, 0, 0x80));
+                self.effects.push((at, 0x51 + jet, 0, -0x80));
+            }
+        }
+        self.sound(0x50);
+        self.hover = (self.hover - 1).max(0);
     }
 
     fn next_random(&mut self) -> Option<u8> {
@@ -1170,7 +1388,7 @@ impl Player {
     /// a spring. While it's set the frame loop (0x49DFE0) masks the pad to 0x309: no stick,
     /// d-pad, jump, spin, fire or L1.
     pub fn input_locked(&self) -> bool {
-        (self.charge < 0 && self.charge >= SUPER_SPIN_END) || self.fall_timer < 0 || self.launched || self.frozen
+        (self.charge < 0 && self.charge >= SUPER_SPIN_END) || self.fall_timer < 0 || self.launched || self.frozen || self.grapple != 0
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1212,6 +1430,14 @@ impl Player {
                 side_decel = SKID_SIDE_DECEL;
             }
         }
+        // Rocket boots (0x4A4F80 in place of 0x4346C0): less friction, and he keeps going.
+        let rocket = self.rocket > 0;
+        if rocket {
+            friction = 0x20;
+            side_decel = 0x80;
+            self.skid = 0;
+        }
+        self.rocket_tick();
 
         self.grab_lock = (self.grab_lock - 1).max(0);
         // L1 on the ground with nothing else going on: first person (0x436220).
@@ -1221,7 +1447,8 @@ impl Player {
             self.charge = 0;
         }
         let fire = std::mem::take(&mut self.fire_latch);
-        self.laser_tick(fire, self.fire_held || fire);
+        self.laser_tick(world, fire, self.fire_held || fire);
+        self.grapple_tick();
         let stomp = self.stomp_tick(stomp_pressed);
         self.spin_tick(stomp_pressed);
         if self.hurt_timer > 0 {
@@ -1244,8 +1471,9 @@ impl Player {
         let climb = if mode == 0 { self.climb_tick(dpad, stick, jump_pressed) } else { mode };
         let stomp = if climb == 0 { stomp | self.mantle_tick(world) } else { stomp };
         match if climb != 0 { 0 } else { stomp } {
-            // On a pole, a ledge or a zip line: no gravity or ground movement this tick.
-            _ if climb == 2 => {}
+            // On a pole, a ledge or a zip line: no gravity or ground movement this tick. Pulled
+            // by the hook, its velocity alone.
+            _ if climb == 2 || self.grapple == 2 => {}
             // First person (code 8 of 0x436220): gravity and slowing down only.
             0 if self.first_person != 0 => {
                 self.airborne(jump_held);
@@ -1273,17 +1501,31 @@ impl Player {
                 if self.fall_timer < 0 {
                     self.fall_timer = (self.fall_timer + 1).min(0);
                 }
-                self.airborne(jump_held);
-                let mut max = MAX_SPEED;
-                if pushing {
-                    let angle = (stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32;
-                    // Stick magnitude, 0x4000 = full (0x433F40).
-                    max = (max * (magnitude * 16384.0) as i32) >> 14;
-                    self.turn(Some(angle & 0xFFF));
+                if self.hover > 0 {
+                    self.hover_step(world, jump_held);
                 } else {
-                    self.turn(None);
+                    self.airborne(jump_held);
                 }
-                self.accelerate(side_decel, friction, max, pushing);
+                let mut max = MAX_SPEED;
+                if rocket {
+                    // Always thrusting at up to 0x800; the stick only steers.
+                    if pushing {
+                        let angle = (stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32;
+                        self.target = angle & 0xFFF;
+                    }
+                    self.rocket_turn();
+                    self.accelerate(side_decel, friction, 0x800, true);
+                } else {
+                    if pushing {
+                        let angle = (stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32;
+                        // Stick magnitude, 0x4000 = full (0x433F40).
+                        max = (max * (magnitude * 16384.0) as i32) >> 14;
+                        self.turn(Some(angle & 0xFFF));
+                    } else {
+                        self.turn(None);
+                    }
+                    self.accelerate(side_decel, friction, max, pushing);
+                }
             }
             // 7: hang (no motion at all); 5: no horizontal motion.
             code => {
@@ -1591,7 +1833,7 @@ impl Player {
                     self.on_floor = false;
                     self.coyote = 0;
                     self.state = state::JUMP;
-                    *vy = JUMP_VY * K / k;
+                    *vy = if self.rocket > 0 { -0x640 } else { JUMP_VY } * K / k;
                     self.skid = 0;
                     self.jump_start = Some(y);
                     self.sounds.push(Sound { id: 0x19, voice: true });
@@ -1652,17 +1894,32 @@ impl Player {
         self.facing &= 0xFFF;
     }
 
+    /// 0x4A4F80's turn: towards the target by at most the cap / 8, never snapping round.
+    fn rocket_turn(&mut self) {
+        let diff = (self.facing - self.target) & 0xFFF;
+        let (amount, sign) = if diff > 0x7FF { (0x1000 - diff, 1) } else { (diff, -1) };
+        self.facing = (self.facing + sign * amount.min(TURN_CAP) / 8) & 0xFFF;
+    }
+
     /// 0x4343D0: accelerate along the facing and bleed off sideways speed.
     fn accelerate(&mut self, side_decel: i32, friction: i32, max: i32, pushing: bool) {
-        // Thrown: nothing slows him and the caps are 0xB80.
-        let (side_decel, friction, max, fwd_max) = if self.launched && !self.on_floor { (0, 0, 0xB80, 0xB80) } else { (side_decel, friction, max, MAX_FORWARD) };
+        // Thrown: nothing slows him and the caps are 0xB80. Rocket boots: 0x800 forward,
+        // accelerating 0xA0 a tick.
+        let (side_decel, friction, max, fwd_max) = if self.launched && !self.on_floor {
+            (0, 0, 0xB80, 0xB80)
+        } else if self.rocket > 0 {
+            (side_decel, friction, max, 0x800)
+        } else {
+            (side_decel, friction, max, MAX_FORWARD)
+        };
+        let accel = if self.rocket > 0 { 0xA0 } else { ACCEL };
         let (s, c) = (sin12(self.facing), cos12(self.facing));
         let [vx, _, vz] = self.vel;
         let toward_zero = |v: i32, by: i32| if v < 0 { (v + by).min(0) } else { (v - by).max(0) };
         let side = toward_zero((vx * c - vz * s) / 4096, side_decel).clamp(-max, max);
         let mut fwd = toward_zero((vz * c + vx * s) / 4096, friction);
         if pushing && fwd < max {
-            fwd += ACCEL + friction;
+            fwd += accel + friction;
         }
         let fwd = fwd.clamp(-fwd_max, fwd_max);
         self.forward = fwd;
@@ -1837,7 +2094,7 @@ impl Player {
     /// the next 41 ticks it fires again. Held, the shot charges (whine 0x27 from tick 13);
     /// released after 64 ticks, a charged shot (sound 6). Climbing, a long fall and the like
     /// put the arm down. Shots go to `shots`, along Buzz's facing.
-    fn laser_tick(&mut self, pressed: bool, held: bool) {
+    fn laser_tick(&mut self, world: &World, pressed: bool, held: bool) {
         let bits = self.state_bits();
         if bits & 0xF_BE3C != 0 {
             self.laser = 0;
@@ -1911,6 +2168,15 @@ impl Player {
             fire = 3;
         }
         self.laser = 0xC;
+        // With hooks, in first person, locked on a hook point: the hook instead (0x434990).
+        if self.hook_ammo != 0
+            && self.first_person > 2
+            && self.grapple == 0
+            && let Some(point) = self.hook_target
+        {
+            self.fire_grapple(world, point);
+            return;
+        }
         self.sound(if fire == 1 { 2 } else { 6 });
         let p = self.pos_obj();
         let fp = self.first_person == 4;
@@ -2437,6 +2703,93 @@ mod tests {
         tris.extend(q(Vec3::new(1000., 0., -3000.), Vec3::new(1000., -top, -3000.), Vec3::new(1000., -top, 3000.), Vec3::new(1000., 0., 3000.)));
         tris.extend(q(Vec3::new(1000., -top, -3000.), Vec3::new(4000., -top, -3000.), Vec3::new(4000., -top, 3000.), Vec3::new(1000., -top, 3000.)));
         World::from_triangles(tris)
+    }
+
+    /// A floor at 0, 40000 units across.
+    fn flat_world() -> World {
+        let (a, b, c, d) = (Vec3::new(-20000., 0., -20000.), Vec3::new(20000., 0., -20000.), Vec3::new(20000., 0., 20000.), Vec3::new(-20000., 0., 20000.));
+        World::from_triangles(vec![[a, b, c], [a, c, d]])
+    }
+
+    /// Rocket boots: with the stick let go he still charges forward, past his normal top
+    /// speed, until the 250 ticks run out; then he slows to a stop.
+    #[test]
+    fn rocket_boots_charge_forward_and_run_out() {
+        let w = flat_world();
+        let mut p = Player::new(Vec3::ZERO);
+        for _ in 0..5 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        p.start_rocket();
+        assert!(p.sounds.iter().any(|s| s.id == 0x4C));
+        for _ in 0..60 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        assert!(p.forward > MAX_FORWARD, "forward {:#x}", p.forward);
+        for _ in 0..200 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        assert_eq!(p.rocket, 0);
+        for _ in 0..120 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        assert_eq!(p.forward, 0);
+    }
+
+    /// Hover boots: he rises off the floor to the hover height, higher with jump held, and
+    /// settles back down when the 600 ticks are up.
+    #[test]
+    fn hover_boots_hold_him_above_the_floor() {
+        let w = flat_world();
+        let mut p = Player::new(Vec3::ZERO);
+        for _ in 0..5 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        p.start_hover();
+        for _ in 0..120 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        let low = -p.y_obj();
+        assert!(low > 0x1000, "hovering at {low:#x}");
+        for _ in 0..120 {
+            p.tick(&w, [0.0; 2], true, false);
+        }
+        assert!(-p.y_obj() > low + 0x4000, "jump raises him: {:#x}", -p.y_obj());
+        for _ in 0..600 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        assert_eq!(p.hover, 0);
+        assert!(p.on_floor);
+    }
+
+    /// The grappling hook: fired in first person at a locked hook point, it flies out, pulls
+    /// him in and puts him on the point (0xC0 above it, less the 0x1600 hand), using a hook.
+    #[test]
+    fn grappling_hook_pulls_him_to_the_point() {
+        let w = flat_world();
+        let mut p = Player::new(Vec3::ZERO);
+        for _ in 0..5 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        p.first_person = 4;
+        p.hook_ammo = 1;
+        let point = [2000, -1500, 300];
+        p.hook_target = Some(point);
+        p.update(&w, Input { fire: true, fire_held: true, ..Default::default() }, 1.0 / 60.0);
+        let mut fired = false;
+        let mut landed = None;
+        for _ in 0..400 {
+            p.update(&w, Input::default(), 1.0 / 60.0);
+            fired |= p.grapple != 0;
+            if fired && p.grapple == 0 && landed.is_none() {
+                landed = Some(p.pos);
+            }
+        }
+        assert!(fired, "the hook went");
+        let at = landed.expect("he arrived");
+        // Placed on the point, then that tick's gravity step (2 units).
+        assert!((at - Vec3::new(2000.0, -1516.0, 300.0)).length() < 4.0, "landed at {at:?}");
+        assert_eq!(p.hook_ammo, 0);
     }
 
     /// Jumping up against a high ledge, Buzz's hands catch its top on the way down: he is put

@@ -10,15 +10,17 @@
 //! - Water in the pool (mode 3 at −0x8200).
 //! - The boss (slot 40, list 0x11, in room 5; token 4) with its routine 0x422660.
 //!
-//! Not ported: the claw machine (room 4: surface 8 stomps, specials 0xA–0xE and 0x10, the
-//! prize pickup), 0x422D20, the cannon in room 2, the swaying specials 0x14–0x17 and lights.
+//! - The claw machine in room 4 (token 3): see [`Claw`].
+//!
+//! Not ported: the two electric arcs (0x422D20, hurting Buzz where they strike), the cannon
+//! in room 2, the swaying specials 0x14–0x17 and lights.
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
 use crate::game::{Player, World};
-use crate::script::{sin_table, touched, Common, Script};
+use crate::script::{near_xz, sin_table, touched, Common, Script};
 use crate::specials::Specials;
 
 const HINTS: u32 = 0x4F2F30;
@@ -43,7 +45,61 @@ pub struct Level8 {
     t: i32,
     speed: i32,
     bob: i32,
+    claw: Option<Claw>,
     common: Common,
+}
+
+/// The claw machine in room 4 (in 0x423200). Each stomp on its button (surface 8) moves it
+/// on a step: sweep across (x), sweep along (z), drop. At the bottom it closes; within 0xF of
+/// the prize (token 3) it lifts it, carries it to the chute and lets go, and the prize falls
+/// out where Buzz can take it. Otherwise it rises empty and waits again.
+struct Claw {
+    /// 0x52FAE8: the claw's base (special 0xA's place less 0x4000 across and along).
+    base: [i32; 3],
+    /// 0x52FB88: 0 waiting, 1–2 sweeping, 3 dropping, 4 closing, 5 rising, 6 to the chute,
+    /// 7 done.
+    state: i32,
+    /// 0x52FBA0 / 0x52FBA4: the sweeps (0–0xFFFF, folded at 0x8000); 0x52FBA8: the drop.
+    sweep: [i32; 2],
+    drop: i32,
+    /// 0x52FB84: ticks at the bottom.
+    wait: i32,
+    /// 0x52FB74: the prize 0 lying, 1 held, 2 falling, 3 out.
+    held: i32,
+    /// 0x52FB08: the prize, its fall speed (0x52FB1C), and whether Buzz has come near once
+    /// (0x52FB18: it's then shuffled).
+    prize: [i32; 3],
+    fall: i32,
+    met: bool,
+    /// 0x52FAE4: the button's pressed time.
+    button: i32,
+    /// 0x52FB64 / 0x52FB60: the claw's swing.
+    swing: (i32, i32),
+}
+
+impl Claw {
+    fn new(specials: &Specials) -> Option<Claw> {
+        let at = specials.pos_obj(0xA)?;
+        Some(Claw {
+            base: [at[0] - 0x4000, at[1], at[2] - 0x4000],
+            state: 0,
+            sweep: [0; 2],
+            drop: 0,
+            wait: 0,
+            held: 0,
+            prize: [at[0], at[1] + 0x6000, at[2]],
+            fall: 0,
+            met: false,
+            button: 0,
+            swing: (0, 0),
+        })
+    }
+
+    /// Where the claw hangs now: each sweep folded back at 0x8000.
+    fn at(&self) -> [i32; 3] {
+        let fold = |s: i32| if s > 0x7FFF { 0x10000 - s } else { s };
+        [fold(self.sweep[0]) + self.base[0], self.drop + self.base[1], fold(self.sweep[1]) + self.base[2]]
+    }
 }
 
 fn in_box(p: [i32; 3], x: (i32, i32), z: (i32, i32)) -> bool {
@@ -52,7 +108,159 @@ fn in_box(p: [i32; 3], x: (i32, i32), z: (i32, i32)) -> bool {
 
 impl Level8 {
     pub fn new() -> Level8 {
-        Level8 { spin: [(0, 0); 8], t: 0, speed: 0, bob: 0, common: Common { given: [false, false, false, true, false], ..Default::default() } }
+        Level8 { spin: [(0, 0); 8], t: 0, speed: 0, bob: 0, claw: None, common: Common { given: [false, false, false, true, false], ..Default::default() } }
+    }
+
+    /// See [`Claw`].
+    fn claw(&mut self, world: &World, specials: &mut Specials, player: &Player) {
+        if self.claw.is_none() {
+            self.claw = Claw::new(specials);
+            for id in [0xB, 0xE] {
+                specials.set_scale(id, [0; 3]);
+            }
+            // The prize can't be taken inside the machine.
+            self.common.token_touch.push((3, false));
+        }
+        let buzz = player.pos_obj();
+        let Some(c) = self.claw.as_mut() else { return };
+        let common = &mut self.common;
+        if world.room_at(player.pos) == Some(4) {
+            // First time near: the prize and the sweeps start somewhere random.
+            if !c.met && near_xz(c.prize, buzz, 1000) {
+                let r: [i32; 4] = std::array::from_fn(|_| common.rand());
+                c.prize[0] += (0x80 - r[0]) * 0x60;
+                c.prize[2] += (0x80 - r[1]) * 0x60;
+                c.sweep = [r[3] << 8, r[2] << 8];
+                c.met = true;
+            }
+            let stomped = player.on_floor && player.stomp != 0 && player.surface == Some(8);
+            if stomped && c.button == 0 {
+                c.button = 0x3C;
+                if c.state < 3 {
+                    c.state += 1;
+                }
+                specials.set_scale(0xD, [0; 3]);
+                specials.set_scale(0xE, [0x1000; 3]);
+                common.put_out.push((0, 1));
+            } else if c.button != 0 {
+                c.button -= 1;
+                if c.button < 1 {
+                    c.button = 0;
+                    specials.set_scale(0xD, [0x1000; 3]);
+                    specials.set_scale(0xE, [0; 3]);
+                }
+            }
+            let claw_at = c.at();
+            let mut motor = None;
+            match c.state {
+                1 => {
+                    c.sweep[0] = (c.sweep[0] + 0x80) & 0xFFFF;
+                    motor = Some(0x1800);
+                }
+                2 => {
+                    c.sweep[1] = (c.sweep[1] + 0x80) & 0xFFFF;
+                    motor = Some(0x1A00);
+                }
+                3 => {
+                    c.drop += 0x80;
+                    if c.drop > 0x4FFF {
+                        c.state = 4;
+                        c.wait = 0;
+                        c.drop = 0x5000;
+                    }
+                    motor = Some(0x1600);
+                }
+                4 => {
+                    c.wait += 1;
+                    if c.wait == 0x3C {
+                        specials.set_scale(0xB, [0x1000; 3]);
+                        specials.set_scale(0xA, [0; 3]);
+                        common.sounds.push((0x81, claw_at));
+                    }
+                    if c.wait > 0x77 {
+                        c.state = 5;
+                        let grip = specials.pos_obj(0xA).unwrap_or(claw_at);
+                        c.held = near_xz(grip, c.prize, 0xF) as i32;
+                    }
+                }
+                5 => {
+                    motor = Some(0x1600);
+                    c.drop -= 0x80;
+                    if c.drop < 0 {
+                        c.drop = 0;
+                        if c.held == 1 {
+                            c.state = 6;
+                            for s in &mut c.sweep {
+                                if *s > 0x7FFF {
+                                    *s = 0x10000 - *s;
+                                }
+                            }
+                        } else {
+                            c.state = 0;
+                            specials.set_scale(0xA, [0x1000; 3]);
+                            specials.set_scale(0xB, [0; 3]);
+                            common.sounds.push((0x81, claw_at));
+                        }
+                    }
+                }
+                6 => {
+                    c.sweep[0] = (c.sweep[0] - 0x80).max(0);
+                    c.sweep[1] = (c.sweep[1] + 0x80).min(0x8000);
+                    if c.sweep == [0, 0x8000] {
+                        specials.set_scale(0xA, [0x1000; 3]);
+                        specials.set_scale(0xB, [0; 3]);
+                        c.state = 7;
+                        c.held = 2;
+                        c.fall = 0;
+                        common.sounds.push((0x81, claw_at));
+                    } else {
+                        motor = Some(0x1600);
+                    }
+                }
+                _ => {}
+            }
+            // The motor hums, pitched by what it's doing (0x830E3C).
+            if motor.is_some() {
+                common.sounds.push((0x82, claw_at));
+            }
+            let at = c.at();
+            for id in [0xA, 0xB] {
+                specials.set_pos(id, at.map(|v| v >> 5));
+            }
+            specials.set_pos(0xC, [at[0] >> 5, (at[1] >> 5) - 0x420, at[2] >> 5]);
+            specials.set_pos(0x10, [at[0] >> 5, (c.base[1] >> 5) - 0x420, at[2] >> 5]);
+            match c.held {
+                1 => c.prize = [at[0], at[1] + 0x1000, at[2]],
+                2 => {
+                    c.fall += 0x20;
+                    c.prize[1] += c.fall;
+                    // Out of the chute: it can be taken, and slides out.
+                    if c.prize[1] > -0x6D41 {
+                        common.token_touch.push((3, true));
+                        c.prize[0] -= 0x100;
+                        c.prize[2] += 0x100;
+                    }
+                    if c.prize[1] > -0x1800 {
+                        c.prize[1] = -0x1800;
+                        c.fall = -c.fall / 2;
+                        if c.fall.abs() < 0x100 {
+                            c.held = 3;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            c.swing.0 = (c.swing.0 + 8) & 0xFFF;
+            c.swing.1 = (c.swing.1 + (sin_table(c.swing.0) >> 11)) & 0xFFF;
+            for id in [0xA, 0xB] {
+                specials.turn_from_own(id, [0, c.swing.1, 0]);
+            }
+            // The prize follows until Buzz has it (then its record is gone).
+            if common.tokens & 8 == 0 {
+                specials.set_pos(0x35, c.prize.map(|v| v >> 5));
+                common.token_moves.push((3, c.prize.map(|v| v >> 5)));
+            }
+        }
     }
 
     pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
@@ -193,8 +401,9 @@ impl std::ops::DerefMut for Level8 {
 }
 
 impl Script for Level8 {
-    fn step(&mut self, _world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
+    fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
+        self.claw(world, specials, player);
         // The spinners: phase + k a tick, angle + sin(phase) >> 10.
         for k in 0..8 {
             let (a, ph) = &mut self.spin[k];

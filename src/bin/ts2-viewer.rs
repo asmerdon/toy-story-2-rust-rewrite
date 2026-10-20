@@ -1030,6 +1030,10 @@ impl Viewer {
                         .drain(..)
                         .map(|(start, end, color, width)| ts2::laser::Beam { start, end, step: [0; 3], life: 0x20, steps: 1, color, width })
                         .collect();
+                    // The grappling hook's rope (0x44E100 type 0x22: brown, 0x1E wide).
+                    if let Some((start, end)) = player.rope {
+                        self.lasers.ribbons.push(ts2::laser::Beam { start, end, step: [0; 3], life: 0x20, steps: 1, color: [0x80, 0x60, 0x20], width: 0x1E });
+                    }
                 }
                 if let Some(l) = self.script.as_mut() {
                     for r in l.particles.drain(..) {
@@ -1146,6 +1150,9 @@ impl Viewer {
                         for k in l.hides.drain(..) {
                             pk.hide_token(k);
                         }
+                        for (k, touchable) in l.token_touch.drain(..) {
+                            pk.set_token_touchable(k, touchable);
+                        }
                     }
                     let (voices, slots): (Vec<u16>, Vec<(u16, i32, [i32; 3])>) = (l.voices.drain(..).collect(), l.slots.drain(..).collect());
                     if let Some(a) = self.audio.as_mut() {
@@ -1253,6 +1260,11 @@ impl Viewer {
                     pk.health = player.health.max(0);
                     pk.lives = player.lives;
                     pk.shield = player.shield;
+                    if player.rocket == 0 {
+                        pk.end_launch();
+                    }
+                    // Hooks (0x882938) are spent by Buzz and picked up here.
+                    pk.ammo_a = player.hook_ammo;
                     let evs = pk.tick(player.pos.to_array(), cam_game);
                     let speed = (player.vel[0] as f32).hypot(player.vel[2] as f32) as i32;
                     pk.follow_shield(player.pos_obj(), cam_game.map(|v| (v * 32.0) as i32), player.facing, speed);
@@ -1261,6 +1273,7 @@ impl Viewer {
                     }
                     player.lives = pk.lives;
                     player.shield = pk.shield;
+                    player.hook_ammo = pk.ammo_a;
                     for ev in evs {
                         match ev {
                             ts2::pickups::Event::TokenBurst(at) => {
@@ -1289,6 +1302,11 @@ impl Viewer {
                                 // The green power-up (0x4A0F80 case 10): 0x53C824 = 1200.
                                 if kind == ts2::pickups::Kind::Timer {
                                     player.power = 1200;
+                                }
+                                match kind {
+                                    ts2::pickups::Kind::Launch => player.start_rocket(),
+                                    ts2::pickups::Kind::HoverBoots => player.start_hover(),
+                                    _ => {}
                                 }
                                 if kind == ts2::pickups::Kind::Other
                                     && let Some(l) = self.script.as_mut()
@@ -1496,16 +1514,18 @@ impl Viewer {
                         let t = anim.map_or(0.0, |a| (c.time as f32 / 65536.0).min((a.frame_count.max(1) - 1) as f32));
                         let r = |a: i32| a as f32 / 4096.0 * std::f32::consts::TAU;
                         let angles = [r(c.angles[0]), r(c.angles[1]) + self.player_yaw_offset, r(c.angles[2])];
-                        let mut cb = if c.scale == 0x1000 {
-                            scene::creature_batches_turned(&self.ngn, &self.ngn.creatures[ci], pos, angles, anim.map(|a| (a, t)))
-                        } else {
-                            scene::creature_batches_scaled(&self.ngn, &self.ngn.creatures[ci], pos, angles, c.scale as f32 / 4096.0, anim.map(|a| (a, t)))
+                        let s = c.scale as f32 / 4096.0;
+                        let mut cb = match c.scale_y {
+                            Some(y) => scene::creature_batches_scaled_xyz(&self.ngn, &self.ngn.creatures[ci], pos, angles, [s, y as f32 / 4096.0, s], anim.map(|a| (a, t))),
+                            None if c.scale == 0x1000 => scene::creature_batches_turned(&self.ngn, &self.ngn.creatures[ci], pos, angles, anim.map(|a| (a, t))),
+                            None => scene::creature_batches_scaled(&self.ngn, &self.ngn.creatures[ci], pos, angles, s, anim.map(|a| (a, t))),
                         };
-                        // +0x34: lit up (a hurt boss's flash), colours at double strength.
+                        // +0x34: lit up in the light colour (a hurt boss's flash at 0x2000, double
+                        // strength; level 4's paint in its mixed colour).
                         if c.lit {
                             for v in cb.iter_mut().flat_map(|b| b.vertices.iter_mut()) {
                                 for k in 0..3 {
-                                    v.color[k] = v.color[k].saturating_mul(2);
+                                    v.color[k] = (v.color[k] as i32 * c.light[k] / 0x1000).clamp(0, 255) as u8;
                                 }
                             }
                         }
@@ -2131,7 +2151,12 @@ fn main() {
         hud_last: [0; 3],
         particles,
         rewards: ts2::rewards::Rewards::new(&level_lists),
-        look: Default::default(),
+        // Hook points (level.dat list 59) for the grappling hook's targets.
+        look: {
+            let mut fp = ts2::look::FirstPerson::default();
+            fp.hooks = dat_lists.iter().find(|l| l.kind == 59).map(|l| l.points.clone()).unwrap_or_default();
+            fp
+        },
         look_pressed: false,
         r1_pressed: false,
         talk_jump: false,

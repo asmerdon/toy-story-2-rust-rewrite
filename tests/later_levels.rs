@@ -276,3 +276,108 @@ fn penthouse_gunslinger_intro_fight_and_token() {
     }
     assert!(l.script.reveals.contains(&4));
 }
+
+/// Level 4: move the crane to stop `k` (1-based) of list 3.
+fn crane_to(l: &mut Level, lists: &[leveldat::PointList], k: usize) {
+    let p = lists.iter().find(|l| l.kind == 3).unwrap().points[k - 1];
+    let at = l.world.mover_pos(0).unwrap();
+    l.world.move_mover(0, Vec3::new(p[0] as f32 - at.x, 0.0, p[2] as f32 - at.z));
+}
+
+fn pour(l: &mut Level, p: &mut Player, surface: u8) {
+    p.on_floor = true;
+    p.stomp = -40;
+    p.surface = Some(surface);
+    l.script.step_creatures(&l.world, &mut l.specials, p, &mut l.cr, 0);
+    p.stomp = 0;
+    for _ in 0..0x40 {
+        l.script.step_creatures(&l.world, &mut l.specials, p, &mut l.cr, 0);
+    }
+}
+
+#[test]
+fn construction_paint_mixes_and_delivers_for_token_three() {
+    let Some(mut l) = load(4) else { return };
+    let game = PathBuf::from(env::var_os("TS2_GAME_DIR").unwrap());
+    let path = ts2::campaign::level(4).unwrap().path(&game);
+    let lists = leveldat::parse(&fs::read(path.with_extension("dat")).unwrap()).unwrap();
+    let mut p = Player::new(Vec3::new(1.0e6, 0.0, 0.0));
+    // Stops 5, 6, 7 pour red, blue, yellow (buttons 0x21, 0x22, 0x23).
+    for (a, b, target) in [(5, 6, 1), (5, 7, 2), (6, 7, 3)] {
+        crane_to(&mut l, &lists, a);
+        pour(&mut l, &mut p, (0x1C + a) as u8);
+        crane_to(&mut l, &lists, b);
+        pour(&mut l, &mut p, (0x1C + b) as u8);
+        assert!(l.cr.slots[5].scale_y.unwrap() > 0x780);
+        assert!(!l.script.reveals.contains(&3));
+        crane_to(&mut l, &lists, target);
+        // Delivered, it drains for 32 ticks; pours meanwhile are ignored.
+        for _ in 0..0x21 {
+            l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+        }
+    }
+    assert!(l.script.reveals.contains(&3));
+}
+
+#[test]
+fn construction_paint_same_colour_twice_drains() {
+    let Some(mut l) = load(4) else { return };
+    let game = PathBuf::from(env::var_os("TS2_GAME_DIR").unwrap());
+    let path = ts2::campaign::level(4).unwrap().path(&game);
+    let lists = leveldat::parse(&fs::read(path.with_extension("dat")).unwrap()).unwrap();
+    let mut p = Player::new(Vec3::new(1.0e6, 0.0, 0.0));
+    crane_to(&mut l, &lists, 5);
+    pour(&mut l, &mut p, 0x21);
+    assert_eq!(l.cr.slots[5].light, [0x680, 0, 0]);
+    pour(&mut l, &mut p, 0x21);
+    for _ in 0..0x20 {
+        l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+    }
+    // Drained to a thirty-second (as the original leaves it), and no longer touchable.
+    assert!(l.cr.slots[5].scale_y.unwrap() < 0x180);
+    assert_eq!(l.cr.slots[5].flags & 1, 0);
+}
+
+#[test]
+fn space_land_claw_catches_the_prize_and_drops_it_out() {
+    let Some(mut l) = load(8) else { return };
+    let claw = l.specials.pos_obj(0xA).unwrap();
+    // Stand by the machine (room 4) on its button.
+    let mut p = Player::new(Vec3::from(claw.map(|v| v as f32 / 32.0)) + Vec3::new(0.0, 500.0, 0.0));
+    if l.world.room_at(p.pos) != Some(4) {
+        eprintln!("claw test: start not in room 4 ({:?}); skipped", l.world.room_at(p.pos));
+        return;
+    }
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    assert_eq!(l.script.token_touch.first(), Some(&(3, false)));
+    p.on_floor = true;
+    p.surface = Some(8);
+    let start = l.specials.pos_obj(0xA).unwrap();
+    for _ in 0..3 {
+        p.stomp = -40;
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        p.stomp = 0;
+        for _ in 0..0x40 {
+            l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        }
+    }
+    let low = l.specials.pos_obj(0xB).unwrap();
+    assert!(low[1] > start[1] + 0x2000, "the claw dropped");
+    // The drop takes 160 ticks, then 60 at the bottom before it closes.
+    for _ in 0..0xA0 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    }
+    assert!(!l.specials.get(0xB).unwrap().hidden, "closed at the bottom");
+    l.script.token_touch.clear();
+    for _ in 0..0x400 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    }
+    // Back at the top and open: empty, or having carried the prize to the chute, in which
+    // case it has fallen out and can be taken.
+    let up = l.specials.pos_obj(0xA).unwrap();
+    assert_eq!(up[1], start[1]);
+    assert!(!l.specials.get(0xA).unwrap().hidden);
+    let caught = l.script.token_touch.contains(&(3, true));
+    // With rand.dat's bytes the shuffled prize lands under the claw.
+    assert!(caught);
+}
