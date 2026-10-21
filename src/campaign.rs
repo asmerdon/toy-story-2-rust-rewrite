@@ -93,16 +93,19 @@ pub fn level(number: usize) -> Option<&'static Level> {
     number.checked_sub(1).and_then(|i| LEVELS.get(i))
 }
 
+/// The front end's scenes: the title and menus (0) and the level-select map (16).
+pub const FRONT: usize = 0;
+pub const HUB: usize = 16;
+
+/// The `.ngn` of internal level `id` (0x452FC0): ids above 10 are `level1.*` in folder id − 10.
+pub fn scene_path(game: &Path, id: usize) -> PathBuf {
+    let (folder, stem) = if id > 10 { (id - 10, "level1") } else { (id, "level") };
+    game.join("data").join(format!("level{folder:02}")).join(format!("{stem}.ngn"))
+}
+
 impl Level {
     pub fn path(&self, game: &Path) -> PathBuf {
-        let (folder, stem) = if self.internal_id > 10 {
-            (self.internal_id - 10, "level1")
-        } else {
-            (self.internal_id, "level")
-        };
-        game.join("data")
-            .join(format!("level{folder:02}"))
-            .join(format!("{stem}.ngn"))
+        scene_path(game, self.internal_id)
     }
 
     pub fn script_available(&self) -> bool {

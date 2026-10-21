@@ -393,6 +393,27 @@ struct Viewer {
     token_timer: i32,
     menu_nav: i32,
     hud_frames: u32,
+    /// The front end (title, menus, level select), when started without a level.
+    front: Option<Front>,
+    /// The scene's level.dat lists.
+    level_lists: Vec<ts2::formats::leveldat::PointList>,
+    /// Escape in a level, and the level's end, for the front end to act on.
+    quit_level: bool,
+    level_ended: bool,
+}
+
+/// The front end and what it keeps across scene loads.
+struct Front {
+    state: ts2::frontend::FrontEnd,
+    game: std::path::PathBuf,
+    /// The scene's sprite table (0x447D40).
+    sprites: Vec<Option<ts2::pickups::SpriteDef>>,
+    /// The internal id of the scene loaded.
+    scene: usize,
+    /// Time not yet run as 60 Hz ticks.
+    acc: f32,
+    /// The music track playing.
+    track: Option<usize>,
 }
 
 fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -755,6 +776,13 @@ impl Viewer {
     }
 
     fn update(&mut self, dt: f32) {
+        if std::mem::take(&mut self.quit_level) {
+            self.finish_level(true);
+        }
+        if std::mem::take(&mut self.level_ended) {
+            self.finish_level(false);
+        }
+        self.front_update(dt);
         let fwd = self.cam.forward();
         let right = fwd.cross(Vec3::Y).normalize_or_zero();
         if let Some(player) = self.player.as_mut() {
@@ -1481,8 +1509,12 @@ impl Viewer {
                     }
                     4 => {
                         self.token_timer -= 1;
-                        if self.token_timer < 0 {
-                            println!("level complete (the original leaves the level here; this viewer has no level select, so play carries on)");
+                        if self.token_timer < 0 && self.front.is_some() {
+                            // The level is over (0x52B7DC): the front end takes it from here.
+                            self.token_seq = 0;
+                            self.level_ended = true;
+                        } else if self.token_timer < 0 {
+                            println!("level complete (the original leaves the level here; started on one level, play carries on)");
                             self.token_seq = 0;
                             player.frozen = false;
                             if let Some(l) = self.script.as_mut() {
@@ -1494,7 +1526,7 @@ impl Viewer {
                     _ => {}
                 }
             }
-        } else {
+        } else if self.front.is_none() {
             let mut v = Vec3::ZERO;
             for (k, d) in [
                 (KeyCode::KeyW, fwd),
@@ -1678,7 +1710,7 @@ impl Viewer {
                 }
                 ts2::hud::batches(&q, &self.hud_sprites, &texture)
             }
-            None => Vec::new(),
+            None => self.front.as_ref().map_or_else(Vec::new, |f| front_batches(f, &self.ngn)),
         };
         gfx.hud = upload(&gfx.device, &hud, gfx.texture_bgs.len() - 1);
         // Billboards (rails, spindles, plants) turn to the camera every frame.
@@ -1741,6 +1773,21 @@ impl Viewer {
 
     fn key(&mut self, code: KeyCode, el: &ActiveEventLoop) {
         let n_anims = self.anims.get(self.creature_idx).map_or(0, Vec::len).max(1);
+        // In the front end's menus the keys are the pad's (read each tick); Escape on the
+        // title closes the window, and in a level it quits to the main menu (the pause
+        // menu isn't ported).
+        if let Some(f) = &self.front {
+            match f.state.screen {
+                ts2::frontend::Screen::Title if code == KeyCode::Escape => el.exit(),
+                ts2::frontend::Screen::Play(_) if code == KeyCode::Escape => self.quit_level = true,
+                ts2::frontend::Screen::Play(_) if code == KeyCode::KeyF => {}
+                ts2::frontend::Screen::Play(_) => {}
+                _ => return,
+            }
+            if matches!(code, KeyCode::Escape | KeyCode::KeyF) {
+                return;
+            }
+        }
         match code {
             KeyCode::Escape => el.exit(),
             KeyCode::KeyP => self.place_creature(),
@@ -1818,6 +1865,24 @@ impl ApplicationHandler for Viewer {
             el.create_window(Window::default_attributes().with_title("Toy Story 2 (Rust) - viewer").with_inner_size(winit::dpi::LogicalSize::new(1280, 720)))
                 .expect("create window"),
         );
+        self.attach(window);
+    }
+
+    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        self.window_event_inner(el, event);
+        if self.front.as_ref().is_some_and(|f| f.state.screen == ts2::frontend::Screen::Quit) {
+            el.exit();
+        }
+    }
+
+    fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
+        self.device_event_inner(event);
+    }
+}
+
+impl Viewer {
+    /// Puts the loaded scene on the GPU, drawing into `window`.
+    fn attach(&mut self, window: Arc<Window>) {
         let level = std::mem::take(&mut self.level);
         let level_far = std::mem::take(&mut self.level_far);
         if let Some(s) = self.start {
@@ -1838,7 +1903,7 @@ impl ApplicationHandler for Viewer {
         self.last = Instant::now();
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event_inner(&mut self, el: &ActiveEventLoop, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => {
@@ -1890,7 +1955,7 @@ impl ApplicationHandler for Viewer {
         }
     }
 
-    fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
+    fn device_event_inner(&mut self, event: DeviceEvent) {
         // First person: the mouse turns and tilts the view (0.8 units of 4096, about 0.07°, a count).
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
             && self.player.as_ref().is_some_and(|p| p.first_person == 4)
@@ -1905,6 +1970,179 @@ impl ApplicationHandler for Viewer {
             self.cam.yaw += dx as f32 * 0.003;
             self.cam.pitch = (self.cam.pitch - dy as f32 * 0.003).clamp(-1.5, 1.5);
         }
+    }
+
+    /// Sets up the front end for the scene just loaded: its sprites, the level select's lists,
+    /// or Buzz at the start of a level.
+    fn enter_front_scene(&mut self) {
+        let Some(f) = self.front.as_mut() else { return };
+        let exe = fs::read(f.game.join("toy2.exe")).ok().and_then(|b| exe::Exe::parse(b).ok());
+        f.sprites = exe.as_ref().map(|e| ts2::hud::sprite_table(e, f.scene)).unwrap_or_default();
+        f.track = None;
+        match f.state.screen {
+            ts2::frontend::Screen::Select => f.state.begin_select(&self.level_lists, self.random_table.clone().unwrap_or_default()),
+            ts2::frontend::Screen::Play(_) => self.toggle_play(),
+            _ => {}
+        }
+    }
+
+    /// Loads internal scene `id` in place of this one, keeping the window and the front end.
+    fn switch_scene(&mut self, id: usize) {
+        let Some(mut front) = self.front.take() else { return };
+        let path = ts2::campaign::scene_path(&front.game, id);
+        match load(&path.to_string_lossy(), None) {
+            Ok(mut next) => {
+                let window = self.gfx.take().map(|g| g.window);
+                front.scene = id;
+                next.front = Some(front);
+                *self = next;
+                if let Some(w) = window {
+                    self.attach(w);
+                }
+                self.enter_front_scene();
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                self.front = Some(front);
+            }
+        }
+    }
+
+    /// The front end's ticks, sounds and music, scene changes and camera.
+    fn front_update(&mut self, dt: f32) {
+        use ts2::frontend::{Event, Pad, Screen};
+        let Some(f) = self.front.as_mut() else { return };
+        if matches!(f.state.screen, Screen::Play(_)) {
+            return;
+        }
+        let bits = [
+            (&[KeyCode::ArrowUp, KeyCode::KeyW][..], Pad::UP),
+            (&[KeyCode::ArrowDown, KeyCode::KeyS], Pad::DOWN),
+            (&[KeyCode::ArrowLeft, KeyCode::KeyA], Pad::LEFT),
+            (&[KeyCode::ArrowRight, KeyCode::KeyD], Pad::RIGHT),
+            (&[KeyCode::Space, KeyCode::Enter, KeyCode::NumpadEnter], Pad::JUMP),
+            (&[KeyCode::Escape, KeyCode::Backspace], Pad::CANCEL),
+        ];
+        let pad = Pad(bits.iter().filter(|(keys, _)| keys.iter().any(|k| self.keys.contains(k))).fold(0, |a, (_, b)| a | b));
+        f.acc += dt;
+        while f.acc >= 1.0 / 60.0 {
+            f.acc -= 1.0 / 60.0;
+            f.state.tick(pad);
+        }
+        for ev in std::mem::take(&mut f.state.events) {
+            match ev {
+                Event::Sound(id) => {
+                    if let Some(a) = self.audio.as_mut() {
+                        a.play_flat(id);
+                    }
+                }
+                Event::Music { track, .. } => {
+                    if f.track != Some(track) {
+                        f.track = Some(track);
+                        if let Some(a) = self.audio.as_mut() {
+                            play_music(a, &f.game, track);
+                        }
+                    }
+                }
+            }
+        }
+        let want = f.state.screen.scene(&f.state.tables);
+        if want != f.scene && f.state.screen != Screen::Quit {
+            self.switch_scene(want);
+            return;
+        }
+        let frame = f.state.frame(&f.sprites);
+        // The level select's camera (0x4CE050): pitch and yaw in 12-bit units, pitch down.
+        if let Some((pos, pitch, yaw)) = frame.camera {
+            let a = |v: i32| (v & 0xFFF) as f32 / 4096.0 * std::f32::consts::TAU;
+            let g = Vec3::new(a(yaw).sin() * a(pitch).cos(), a(pitch).sin(), a(yaw).cos() * a(pitch).cos());
+            let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
+            self.cam.pos = game_to_world(pos.map(|v| v as f32 / 32.0));
+            self.cam.yaw = w.x.atan2(-w.z);
+            self.cam.pitch = w.y.clamp(-1.0, 1.0).asin();
+        }
+        for (id, pos, yaw) in frame.pieces {
+            self.specials.set_pos(id as i32, pos);
+            self.specials.set_angles(id as i32, [0, yaw, 0]);
+        }
+    }
+
+    /// Leaving a level started from the front end: its tokens count (0x52F0D7, set as they're
+    /// collected), and a beaten boss level is marked 0x80. Finished: back to the level select;
+    /// quit: to the main menu (0x52B7DC = 4).
+    fn finish_level(&mut self, quit: bool) {
+        let Some(f) = self.front.as_mut() else { return };
+        let ts2::frontend::Screen::Play(n) = f.state.screen else { return };
+        let id = f.state.tables.order.get(n - 1).copied().unwrap_or(0);
+        let boss = self.pickups.as_ref().is_some_and(|p| p.token_ids.is_empty());
+        let mut bits = self.pickups.as_ref().map_or(0, |p| p.tokens);
+        if !quit && boss {
+            bits |= 0x80;
+        }
+        let before = f.state.progress.tokens[id];
+        f.state.progress.tokens[id] |= bits;
+        if quit {
+            f.state.level_quit();
+        } else {
+            f.state.first_clear = before == 0 && f.state.progress.tokens[id] != 0;
+            f.state.level_done();
+        }
+        self.player = None;
+    }
+}
+
+/// The front end's screen: its picture, sprites (in the scene's `texNN` textures), texture
+/// 31's letters, and the fade over them.
+fn front_batches(f: &Front, ngn: &ngn::Ngn) -> Vec<Batch> {
+    let frame = f.state.frame(&f.sprites);
+    let named = |name: &str| ngn.textures.iter().position(|t| t.name.eq_ignore_ascii_case(name));
+    let mut out = Vec::new();
+    if let Some(i) = frame.picture.and_then(|p| named(&format!("bgr{p:02}"))) {
+        out.push(Batch { texture: Some(i), blend: scene::Blend::Opaque, vertices: quad(0.0, 0.0, 1.0, 1.0, [0.0, 0.0, 1.0, 1.0], [0xFF; 3]) });
+    }
+    let texture = |slot: i16| {
+        let i = named(&format!("tex{slot:02}"))?;
+        let (w, h, _) = ngn.textures[i].dimensions()?;
+        Some((i, [(w as f32).abs(), (h as f32).abs()]))
+    };
+    out.extend(ts2::hud::batches(&frame.quads, &f.sprites, &texture));
+    if let Some(font) = named("tex31") {
+        let mut v = Vec::new();
+        for g in &frame.glyphs {
+            let (x0, y0) = (g.pos[0] / g.width, g.pos[1] / 256.0);
+            let (x1, y1) = ((g.pos[0] + g.size[0]) / g.width, (g.pos[1] + g.size[1]) / 256.0);
+            let (u0, v0) = (g.cell[0] as f32 / 255.0, g.cell[1] as f32 / 255.0);
+            let (u1, v1) = ((g.cell[0] as f32 + 31.0) / 255.0, (g.cell[1] as f32 + 31.0) / 255.0);
+            let c = |x: f32, y: f32, u: f32, w: f32| GpuVertex { pos: [x, y, 0.0], uv: [u, w], color: [0xFF, 0x80, 0x80, 0x80] };
+            v.extend([c(x0, y0, u0, v0), c(x1, y0, u1, v0), c(x1, y1, u1, v1), c(x0, y0, u0, v0), c(x1, y1, u1, v1), c(x0, y1, u0, v1)]);
+        }
+        out.push(Batch { texture: Some(font), blend: scene::Blend::Alpha, vertices: v });
+    }
+    if frame.brightness < 0x80 {
+        let a = ((0x80 - frame.brightness.max(0)) * 2).min(0xFF) as u8;
+        let c = |x: f32, y: f32| GpuVertex { pos: [x, y, 0.0], uv: [0.0; 2], color: [a, 0, 0, 0] };
+        out.push(Batch { texture: None, blend: scene::Blend::Alpha, vertices: vec![c(0.0, 0.0), c(1.0, 0.0), c(1.0, 1.0), c(0.0, 0.0), c(1.0, 1.0), c(0.0, 1.0)] });
+    }
+    out
+}
+
+/// Plays music track `index` (0x4ECCD8) on a loop, in place of what was playing.
+fn play_music(a: &mut AudioOut, game: &std::path::Path, index: usize) {
+    let sink = (|| -> Result<rodio::Sink, String> {
+        let exe = exe::Exe::parse(fs::read(game.join("toy2.exe")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let root = ts2::music::media_root(game).ok_or("CD music not found; set TS2_CD_DIR to the folder containing audio/")?;
+        let name = ts2::music::track(&exe, index)?;
+        let path = root.join("audio").join(format!("{name}.wav"));
+        let wav = ts2::music::decode_pcm(&fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)?;
+        let sink = rodio::Sink::try_new(&a.handle).map_err(|e| e.to_string())?;
+        sink.set_volume(0.5);
+        sink.append(rodio::buffer::SamplesBuffer::new(wav.channels, wav.rate, wav.samples).repeat_infinite());
+        println!("music: {name}");
+        Ok(sink)
+    })();
+    match sink {
+        Ok(s) => a.music = Some(s),
+        Err(e) => println!("no music: {e}"),
     }
 }
 
@@ -1925,22 +2163,62 @@ fn main() {
         }
         args = vec![args[0].clone(), selected.path(&game).to_string_lossy().into_owned()];
     }
+    // No level given (or a game folder): the front end, from the title screen.
+    let front_game = match args.get(1) {
+        None => Some(env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(r"C:\Program Files\Disney Interactive\Toy Story 2"))),
+        Some(a) if std::path::Path::new(a).is_dir() => Some(std::path::PathBuf::from(a)),
+        _ => None,
+    };
+    if let Some(game) = front_game {
+        let exe = fs::read(game.join("toy2.exe")).ok().and_then(|b| exe::Exe::parse(b).ok()).unwrap_or_else(|| {
+            eprintln!("toy2.exe not found in {}", game.display());
+            process::exit(1);
+        });
+        let front = ts2::frontend::FrontEnd::new(ts2::frontend::Tables::read(&exe));
+        let path = ts2::campaign::scene_path(&game, ts2::campaign::FRONT);
+        let mut viewer = load(&path.to_string_lossy(), None).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            process::exit(1);
+        });
+        viewer.front = Some(Front { state: front, game, sprites: Vec::new(), scene: ts2::campaign::FRONT, acc: 0.0, track: None });
+        viewer.enter_front_scene();
+        println!("front end: arrows or WASD move, Space or Enter picks, Escape goes back");
+        let event_loop = EventLoop::new().expect("event loop");
+        event_loop.run_app(&mut viewer).expect("run");
+        return;
+    }
     let Some(path) = args.get(1) else {
-        eprintln!("usage: ts2-viewer <path\\to\\levelNN\\level.ngn> [creature]\n       ts2-viewer --level <1..15> [game_dir]");
+        eprintln!("usage: ts2-viewer [game_dir]\n       ts2-viewer <path\\to\\levelNN\\level.ngn> [creature]\n       ts2-viewer --level <1..15> [game_dir]");
         process::exit(2);
     };
-    let bytes = fs::read(path).unwrap_or_else(|e| {
-        eprintln!("cannot read {path}: {e}");
+    let viewer = load(path, args.get(2).map(String::as_str));
+    let mut viewer = viewer.unwrap_or_else(|e| {
+        eprintln!("{e}");
         process::exit(1);
     });
-    let ngn = ngn::parse(&bytes).unwrap_or_else(|e| {
-        eprintln!("cannot parse {path}: {e}");
-        process::exit(1);
-    });
+    let event_loop = EventLoop::new().expect("event loop");
+    event_loop.run_app(&mut viewer).expect("run");
+}
+
+/// Loads a level (or a front-end scene) from its `.ngn` and the files beside it.
+fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
+    let bytes = fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let mut ngn = ngn::parse(&bytes).map_err(|e| format!("cannot parse {path}: {e}"))?;
+    // The original keeps one texture table that each scene's file only partly fills, so the
+    // level-select map uses the front end's font (tex31) and pictures: borrow what it lacks.
+    if exe::level_number(std::path::Path::new(path)) == Some(ts2::campaign::HUB)
+        && let Some(front) = std::path::Path::new(path).ancestors().nth(2).map(|d| d.join("level00").join("level.ngn"))
+        && let Some(f) = fs::read(front).ok().and_then(|b| ngn::parse(&b).ok())
+    {
+        for t in f.textures {
+            if !ngn.textures.iter().any(|m| m.name.eq_ignore_ascii_case(&t.name)) {
+                ngn.textures.push(t);
+            }
+        }
+    }
     let anims: Vec<Vec<anim::Animation>> =
         ngn.creatures.iter().map(|c| c.animations.iter().filter_map(|a| anim::parse(a).ok()).collect()).collect();
-    let creature_idx = args
-        .get(2)
+    let creature_idx = creature
         .and_then(|name| ngn.creatures.iter().position(|c| c.name.eq_ignore_ascii_case(name)))
         .unwrap_or(0);
     println!("{} creatures: {:?}", ngn.creatures.len(), ngn.creatures.iter().map(|c| &c.name).collect::<Vec<_>>());
@@ -2194,13 +2472,16 @@ fn main() {
         token_timer: 0,
         menu_nav: 0,
         hud_frames: 0,
+        front: None,
+        level_lists,
+        quit_level: false,
+        level_ended: false,
     };
     // The first-person helmet and arms only show in first person.
     for id in ts2::look::MODEL {
         viewer.specials.set_scale(id, [0; 3]);
     }
-    let event_loop = EventLoop::new().expect("event loop");
-    event_loop.run_app(&mut viewer).expect("run");
+    Ok(viewer)
 }
 
 /// The background, behind everything (screen space, 0..1, y down). The PC version (0x48FB70)
@@ -2352,6 +2633,41 @@ mod scenery_tests {
                             out.vertices.chunks_exact(3).any(|t| t.iter().zip(tri).all(|(a,b)| a.pos == b.pos))));
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod front_tests {
+    use super::*;
+
+    /// The front end's scenes load, and every sprite their screens draw has its texture.
+    #[test]
+    fn front_scenes_load_with_their_pictures_and_sprites() {
+        let Some(game) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else { return };
+        let exe = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+        for (scene, sprites, textures) in [
+            (ts2::campaign::FRONT, &[0x32, 0x3E][..], &["bgr40", "bgr44"][..]),
+            (ts2::campaign::HUB, &[0x36, 0x37, 0x39, 0x3A][..], &["tex31"][..]),
+        ] {
+            let v = load(&ts2::campaign::scene_path(&game, scene).to_string_lossy(), None).unwrap();
+            let table = ts2::hud::sprite_table(&exe, scene);
+            for t in textures {
+                assert!(v.ngn.textures.iter().any(|x| x.name.eq_ignore_ascii_case(t)), "scene {scene}: no {t}");
+            }
+            for &s in sprites {
+                let d = table[s].as_ref().unwrap_or_else(|| panic!("scene {scene}: no sprite {s:#x}"));
+                let name = format!("tex{:02}", d.texture);
+                assert!(v.ngn.textures.iter().any(|x| x.name.eq_ignore_ascii_case(&name)), "scene {scene}: sprite {s:#x} needs {name}");
+            }
+            if scene == ts2::campaign::HUB {
+                assert!(v.level_lists.iter().any(|l| l.kind == 2 && l.points.len() == 48));
+            }
+            // The menus' select, move and cancel sounds (0x4A37E0 ids 0–2).
+            let bank = ts2::audio::SoundBank::load(&exe, &game.join("data/sfx"), scene).unwrap();
+            for id in 0..3u16 {
+                assert!(bank.sound(id).is_some(), "scene {scene}: no sound {id}");
             }
         }
     }

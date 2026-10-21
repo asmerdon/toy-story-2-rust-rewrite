@@ -7,7 +7,22 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 ## Game loop
 | Address | Name | Notes |
 |---|---|---|
-| 0x49D910 | `MainLoop` ~ | 12-case game-state switch; calls the frame update |
+| 0x49D910 | `MainLoop` ✔ (flow, `src/frontend.rs`) | Scene 0, logos (screen 10), title/menu (screen 2) → 0x830C88: 0 attract demo (levels 0, 3, 7, 10, 13 in turn), 1 start (0x830D58 = 1, level select 0x453CF0), 2 options (screen 9), 3 load 0x453F20, 4 movies 0x453FA0, 8 screen 8, 9 quit. Play loop runs 0x49DFE0 until 0x52B7DC: 2 died (no lives → game over, screen 5), 3 title, 4 menu, 1/5 done: boss (internal id % 3 = 0) → 0x453D90, 0x52F0E8[level] = 1, save 0x454020, FMV level + 1 once, level 15 → FMV 0x12 and credits (screen 0xB); else results (screen 4), save; then the level select again |
+| 0x4381F0 | `FrontScreen(n)` ✔ | 1/6 timed pictures, 2 title+menu (0x437FB0), 4 results (0x4398B0), 5 game over (0x437B20), 8, 9 options (0x4371B0), 10 logos (0x438520(2), (3)), 0xB credits (0x43A380) |
+| 0x437FB0 | `TitleScreen` ✔ | Picture 0, music 0x14; "press jump" (0x49B580 at y 0xCC, alpha pulse fold(t & 0x3F) × 4); after 0x1E ticks jump → sound 0, fade, menu; 900 ticks → demo (not ported) |
+| 0x437C40 | `MainMenu` ✔ | Picture 4, music 0x13; rows y 0x78 + 0x14k: start/continue game, options, load game, movie viewer, exit; arrows sprite 0x3E cells 0/1 at x 0x40 / 0xF0, colour (a, a, 0x80), sliding 2 a tick; up/down sound 1; jump after 0x1F ticks: sound 0, fade 0x17 ticks; exit → 0x4CF359 |
+| 0x438A50 | `LevelSelect` ✔ | Scene 16; camera from level.dat list 2 looking along list 1 − list 2 (entry level × 3 + view); see `frontend::Select`. Gate: newest level needs 0x503840[levels done] tokens; "you need more tokens"; returns 1 if cancelled; 0x52AD8A = level − 1, 0x55A0E4 = level |
+| 0x438650 | `SelectCameraTurn(cam, rate)` ✔ | Yaw/pitch (+0x26/+0x24) an eighth of the way to the direction (+0xC..+0x14), at most rate; pitch from squared components |
+| 0x438790 | `SelectCameraPosts(cam, vel, list)` ✔ | List 3 pairs: centre and radius point; inside the post's height and radius: velocity pushed out by min(0x800 − d²·0x800/r², 0x180) |
+| 0x438910 | `SelectMapPiece(special, list, phase)` ✔ | Phase + 0x40 a tick (wraps before the last 5 points); lerp of points phase >> 8 and + 1; yaw eased a quarter towards heading + 0x800 |
+| 0x453CF0 | `RunLevelSelect` ✔ | Loads scene 0x10, picture 0x24, screen width 512, then 0x438A50 |
+| 0x453CD0 | `FrontScreenWidth` ✔ | Sprite screen 320 × 256 (0x4F7414 / 0x4F7418) for the menus |
+| 0x49EB50 | `ProgressSummary` ✔ | Campaign levels in a row with 0x52F0D7 ≠ 0 (n), tokens in them (5 bits each): (need[n] << 16) + (tokens << 8) + n |
+| 0x49EB20 | `PlayFmvOnce(n, …, force)` | Flag 0x52F0E7[n]; plays movie n + 10 (0x49AB90) |
+| 0x48F1B0 | `SetPicture(n)` ✔ | Picture id 0x500A58[n + 1] (fallback 0x500A7C): texture number, i.e. `bgr40`–`bgr44` in scene 0 |
+| 0x49B580 | `MenuText(y, s, fade)` ✔ | Sprite 0x32, cell c − 'a' (`'` → 0x2F), x from 0xA0 − 6·len step 0xC, half size; fade 0x80 grey, else white mode fade·0x200 + 0x60 |
+| 0x49D390 / 0x49D750 | `FontText(s, y, x)` ✔ | Texture 31, 32-pixel cells 8 a row (a–z 0–25, digits 26–35, punctuation table), 16 px, step 13, centred on x |
+| 0x4A1BB0 / 0x4A1BE0 | `Fade(r, g, b, speed)` / `StepFade` ✔ | Brightness per channel moves speed × ticks / 2 to the target |
 | 0x49DFE0 | `GameFrame` ✔ | Per-frame update; calls ~30 subsystems in order (below) |
 | 0x452FC0 | `InitLevelPlay` ✔ | Debug strings "InitLevelPlay : START/END"; loads rand.dat, level.dat, level.raw |
 | 0x47EC20 | `LoadLevelSounds` ✔ | Per-level WAV lists from tables 0x4FD140 / 0x4FD5E0 |

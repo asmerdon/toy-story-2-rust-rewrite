@@ -14,6 +14,7 @@ pub mod dialog;
 pub mod camera;
 pub mod export;
 pub mod formats;
+pub mod frontend;
 pub mod game;
 pub mod hud;
 pub mod laser;

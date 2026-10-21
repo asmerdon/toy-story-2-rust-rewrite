@@ -11,6 +11,14 @@ The original game's behaviour was worked out by reverse-engineering the exe with
 
 `ts2-viewer` is a viewer you can play in. It loads the original levels, models, textures, animations and sounds. It runs Buzz and the level logic at the original 60 Hz, using the original's integer maths.
 
+Started with no level, it opens the original front end: the title, the main menu and the level-select map. Arrows or WASD move, Space or Enter picks, and Escape goes back (in a level, Escape quits to the main menu).
+
+```bash
+cargo run --release --bin ts2-viewer
+```
+
+Or open one level directly:
+
 ```bash
 cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"
 ```
@@ -65,13 +73,14 @@ campaign level. It reports script availability separately from asset availabilit
   - **Level 1 (Andy's House): complete and playable start to finish.** This includes the crib escape, Bo Peep's sheep, Hamm's coins, Mr Potato Head and his missing ear, the RC race, the Tin Man boss, the attic see-saw, the lift, springs, push boxes, swing bars, the garage drills and the tutorial signposts. Collecting a token brings up the "keep playing / exit level" menu and the exit animation.
   - **Levels 2–10:** each level's own script is ported, including its characters, gadgets, challenges and bosses (the Zurg kite, the slime, the drill, the clown, the dino, the car, the level 9 boss with its minions and the spider). These still need playtesting.
 - **Rendering:** the original two-pass level draw, back-face culling, the PS1 background picture behind the windows and sky, and fixes for the level data's black faces and glass.
-- **Tests:** 100 tests, many driving the real game data, covering movement, combat, bosses, races and gadgets.
+- **Front end:** the title, main menu and the level-select map with its flying camera, token gates and moving pieces.
+- **Tests:** 132 tests, many driving the real game data, covering movement, combat, bosses, races and gadgets.
 
 ## Not done yet
 
 - Levels 2–10 are ported but not yet playtested, so expect bugs there.
 - Level 4's paint puzzle and level 8's claw machine are ported and simulation-tested. A few small gadgets are still skipped (level 8's electric arcs and cannon, drips and lights).
-- There is no graphical front end yet. Command-line campaign selection supports levels 1–15.
+- The front end has the title, main menu and level select (with token gates and progress while the game runs). Still missing: saves, options, load game, the movie viewer, the results, boss-victory and game-over screens, the pause menu, the attract demo and FMVs.
 - Original stereo level music loops in the viewer; **M** mutes/unmutes music independently of sound effects. Set `TS2_CD_DIR` to the extracted disc folder containing `audio/`, or put that folder path in local ignored `ts2-media.txt` (already configured on this machine). Track selection follows the original executable, including campaign levels 3/6. Boss/race theme transitions and FMV playback remain to do. The disc contains 23 WAVs and 22 MPEG videos named `.dll`; see `docs/re/asset-audit.md`.
 - The rocket boots, hover boots and grappling hook are ported but not playtested. To use the hook: pick up hooks, go into first person (Q), lock on to a hook point (X), and fire.
 - Levels 11 (Al's Penthouse), 13 (Airport Infiltration), 14 (Tarmac Trouble) and 15 (Prospector Showdown) have their scripts ported and simulation-tested, but not playtested. Every campaign level now has its script.

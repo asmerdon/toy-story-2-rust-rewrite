@@ -63,7 +63,7 @@ pub struct Hud {
 }
 
 /// One HUD sprite to draw: sprite, cell, top-left in a `width` × 256 screen, size in those
-/// pixels, colour (0x80 = full).
+/// pixels, colour (0x80 = full) and alpha (0xFF opaque; mode 0x60 sprites: 0xFF − (mode >> 8)).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Quad {
     pub sprite: usize,
@@ -72,6 +72,7 @@ pub struct Quad {
     pub size: [f32; 2],
     pub width: f32,
     pub color: [u8; 3],
+    pub alpha: u8,
 }
 
 /// The sprite table 0x557500 as 0x447D40 builds it for `level` (128 entries).
@@ -165,6 +166,7 @@ impl Hud {
                 size: [(pw as i32 * sx >> 12) as f32, (ph as i32 * sy >> 12) as f32],
                 width: w,
                 color,
+                alpha: 0xFF,
             });
         };
         const WIDE: f32 = 512.0;
@@ -279,7 +281,7 @@ pub fn batches(quads: &[Quad], sprites: &[Option<SpriteDef>], texture: &dyn Fn(i
         let (u1, v1) = ((cu as f32 + def.size[0] as f32) / tw, (cv as f32 + def.size[1] as f32) / th);
         let (x0, y0) = (q.pos[0] / q.width, q.pos[1] / 256.0);
         let (x1, y1) = ((q.pos[0] + q.size[0]) / q.width, (q.pos[1] + q.size[1]) / 256.0);
-        let color = [0xFF, q.color[0], q.color[1], q.color[2]];
+        let color = [q.alpha, q.color[0], q.color[1], q.color[2]];
         let v = |x: f32, y: f32, u: f32, w: f32| GpuVertex { pos: [x, y, 0.0], uv: [u, w], color };
         let (a, b, c, d) = (v(x0, y0, u0, v0), v(x1, y0, u1, v0), v(x1, y1, u1, v1), v(x0, y1, u0, v1));
         // In drawing order: a quad joins the last batch only if it has the same texture.

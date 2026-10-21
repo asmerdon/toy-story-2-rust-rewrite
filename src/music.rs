@@ -10,7 +10,26 @@ pub fn level_track(exe: &Exe, internal_id: usize) -> Result<String, String> {
         if u32_at(0x50268C + i * 4)? as usize == internal_id { index = Some(i); break; }
     }
     let index = index.ok_or_else(|| format!("no music for internal level {internal_id}"))?;
-    let ptr = u32_at(0x4ECCD8 + index * 4)?;
+    track(exe, index as usize)
+}
+
+/// Front-end and event tracks in 0x4ECCD8 (as 0x47D7F0 / 0x47D880 play them).
+pub const MINIBOSS: usize = 0x0F;
+pub const RACE: usize = 0x10;
+pub const GAME_OVER: usize = 0x11;
+pub const COMPLETE: usize = 0x12;
+/// The main menu and the level select.
+pub const MENU: usize = 0x13;
+pub const TITLE: usize = 0x14;
+pub const LEVEL_DONE: usize = 0x15;
+
+/// The name of track `index` in 0x4ECCD8: 0–14 the levels in campaign order, then the above.
+pub fn track(exe: &Exe, index: usize) -> Result<String, String> {
+    let u32_at = |va| exe.at(va, 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).map_err(|e| e.to_string());
+    if index > LEVEL_DONE {
+        return Err(format!("no music track {index}"));
+    }
+    let ptr = u32_at(0x4ECCD8 + index as u32 * 4)?;
     let mut name = String::new();
     for i in 0..32 {
         let b = exe.at(ptr + i, 1).map_err(|e| e.to_string())?[0];

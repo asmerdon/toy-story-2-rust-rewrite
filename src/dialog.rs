@@ -234,7 +234,7 @@ impl Dialog {
 }
 
 fn char_quad(x: i32, y: i32, cell: usize, color: [u8; 3]) -> Quad {
-    Quad { sprite: FONT, cell, pos: [x as f32, y as f32], size: [8.0, 8.0], width: 320.0, color }
+    Quad { sprite: FONT, cell, pos: [x as f32, y as f32], size: [8.0, 8.0], width: 320.0, color, alpha: 0xFF }
 }
 
 /// A string in the 320-wide screen at (x, y), 8 pixels a character (0x401FB0's drawing).
@@ -249,13 +249,13 @@ pub fn text(q: &mut Vec<Quad>, x: i32, y: i32, s: &[u8], color: [u8; 3]) {
 /// 0x401B60: a box with 2-pixel black edges and a half-transparent inside, in the 512-wide
 /// screen; `w` and `h` are 16.16-ish sizes (>> 12 = pixels).
 pub fn boxed(q: &mut Vec<Quad>, x: i32, y: i32, w: i32, h: i32, inside: [u8; 3]) {
-    let px = |x: i32, y: i32, ww: f32, hh: f32, color: [u8; 3]| Quad { sprite: 6, cell: 1, pos: [x as f32, y as f32], size: [ww, hh], width: 512.0, color };
+    let px = |x: i32, y: i32, ww: f32, hh: f32, color: [u8; 3]| Quad { sprite: 6, cell: 1, pos: [x as f32, y as f32], size: [ww, hh], width: 512.0, color, alpha: 0xFF };
     let (wp, hp) = ((w >> 12) as f32, (h >> 12) as f32);
     q.push(px(x, y, 2.0, hp, [0; 3]));
     q.push(px(x + (w >> 12) - 2, y, 2.0, hp, [0; 3]));
     q.push(px(x, y, wp, 1.0, [0; 3]));
     q.push(px(x, y + (h >> 12) - 1, wp, 1.0, [0; 3]));
-    q.push(Quad { sprite: 6, cell: 1, pos: [(x + 2) as f32, (y + 1) as f32], size: [((w - 0x4000) >> 12) as f32, ((h - 0x2000) >> 12) as f32], width: 512.0, color: inside });
+    q.push(Quad { sprite: 6, cell: 1, pos: [(x + 2) as f32, (y + 1) as f32], size: [((w - 0x4000) >> 12) as f32, ((h - 0x2000) >> 12) as f32], width: 512.0, color: inside, alpha: 0xFF });
 }
 
 #[cfg(test)]

@@ -24,14 +24,20 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 | Footsteps, footprint trails, wading slowdown | Ported; **user confirmed all three** |
 | Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
 | Level 2 fence (flat sheets drawn from both sides) | **User confirmed fixed**; level 1 still fine |
-| Tests | 125 pass with `TS2_GAME_DIR` set; release build clean |
+| Front end (title, main menu, level select) | Ported (`src/frontend.rs`; the viewer runs it with no level given); not playtested |
+| Tests | 132 pass with `TS2_GAME_DIR` set; release build clean |
 
 ### Still to do, in order
 
 1. **User re-tests** the paint jingles, then the claw machine, boots and hook (paint, fence
    and level 1 confirmed 2026-10-21). Fix what they report.
-2. **Front end:** title screen, level select (campaign order is in `src/campaign.rs`), and the
-   pause / "keep playing or exit" flow between levels. Today the viewer takes `--level N`.
+2. **Front end, rest of it:** title, main menu and level select are done (0x49D910's flow is
+   in functions.md). Left: the results screen (0x4398B0, after a normal level), boss victory
+   (0x453D90), game over when lives run out (0x437B20; the viewer respawns forever), the
+   pause menu (Escape quits to the menu for now), options (0x4371B0), load game (0x453F20),
+   the movie viewer (0x453FA0), credits (0x43A380), logos (0x438520), the attract demo, and
+   the level select's per-level sound (0x4A3B90). The viewer switches scenes by rebuilding
+   itself with `load()` and `attach()` on the same window.
 3. **Saves:** `Toy2xx.sav` (407 bytes, not decoded yet): tokens per level, abilities
    (0x52F2D8), lives. Needed for the front end's progress.
 4. **Music changes:** boss, race and completion themes (only the level theme loops now;
@@ -49,6 +55,13 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
    loading need web versions).
 
 ### Recent findings worth knowing
+
+- **Front-end scenes:** scene 0 is `level00\level.ngn` (pictures `bgr40`–`bgr44`, font `tex31`),
+  scene 16 the level-select map `level06\level1.ngn`. The original's texture table is global
+  and each scene only partly fills it, so the map uses scene 0's `tex31`: `load()` borrows it.
+  Menus draw in a 320-wide sprite screen, the level select in 512.
+- **Negative sound ids from level scripts** are jingles (pushed as `0xFFFx`); the viewer now
+  routes them, which fixed level 4's paint sounds.
 
 - **Vertex colour bytes:** the shader reads red, green, blue from bytes 1–3 (`color.yzw`), not
   0–2. Anything tinting vertex colours must offset by one (fixed for lit creatures).
@@ -448,6 +461,8 @@ then 7–10. Bigger items after that:
 | Example | What it does |
 |---|---|
 | `creatures [levelNN]` | Creature slots, records and behaviour scripts (`WORDS=n`) |
+| `exedump <i32\|i16\|u8\|str\|strs> <hex va> [n]` | Reads exe data tables by address |
+| `textures <ngn> [index out.bmp]` | An ngn's textures and sizes; writes one out (front-end pictures are `bgrNN`) |
 | `lists <dir>` | `level.dat` point lists (`ALL=1`) |
 | `pickups <dir>`, `kinds` | Pickups, specials, level.dat objects |
 | `boxes`, `pushsim <dir>` | Push boxes, and a simulated push of each |
