@@ -1,13 +1,68 @@
 # Handover: Toy Story 2 Rust rewrite
 
-Last updated 2026-10-20. **Level 1 is complete and signed off by the user.** Every level
-(2–15) now has its script ported; none of 2–15 has been playtested. This file explains how the
-project works, what has been done, what went wrong along the way, and how to carry on.
+Last updated 2026-10-21. **Level 1 is complete and signed off by the user.** Every level
+(2–15) now has its script ported; none of 2–15 has been fully playtested. This file explains
+how the project works, what has been done, what went wrong along the way, and how to carry on.
 
 Read this first. Then read `docs/re/functions.md` (every identified exe function, with what we
 know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `all`).
 
 ---
+
+## Progress and what's left (2026-10-21)
+
+### Where it stands
+
+| Area | State |
+|---|---|
+| Level 1 | Complete, signed off by the user |
+| Levels 2–10 | Scripts ported; not playtested (the user is working through them in order) |
+| Levels 11–15 | Scripts ported and simulation-tested; not playtested |
+| Level 4 paint puzzle (token 3) | Ported; first playtest found the red/blue swap (fixed in `4ef5ce7`), awaiting a re-test |
+| Level 8 claw machine (token 3) | Ported and simulation-tested; not playtested |
+| Rocket boots, hover boots, grappling hook | Ported and unit-tested; not playtested |
+| Footsteps, footprint trails, wading slowdown | Ported; **user confirmed all three** |
+| Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
+| Level 2 fence (flat sheets drawn from both sides) | Fixed; needs a check, and level 1 needs a glance for side effects (a third of its layer-0 instances count as flat) |
+| Tests | 124 pass with `TS2_GAME_DIR` set; release build clean |
+
+### Still to do, in order
+
+1. **User re-tests** level 4's paint, level 2's fence (and level 1 for regressions from the
+   flat-sheet change), then the claw machine, boots and hook. Fix what they report.
+2. **Front end:** title screen, level select (campaign order is in `src/campaign.rs`), and the
+   pause / "keep playing or exit" flow between levels. Today the viewer takes `--level N`.
+3. **Saves:** `Toy2xx.sav` (407 bytes, not decoded yet): tokens per level, abilities
+   (0x52F2D8), lives. Needed for the front end's progress.
+4. **Music changes:** boss, race and completion themes (only the level theme loops now;
+   `src/music.rs`).
+5. **FMV playback:** 22 MPEG-1 files on the disc named `.dll` (see `docs/re/asset-audit.md`;
+   21 report an MP2 packet error at the end). Needs a decoder crate or ffmpeg.
+6. **Playtest-and-fix pass over levels 2–15** in campaign order.
+7. **Smaller gadgets still skipped:** level 8's electric arcs (0x422D20) and room 2 cannon,
+   level 11's lights / room 5 overlay / slot 31 constraint, drips, dynamic lights (0x44F200),
+   floor shadows, the stomp's camera shake, the shield slowing Buzz (0x436220 reads 0x52F398:
+   weaker jump −0x3C0, gentler acceleration; not ported).
+8. **Side projects** the user wants afterwards: a tool to replace characters and textures
+   (assets already load at runtime, so an override folder checked first is the natural
+   route), and a web build (wgpu and winit run in the browser; audio via rodio and file
+   loading need web versions).
+
+### Recent findings worth knowing
+
+- **Vertex colour bytes:** the shader reads red, green, blue from bytes 1–3 (`color.yzw`), not
+  0–2. Anything tinting vertex colours must offset by one (fixed for lit creatures).
+- **Layer 1 is not just low detail.** The original draws the second mesh set only from 10000
+  out, then clears depth and draws the first set. We draw layer 1 whole under layer 0, so
+  anything missing from layer 0 shows layer 1's copy with props drawn over it.
+- **Flat sheets:** single-sided fences and boards are drawn from both sides (except
+  wholly black faces); everything else stays back-face culled. See `scene::mesh_is_flat`.
+- **Paint puzzle state:** the paint starts empty and colourless (height 0, light 0), as
+  0x41C190 sets it. Specials 0x33–0x35 are the lit green signs, 0x30–0x32 the grey ones.
+- **Footsteps** come from frame-list markers 0x81 / 0x82, now on `BuzzAnimator::feet`;
+  `Player::foot_effects` ports 0x4A2D80's sounds and prints.
+- **Shell traps:** a bare `cat >` or `python -` with no input hangs the whole command chain.
+  Write scripts to the scratchpad and use the Edit tool for source changes.
 
 ## 2026-10-20: levels 11, 13–15 (Claude session)
 
@@ -23,7 +78,7 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
   and the boat's routes, floats, six turrets and their buttons, doors, spring, horse
   challenge, critters, gunslinger. New creature routines 0x28 / 0x29 / 0x2E.
 - `Boxes::pushed()` exposes 0x53C648. `campaign::script_available` is true for all 15.
-- Verification: **117 passed** with `TS2_GAME_DIR`; release build clean. Nothing pushed.
+- Verification: **117 passed** with `TS2_GAME_DIR`; release build clean.
 - Then ported: level 4's "crane" (really a paint-mixing puzzle: the crane is a push box,
   slot 5 is the PAINT creature lit in the mixed colour; token 3), level 8's claw machine
   (token 3 is the prize), rocket boots, hover boots and the grappling hook (hook points =
