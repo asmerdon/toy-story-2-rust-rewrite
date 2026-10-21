@@ -107,7 +107,7 @@ Game level numbers: `levelNN\level.*` = level NN, `levelNN\level1.*` = level NN+
 | 0x4A0DB0 | `RevealToken(k, instant)` ✔ | State 1, entry back in the list; not instant: 0x84-tick grow and a camera cut. Level 1's setup (0x4171D0) reveals token 3 at once; challenges reveal the rest |
 | 0x4A2080 | `ProgressGates` ✔ | Per-level items tied to unlocked moves (`0x52F2D8` bits): tables 0x503A44/54/A4/B8/C8 of {level, hide id, pickup id, mover}; locked: pickup shown with radius 0 |
 | 0x4A1A50 / 0x4A1B00 | per-level setup / script switches ✔ | Jump tables: level 1 setup 0x4171D0, script 0x417680 |
-| 0x49E9D0 | `StepJingles` ✔ | PlaySound with a negative id starts a jingle (table 0x503828 + 4(−id − 1)): 3 i16 rumble, then {slot, PS1 pitch, volume, delay} steps, −1 ends, −2 n loops |
+| 0x49E9D0 | `StepJingles` ✔ | PlaySound with a negative id starts a jingle (table 0x503828 + 4(−id − 1)): 3 i16 rumble, then {slot, PS1 pitch, volume, delay} steps, −1 ends, −2 n loops. Level scripts' negative ids (pushed as `0xFFFx`) go here too, in the viewer |
 | 0x49FD40 | `DrawHud` ~ | Counters; token sequence state 9 shows "you have collected a token! keep on playing / exit level" |
 
 ## Level objects (ported: `src/specials.rs`, `src/boxes.rs`, `src/level1.rs`)

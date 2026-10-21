@@ -21,3 +21,17 @@ fn level_sounds_load_and_buzz_sounds_resolve() {
         assert!(s.rate >= 8000 && !s.data.is_empty() && vol > 0, "sound {id:#x}");
     }
 }
+
+/// Level scripts pass negative ids to PlaySound for jingles: level 4's paint plays −5 when a
+/// colour is delivered and −6 when it drains (0x41C640). Both must have notes with samples.
+#[test]
+fn paint_jingles_have_samples() {
+    let Some(dir) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let exe = Exe::parse(fs::read(dir.join("toy2.exe")).unwrap()).unwrap();
+    let bank = SoundBank::load(&exe, &dir.join("data/sfx"), 4).unwrap();
+    for id in [0xFFFBu16, 0xFFFA] {
+        let steps = bank.jingle(id as i16 as i32);
+        assert!(!steps.is_empty(), "jingle {} is empty", id as i16);
+        assert!(steps.iter().any(|s| bank.slot(s.slot).is_some()), "jingle {} has no samples: {steps:?}", id as i16);
+    }
+}

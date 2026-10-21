@@ -18,18 +18,18 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 | Level 1 | Complete, signed off by the user |
 | Levels 2–10 | Scripts ported; not playtested (the user is working through them in order) |
 | Levels 11–15 | Scripts ported and simulation-tested; not playtested |
-| Level 4 paint puzzle (token 3) | Ported; first playtest found the red/blue swap (fixed in `4ef5ce7`), awaiting a re-test |
+| Level 4 paint puzzle (token 3) | **User confirmed it works.** Its delivery / drain jingles (−5 / −6) were silent: the viewer dropped negative ids from level scripts. Now routed to jingles (also fixes levels 11, 13–15); awaiting a listen |
 | Level 8 claw machine (token 3) | Ported and simulation-tested; not playtested |
 | Rocket boots, hover boots, grappling hook | Ported and unit-tested; not playtested |
 | Footsteps, footprint trails, wading slowdown | Ported; **user confirmed all three** |
 | Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
-| Level 2 fence (flat sheets drawn from both sides) | Fixed; needs a check, and level 1 needs a glance for side effects (a third of its layer-0 instances count as flat) |
-| Tests | 124 pass with `TS2_GAME_DIR` set; release build clean |
+| Level 2 fence (flat sheets drawn from both sides) | **User confirmed fixed**; level 1 still fine |
+| Tests | 125 pass with `TS2_GAME_DIR` set; release build clean |
 
 ### Still to do, in order
 
-1. **User re-tests** level 4's paint, level 2's fence (and level 1 for regressions from the
-   flat-sheet change), then the claw machine, boots and hook. Fix what they report.
+1. **User re-tests** the paint jingles, then the claw machine, boots and hook (paint, fence
+   and level 1 confirmed 2026-10-21). Fix what they report.
 2. **Front end:** title screen, level select (campaign order is in `src/campaign.rs`), and the
    pause / "keep playing or exit" flow between levels. Today the viewer takes `--level N`.
 3. **Saves:** `Toy2xx.sav` (407 bytes, not decoded yet): tokens per level, abilities

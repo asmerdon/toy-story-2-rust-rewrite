@@ -1266,6 +1266,12 @@ impl Viewer {
             }
             if let Some(a) = self.audio.as_mut() {
                 for (id, at) in creature_sounds {
+                    // A negative id (as scripts pass to PlaySound, 0x49E660) starts a jingle.
+                    if id >= 0x8000 {
+                        let pos = Vec3::from(at.map(|v| v as f32 / 32.0));
+                        self.jingles.push(Jingle { steps: a.bank.jingle(id as i16 as i32).to_vec(), next: 0, timer: 0, pos });
+                        continue;
+                    }
                     a.play(id, false, OWNER_CREATURES, Vec3::from(at.map(|v| v as f32 / 32.0)) - listener, right_g, fwd_g);
                 }
             }
