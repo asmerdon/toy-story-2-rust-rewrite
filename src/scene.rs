@@ -28,23 +28,6 @@ fn texture_index(ngn: &Ngn, name: &str) -> Option<usize> {
     ngn.textures.iter().position(|t| t.name == name)
 }
 
-/// A flat sheet (a fence panel, a board): the mesh's thinnest extent, in its own space, under
-/// a fiftieth of its largest. It has no inside, so both its sides are drawn: the data models
-/// such sheets once, and with back faces culled they'd vanish when seen from behind.
-pub fn mesh_is_flat(ngn: &Ngn, layer: usize, mesh: u32) -> bool {
-    let Some(m) = ngn.layers.get(layer).and_then(|l| l.meshes.get(mesh as usize)) else { return false };
-    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for v in &m.vertices {
-        for k in 0..3 {
-            lo[k] = lo[k].min(v.pos[k]);
-            hi[k] = hi[k].max(v.pos[k]);
-        }
-    }
-    let size = [0, 1, 2].map(|k| hi[k] - lo[k]);
-    let (min, max) = size.iter().fold((f32::MAX, 0f32), |(a, b), &s| (a.min(s), b.max(s)));
-    max > 0.0 && min * 50.0 < max
-}
-
 pub fn push(batches: &mut Vec<Batch>, texture: Option<usize>, blend: Blend, tri: [GpuVertex; 3]) {
     match batches.iter_mut().find(|b| b.texture == texture && b.blend == blend) {
         Some(b) => b.vertices.extend_from_slice(&tri),
@@ -95,12 +78,18 @@ impl Place {
 }
 
 fn add_mesh(ngn: &Ngn, out: &mut Vec<Batch>, mesh: &Mesh, place: Place, m: Option<&[[f32; 4]; 4]>) {
-    add_mesh_parts(ngn, out, None, mesh, place, m);
+    add_mesh_parts(ngn, out, None, mesh, place, m, None);
 }
 
-/// Like `add_mesh`; with `billboards`, billboard groups go there instead of into `out`.
-fn add_mesh_parts(ngn: &Ngn, out: &mut Vec<Batch>, mut billboards: Option<&mut Vec<Billboard>>, mesh: &Mesh, place: Place, m: Option<&[[f32; 4]; 4]>) {
+/// Like `add_mesh`; with `billboards`, billboard groups go there instead of into `out`. With
+/// `sided`, only groups whose material is (`Some(true)`) or isn't two-sided go into `out`, and
+/// billboards (never culled) only in the two-sided call.
+fn add_mesh_parts(ngn: &Ngn, out: &mut Vec<Batch>, mut billboards: Option<&mut Vec<Billboard>>, mesh: &Mesh, place: Place, m: Option<&[[f32; 4]; 4]>, sided: Option<bool>) {
     for g in &mesh.groups {
+        let is_billboard = billboards.is_some() && g.sprite_pivot().is_some();
+        if sided.is_some_and(|s| if is_billboard { !s } else { s != mesh.group_two_sided(g) }) {
+            continue;
+        }
         if let (Some(bb), Some(pivot)) = (billboards.as_deref_mut(), g.sprite_pivot()) {
             let corner = |k: usize| &mesh.vertices[g.indices[k] as usize];
             bb.push(Billboard {
@@ -154,6 +143,11 @@ pub fn level_batches_where(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::format
 /// Level geometry split into static batches and billboards, which must be rebuilt each frame
 /// with `billboard_batches`.
 pub fn level_parts_where(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::formats::ngn::Instance) -> bool) -> (Vec<Batch>, Vec<Billboard>) {
+    level_parts_sided(ngn, keep, None)
+}
+
+/// As [`level_parts_where`], with only the two-sided (`Some(true)`) or one-sided materials.
+pub fn level_parts_sided(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::formats::ngn::Instance) -> bool, sided: Option<bool>) -> (Vec<Batch>, Vec<Billboard>) {
     let (mut out, mut bb) = (Vec::new(), Vec::new());
     let images: Vec<Option<crate::bmp::Image>> = ngn.textures.iter().map(|t| crate::bmp::decode(&t.bmp, Some(crate::bmp::PC_KEY))).collect();
     for (li, layer) in ngn.layers.iter().enumerate() {
@@ -161,7 +155,7 @@ pub fn level_parts_where(ngn: &Ngn, keep: impl Fn(usize, usize, &crate::formats:
             if let Some(mesh) = layer.meshes.get(inst.mesh as usize) {
                 let m = instance_matrix(inst);
                 let mut one = Vec::new();
-                add_mesh_parts(ngn, &mut one, Some(&mut bb), mesh, Place::new(inst.pos, 0.0), Some(&m));
+                add_mesh_parts(ngn, &mut one, Some(&mut bb), mesh, Place::new(inst.pos, 0.0), Some(&m), sided);
                 light_black_faces(&mut one);
                 show_keyed_glass(&mut one, &images);
                 merge(&mut out, one);
@@ -218,7 +212,7 @@ pub fn special_batches(ngn: &Ngn, s: &crate::specials::Special, billboards: &mut
     let Some(mesh) = ngn.layers[s.layer].meshes.get(inst.mesh as usize) else { return out };
     let placed = crate::formats::ngn::Instance { pos: s.pos, rot: s.angles, scale: s.scale, ..*inst };
     let m = instance_matrix(&placed);
-    add_mesh_parts(ngn, &mut out, Some(billboards), mesh, Place::new(s.pos, 0.0), Some(&m));
+    add_mesh_parts(ngn, &mut out, Some(billboards), mesh, Place::new(s.pos, 0.0), Some(&m), None);
     out
 }
 

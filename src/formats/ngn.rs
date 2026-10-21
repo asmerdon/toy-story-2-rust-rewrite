@@ -266,6 +266,12 @@ pub enum Blend {
 }
 
 impl Material {
+    /// Drawn from both sides: mode bit 8, which 0x4B6760 turns into cull-none (render state
+    /// 0x40, clearing the clockwise / counter-clockwise bits). Fences, boards and cut-outs.
+    pub fn two_sided(&self) -> bool {
+        self.mode.unwrap_or(0) & 8 != 0
+    }
+
     pub fn blend(&self) -> Blend {
         let m = self.mode.unwrap_or(0);
         if m & 0x410 != 0 {
@@ -300,6 +306,11 @@ impl Mesh {
 
     pub fn group_blend(&self, g: &Group) -> Blend {
         self.materials.get(g.material as usize).map(Material::blend).unwrap_or_default()
+    }
+
+    /// Whether a group's material is drawn from both sides ([`Material::two_sided`]).
+    pub fn group_two_sided(&self, g: &Group) -> bool {
+        self.materials.get(g.material as usize).is_some_and(Material::two_sided)
     }
 
     /// Texture name used by a group, if any.

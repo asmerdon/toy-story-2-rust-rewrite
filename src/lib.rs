@@ -35,6 +35,7 @@ pub mod level14;
 pub mod level15;
 pub mod look;
 pub mod particles;
+pub mod png;
 pub mod pickups;
 pub mod rewards;
 pub mod script;

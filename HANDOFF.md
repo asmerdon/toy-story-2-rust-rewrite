@@ -23,9 +23,9 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 | Rocket boots, hover boots, grappling hook | Ported and unit-tested; not playtested |
 | Footsteps, footprint trails, wading slowdown | Ported; **user confirmed all three** |
 | Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
-| Level 2 fence (flat sheets drawn from both sides) | **User confirmed fixed**; level 1 still fine |
-| Front end (title, main menu, level select) | Ported (`src/frontend.rs`; the viewer runs it with no level given); not playtested |
-| Tests | 132 pass with `TS2_GAME_DIR` set; release build clean |
+| Two-sided materials (fences, boards, cut-outs) | Now from the material bit (mode 8) in both mesh sets; bed headboards back (billboards were dropped); needs a re-check of levels 1–2 |
+| Front end (title, main menu, level select) | Ported (`src/frontend.rs`). Menus were hidden behind their picture (fixed); the map now swaps blueprints for finished models (0x4F6DC4). Needs a re-test |
+| Tests | 133 pass with `TS2_GAME_DIR` set; release build clean |
 
 ### Still to do, in order
 
@@ -68,8 +68,15 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 - **Layer 1 is not just low detail.** The original draws the second mesh set only from 10000
   out, then clears depth and draws the first set. We draw layer 1 whole under layer 0, so
   anything missing from layer 0 shows layer 1's copy with props drawn over it.
-- **Flat sheets:** single-sided fences and boards are drawn from both sides (except
-  wholly black faces); everything else stays back-face culled. See `scene::mesh_is_flat`.
+- **Culling follows the materials** (`Material::two_sided`): mode bit 8 → cull-none
+  (0x4B6760 sets render state 0x40), in both mesh sets; everything else is back-face
+  culled, except pure-black faces of two-sided materials, which stay culled. An earlier
+  thickness guess ("flat sheets") dropped billboards in thin meshes (level 1's carved
+  headboards) and culled the far set's fences from behind; it's gone.
+- **Screenshots without a window:** `ts2-viewer [--level N] --shot out.png "<script>"`
+  renders offscreen, silent: numbers run frames, `+Space` / `-Space` press and release,
+  `play` starts Buzz, `cam:x,y,z,yaw,pitch` holds the view. Use it to check rendering
+  and menus yourself before asking the user.
 - **Paint puzzle state:** the paint starts empty and colourless (height 0, light 0), as
   0x41C190 sets it. Specials 0x33–0x35 are the lit green signs, 0x30–0x32 the grey ones.
 - **Footsteps** come from frame-list markers 0x81 / 0x82, now on `BuzzAnimator::feet`;
@@ -463,6 +470,7 @@ then 7–10. Bigger items after that:
 | `creatures [levelNN]` | Creature slots, records and behaviour scripts (`WORDS=n`) |
 | `exedump <i32\|i16\|u8\|str\|strs> <hex va> [n]` | Reads exe data tables by address |
 | `textures <ngn> [index out.bmp]` | An ngn's textures and sizes; writes one out (front-end pictures are `bgrNN`) |
+| `vcols <ngn> layer index` | An instance's batches as drawn: blend, texture, vertex colours (byte 0 alpha) |
 | `lists <dir>` | `level.dat` point lists (`ALL=1`) |
 | `pickups <dir>`, `kinds` | Pickups, specials, level.dat objects |
 | `boxes`, `pushsim <dir>` | Push boxes, and a simulated push of each |

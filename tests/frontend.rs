@@ -20,6 +20,9 @@ fn tables_match_the_campaign() {
     assert_eq!(t.names[3], "bombs away");
     assert_eq!(t.names[15], "final showdown");
     assert_eq!(&t.needed[..15], &[0, 0, 3, 0, 0, 10, 0, 0, 18, 0, 0, 28, 0, 0, 40]);
+    // The map: level 1's blueprint (specials 1–4) gives way to its finished model (100–104).
+    assert_eq!(t.models.len(), 15);
+    assert_eq!(t.models[0], (vec![1, 2, 3, 4], vec![0x64, 0x65, 0x66, 0x67, 0x68]));
 }
 
 fn select(dir: &std::path::Path, f: &mut FrontEnd) {

@@ -11,7 +11,7 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x4381F0 | `FrontScreen(n)` ✔ | 1/6 timed pictures, 2 title+menu (0x437FB0), 4 results (0x4398B0), 5 game over (0x437B20), 8, 9 options (0x4371B0), 10 logos (0x438520(2), (3)), 0xB credits (0x43A380) |
 | 0x437FB0 | `TitleScreen` ✔ | Picture 0, music 0x14; "press jump" (0x49B580 at y 0xCC, alpha pulse fold(t & 0x3F) × 4); after 0x1E ticks jump → sound 0, fade, menu; 900 ticks → demo (not ported) |
 | 0x437C40 | `MainMenu` ✔ | Picture 4, music 0x13; rows y 0x78 + 0x14k: start/continue game, options, load game, movie viewer, exit; arrows sprite 0x3E cells 0/1 at x 0x40 / 0xF0, colour (a, a, 0x80), sliding 2 a tick; up/down sound 1; jump after 0x1F ticks: sound 0, fade 0x17 ticks; exit → 0x4CF359 |
-| 0x438A50 | `LevelSelect` ✔ | Scene 16; camera from level.dat list 2 looking along list 1 − list 2 (entry level × 3 + view); see `frontend::Select`. Gate: newest level needs 0x503840[levels done] tokens; "you need more tokens"; returns 1 if cancelled; 0x52AD8A = level − 1, 0x55A0E4 = level |
+| 0x438A50 | `LevelSelect` ✔ | Scene 16; camera from level.dat list 2 looking along list 1 − list 2 (entry level × 3 + view); see `frontend::Select`. Gate: newest level needs 0x503840[levels done] tokens; "you need more tokens"; returns 1 if cancelled; 0x52AD8A = level − 1, 0x55A0E4 = level. Start: map specials 0–99 shown, 100–366 hidden (0x4CCB20), then per level up to the last choosable the pair at 0x4F6DC4 (+8k): hide its blueprint list, show its finished list (i16, −1 ends) |
 | 0x438650 | `SelectCameraTurn(cam, rate)` ✔ | Yaw/pitch (+0x26/+0x24) an eighth of the way to the direction (+0xC..+0x14), at most rate; pitch from squared components |
 | 0x438790 | `SelectCameraPosts(cam, vel, list)` ✔ | List 3 pairs: centre and radius point; inside the post's height and radius: velocity pushed out by min(0x800 − d²·0x800/r², 0x180) |
 | 0x438910 | `SelectMapPiece(special, list, phase)` ✔ | Phase + 0x40 a tick (wraps before the last 5 points); lerp of points phase >> 8 and + 1; yaw eased a quarter towards heading + 0x800 |
@@ -230,7 +230,8 @@ Object fields seen by the renderer: `+0x00..0x08` position (int, ×1/32 when dra
 |---|---|---|
 | 0x4CDDD0 | `DrawLevelSets` ✔ | Two passes: the second mesh set (low detail) with view clip from 10000 out, then depth cleared and the first set clipped at 12000. Per-instance culling 0x4BC720 by squared distance (0x5088B0/B4, set by 0x4BC410). Ranges from detail level `0x508D74` (0–2; table 0x508D24, 24 bytes per level: −, far-from, near-to, near planes, cull distances); 2 = 10000/12000, the exe's defaults. Without this split the two sets overlap coplanar and flicker (examples/overlap.rs: 2,725 pairs in level 1, all first-set vs second-set) |
 | 0x4B70E0 | `DrawMeshPrims` ✔ | Per primitive type: 0 list, 2 strip, 3 quads as strips, 4/5 billboards (see ngn.md codes 5/6) |
-| 0x4B6320 | `SetRenderState` ✔ | State bits → D3D: 4 ZENABLE off, 0x800 ZWRITE off, 0x10/0x20/0x40 cull CCW/CW/none, 0x400/0x4000/0x20000/0x100000… blend pairs, 0x8000/0x10000 ZBIAS 1/2 (only flat sprites use it) |
+| 0x4B6760 | `ApplyMaterialState(mat, state)` ✔ | Material +0x74 (the ngn mode word) → state: 2 → 0xC00 (alpha, no z-write), 0x10 → 0x4800, 0x20 → 0x20800, 0x200/0x400/0x800 → other blends, **8 → cull none (0x40, CW/CCW cleared)**; then 0x4B6320 |
+| 0x4B6320 | `SetRenderState` ✔ | State bits → D3D: 4 ZENABLE off, 0x800 ZWRITE off, 0x10/0x20/0x40 cull CCW/CW/none (D3D cull mode 3/2/1; none set leaves it as it was), 0x400/0x4000/0x20000/0x100000… blend pairs, 0x8000/0x10000 ZBIAS 1/2 (only flat sprites use it) |
 
 ## Rendering primitives
 | Address | Name |

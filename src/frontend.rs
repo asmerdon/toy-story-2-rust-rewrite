@@ -45,7 +45,13 @@ pub struct Tables {
     pub names: Vec<String>,
     /// Tokens needed, by levels done.
     pub needed: Vec<i32>,
+    /// The level-select map's models by level (0x4F6DC4): specials to hide (the level's
+    /// blueprint) and to show (its finished model) once the level can be chosen.
+    pub models: Vec<(Vec<usize>, Vec<usize>)>,
 }
+
+/// Pairs of i16 special lists (ending −1) per level, as 0x438A50 reads them.
+const MODELS: u32 = 0x4F6DC4;
 
 impl Tables {
     pub fn read(exe: &Exe) -> Tables {
@@ -54,7 +60,12 @@ impl Tables {
         let order = (0..15).filter_map(|k| u32_at(ORDER + 4 * k)).map(|v| v as usize).collect();
         let names = (0..16).map(|k| u32_at(NAMES + 4 * k).filter(|&p| p > 0x400000).map(cstr).unwrap_or_default()).collect();
         let needed = (0..16).filter_map(|k| exe.at(NEEDED + 2 * k, 2).ok()).map(|b| i16::from_le_bytes([b[0], b[1]]) as i32).collect();
-        Tables { order, names, needed }
+        let ids = |p: Option<u32>| -> Vec<usize> {
+            let Some(p) = p else { return Vec::new() };
+            (0..64).map_while(|k| exe.at(p + 2 * k, 2).ok().map(|b| i16::from_le_bytes([b[0], b[1]]))).take_while(|&v| v >= 0).map(|v| v as usize).collect()
+        };
+        let models = (0..15).map(|k| (ids(u32_at(MODELS + 8 * k)), ids(u32_at(MODELS + 8 * k + 4)))).collect();
+        Tables { order, names, needed, models }
     }
 }
 
@@ -165,6 +176,8 @@ pub struct Frame {
     pub camera: Option<([i32; 3], i32, i32)>,
     /// The map's moving pieces: special id, position (level units), yaw (12-bit).
     pub pieces: Vec<(usize, [i32; 3], i32)>,
+    /// The map's specials shown (scale 0x1000) or hidden (0), as 0x438A50 sets them up.
+    pub shown: Vec<(usize, bool)>,
 }
 
 /// The fade (0x4A1BB0 sets the target and speed, 0x4A1BE0 steps it).
@@ -768,6 +781,22 @@ impl Select {
     fn draw(&self, f: &mut Frame, sprites: &[Option<SpriteDef>], p: &Progress, t: &Tables) {
         let s = p.summary(t);
         f.camera = Some((self.drawn, self.pitch, self.yaw));
+        // Specials 0–99 shown, 100–366 hidden; then for each level up to the last that can be
+        // chosen, its blueprint hidden and its finished model shown.
+        let mut shown: Vec<bool> = (0..0x16F).map(|k| k < 100).collect();
+        for (hide, show) in t.models.iter().take(self.last as usize) {
+            for &k in hide {
+                if let Some(s) = shown.get_mut(k) {
+                    *s = false;
+                }
+            }
+            for &k in show {
+                if let Some(s) = shown.get_mut(k) {
+                    *s = true;
+                }
+            }
+        }
+        f.shown = shown.into_iter().enumerate().collect();
         for k in 0..13 {
             if let Some(pos) = self.piece(k) {
                 f.pieces.push((0x57 + k, pos, self.piece_yaw[k]));
@@ -816,7 +845,7 @@ mod tests {
     use super::*;
 
     fn tables() -> Tables {
-        Tables { order: vec![1, 2, 6, 4, 5, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15], names: vec![String::new(); 16], needed: vec![0, 0, 3, 0, 0, 10, 0, 0, 18, 0, 0, 28, 0, 0, 40, 0] }
+        Tables { order: vec![1, 2, 6, 4, 5, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15], names: vec![String::new(); 16], needed: vec![0, 0, 3, 0, 0, 10, 0, 0, 18, 0, 0, 28, 0, 0, 40, 0], models: Vec::new() }
     }
 
     #[test]

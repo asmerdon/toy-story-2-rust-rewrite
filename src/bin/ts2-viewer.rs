@@ -38,6 +38,10 @@ use winit::window::{Window, WindowId};
 
 /// Game units per metre-ish; matches the OBJ exports.
 const WORLD_SCALE: f32 = 1.0 / 256.0;
+/// Offscreen screenshot size (`--shot`).
+const SHOT_SIZE: [u32; 2] = [1280, 720];
+/// No sound output (set for `--shot`).
+static SILENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Animation playback rate in frames per second. The original rate is not confirmed yet.
 const ANIM_FPS: f32 = 30.0;
 
@@ -247,6 +251,7 @@ struct GpuBatch {
     count: u32,
 }
 
+#[derive(Clone, Copy)]
 struct Camera {
     pos: Vec3,
     yaw: f32,
@@ -263,8 +268,10 @@ impl Camera {
 }
 
 struct Gfx {
-    window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
+    /// The window and its surface; neither when rendering offscreen (`--shot`), into `target`.
+    window: Option<Arc<Window>>,
+    surface: Option<wgpu::Surface<'static>>,
+    target: Option<wgpu::Texture>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -280,6 +287,7 @@ struct Gfx {
     level: Vec<GpuBatch>,
     level_decal: Vec<GpuBatch>,
     level_two_sided: Vec<GpuBatch>,
+    level_far_two_sided: Vec<GpuBatch>,
     level_far: Vec<GpuBatch>,
     /// Billboards of the near and far sets, this frame.
     billboards: [Vec<GpuBatch>; 2],
@@ -320,6 +328,7 @@ struct Viewer {
     level: Vec<Batch>,
     level_decal: Vec<Batch>,
     level_two_sided: Vec<Batch>,
+    level_far_two_sided: Vec<Batch>,
     level_far: Vec<Batch>,
     /// Camera-facing quads of the near and far sets, rebuilt each frame.
     billboards: [Vec<scene::Billboard>; 2],
@@ -435,37 +444,44 @@ fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgp
 /// (second) mesh sets.
 struct LevelSets {
     near: Vec<Batch>,
-    /// Detailed-set triangles with no back-face twin, drawn from both sides.
+    /// Detailed-set materials drawn from both sides (mode bit 8: fences, boards, cut-outs).
     two_sided: Vec<Batch>,
     /// Detailed-set instances drawn a hair nearer (`DECAL`).
     decal: Vec<Batch>,
     far: Vec<Batch>,
+    far_two_sided: Vec<Batch>,
     near_bb: Vec<scene::Billboard>,
     far_bb: Vec<scene::Billboard>,
 }
 
 /// Special objects have their own draw pass. Zone 0 also contains ordinary scenery.
+///
+/// Culling follows the materials, as the original's does (0x4B70E0 → 0x4B6760): back faces
+/// are culled except for materials with mode bit 8, which are drawn from both sides, in both
+/// mesh sets. Of those, faces baked pure black stay culled: they're the data's back faces,
+/// which would fight a lit twin in the same plane.
 fn level_sets(ngn: &ngn::Ngn, specials: &ts2::specials::Specials) -> LevelSets {
     let dynamic: std::collections::HashSet<(usize, usize)> = specials.instances().collect();
     let keep = |l: usize, n: usize, _i: &ngn::Instance| !dynamic.contains(&(l, n));
-    let flat = |l: usize, i: &ngn::Instance| scene::mesh_is_flat(ngn, l, i.mesh);
-    let (near, near_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL == 0 && !flat(l, i) && keep(l, n, i));
-    let (sheets, _) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL == 0 && flat(l, i) && keep(l, n, i));
-    // Flat sheets are drawn from both sides, except their baked-black faces (the data's back
-    // faces, which would fight a lit twin in the same plane).
-    let (mut near, mut two_sided) = (near, Vec::new());
-    for b in sheets {
-        for t in b.vertices.chunks_exact(3) {
-            let black = t.iter().all(|v| v.color[1] == 0 && v.color[2] == 0 && v.color[3] == 0);
-            let to = if black || b.blend != scene::Blend::Opaque { &mut near } else { &mut two_sided };
-            scene::push(to, b.texture, b.blend, [t[0], t[1], t[2]]);
+    // (one-sided, two-sided, billboards) of the instances `pick` takes.
+    let parts = |pick: &dyn Fn(usize, &ngn::Instance) -> bool| {
+        let (mut one, _) = scene::level_parts_sided(ngn, |l, n, i| pick(l, i) && keep(l, n, i), Some(false));
+        let (sheets, bb) = scene::level_parts_sided(ngn, |l, n, i| pick(l, i) && keep(l, n, i), Some(true));
+        let mut two = Vec::new();
+        for b in sheets {
+            for t in b.vertices.chunks_exact(3) {
+                let black = t.iter().all(|v| v.color[1] == 0 && v.color[2] == 0 && v.color[3] == 0);
+                scene::push(if black { &mut one } else { &mut two }, b.texture, b.blend, [t[0], t[1], t[2]]);
+            }
         }
-    }
-    let (decal, mut decal_bb) = scene::level_parts_where(ngn, |l, n, i| l == 0 && i.flags & DECAL != 0 && keep(l, n, i));
-    let (far, far_bb) = scene::level_parts_where(ngn, |l, n, i| l > 0 && keep(l, n, i));
-    let mut near_bb = near_bb;
+        (one, two, bb)
+    };
+    let (near, mut two_sided, mut near_bb) = parts(&|l, i| l == 0 && i.flags & DECAL == 0);
+    let (decal, decal_two, mut decal_bb) = parts(&|l, i| l == 0 && i.flags & DECAL != 0);
+    let (far, far_two_sided, far_bb) = parts(&|l, _| l > 0);
+    scene::merge(&mut two_sided, decal_two);
     near_bb.append(&mut decal_bb);
-    LevelSets { near, two_sided, decal, far, near_bb, far_bb }
+    LevelSets { near, two_sided, decal, far, far_two_sided, near_bb, far_bb }
 }
 
 /// Instance flag 0x80000 (meaning unknown; 288 ordinary instances in level 1). They're kept in
@@ -493,22 +509,50 @@ fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatc
 }
 
 impl Gfx {
-    fn new(window: Arc<Window>, ngn: &ngn::Ngn, level: &[Batch], level_far: &[Batch], backdrop: Option<&(u32, u32, Vec<u8>)>) -> Gfx {
+    fn new(window: Option<Arc<Window>>, ngn: &ngn::Ngn, level: &[Batch], level_far: &[Batch], backdrop: Option<&(u32, u32, Vec<u8>)>) -> Gfx {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let surface = instance.create_surface(window.clone()).expect("create surface");
+        let surface = window.as_ref().map(|w| instance.create_surface(w.clone()).expect("create surface"));
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
+            compatible_surface: surface.as_ref(),
             force_fallback_adapter: false,
         }))
         .expect("no suitable GPU adapter");
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).expect("request device");
 
-        let size = window.inner_size();
-        let mut config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("surface config");
-        config.present_mode = wgpu::PresentMode::AutoVsync;
-        surface.configure(&device, &config);
+        let (config, target) = match (&surface, &window) {
+            (Some(surface), Some(window)) => {
+                let size = window.inner_size();
+                let mut config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("surface config");
+                config.present_mode = wgpu::PresentMode::AutoVsync;
+                surface.configure(&device, &config);
+                (config, None)
+            }
+            _ => {
+                let config = wgpu::SurfaceConfiguration {
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    width: SHOT_SIZE[0],
+                    height: SHOT_SIZE[1],
+                    present_mode: wgpu::PresentMode::Fifo,
+                    desired_maximum_frame_latency: 2,
+                    alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                    view_formats: Vec::new(),
+                };
+                let target = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("shot"),
+                    size: wgpu::Extent3d { width: SHOT_SIZE[0], height: SHOT_SIZE[1], depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: config.format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                (config, Some(target))
+            }
+        };
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ts2"),
@@ -665,27 +709,51 @@ impl Gfx {
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
         let level_far = upload(&device, level_far, texture_bgs.len() - 1);
-        Gfx { window, surface, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1] }
+        Gfx { window, surface, target, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1] }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
         self.config.width = w.max(1);
         self.config.height = h.max(1);
-        self.surface.configure(&self.device, &self.config);
+        if let Some(s) = &self.surface {
+            s.configure(&self.device, &self.config);
+        }
         self.depth = depth_view(&self.device, &self.config);
     }
 
+    /// The offscreen target's pixels (RGB, rows top first) after a render.
+    fn capture(&self) -> Option<Vec<u8>> {
+        let target = self.target.as_ref()?;
+        let [w, h] = [self.config.width, self.config.height];
+        let row = (w * 4).div_ceil(256) * 256;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+        let data = buf.slice(..).get_mapped_range();
+        Some((0..h as usize).flat_map(|y| data[y * row as usize..][..w as usize * 4].chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect::<Vec<_>>()).collect())
+    }
+
     fn render(&mut self, uniforms: &Uniforms) {
-        let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
-                return;
-            }
-            Err(e) => {
-                eprintln!("surface error: {e}");
-                return;
-            }
+        let frame = match &self.surface {
+            Some(surface) => match surface.get_current_texture() {
+                Ok(f) => Some(f),
+                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    surface.configure(&self.device, &self.config);
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("surface error: {e}");
+                    return;
+                }
+            },
+            None => None,
         };
         // Far set beyond FAR_FROM, detailed set within NEAR_TO, everything else unclipped.
         let s = uniforms.params[2];
@@ -703,14 +771,18 @@ impl Gfx {
             range: [0.0, f32::MAX, 0.0, 0.0],
         };
         self.queue.write_buffer(&self.uniform_bufs[3], 0, bytemuck::bytes_of(&hud));
-        let view = frame.texture.create_view(&Default::default());
+        let view = match (&frame, &self.target) {
+            (Some(f), _) => f.texture.create_view(&Default::default()),
+            (None, Some(t)) => t.create_view(&Default::default()),
+            (None, None) => return,
+        };
         let mut enc = self.device.create_command_encoder(&Default::default());
         let order = [scene::Blend::Opaque, scene::Blend::Alpha, scene::Blend::Additive, scene::Blend::Darken];
         // Two passes, depth cleared in between, as 0x4CDDD0 does.
         // (uniforms, batches, level geometry: opaque drawn with back faces culled)
         let passes: [(&[(usize, &[GpuBatch], bool)], bool); 4] = [
             (&[(3, &self.sky, false)], true),
-            (&[(0, &self.level_far, true), (0, &self.billboards[1], false)], false),
+            (&[(0, &self.level_far, true), (0, &self.level_far_two_sided, false), (0, &self.billboards[1], false)], false),
             (&[(1, &self.level, true), (1, &self.level_two_sided, false), (4, &self.level_decal, true), (1, &self.billboards[0], false), (2, &self.creature, false)], false),
             (&[(3, &self.hud, false)], false),
         ];
@@ -747,7 +819,9 @@ impl Gfx {
             }
         }
         self.queue.submit([enc.finish()]);
-        frame.present();
+        if let Some(f) = frame {
+            f.present();
+        }
     }
 }
 
@@ -1633,7 +1707,7 @@ impl Viewer {
             pk.apply(&mut self.specials);
             if pk.summary() != self.hud {
                 self.hud = pk.summary();
-                gfx.window.set_title(&format!("Toy Story 2 (Rust) - viewer   {}", self.hud));
+                if let Some(w) = &gfx.window { w.set_title(&format!("Toy Story 2 (Rust) - viewer   {}", self.hud)); }
             }
         }
         // Particles (0x445980).
@@ -1771,25 +1845,26 @@ impl Viewer {
         );
     }
 
-    fn key(&mut self, code: KeyCode, el: &ActiveEventLoop) {
+    /// A key pressed; true to close the window.
+    fn key(&mut self, code: KeyCode) -> bool {
         let n_anims = self.anims.get(self.creature_idx).map_or(0, Vec::len).max(1);
         // In the front end's menus the keys are the pad's (read each tick); Escape on the
         // title closes the window, and in a level it quits to the main menu (the pause
         // menu isn't ported).
         if let Some(f) = &self.front {
             match f.state.screen {
-                ts2::frontend::Screen::Title if code == KeyCode::Escape => el.exit(),
+                ts2::frontend::Screen::Title if code == KeyCode::Escape => return true,
                 ts2::frontend::Screen::Play(_) if code == KeyCode::Escape => self.quit_level = true,
                 ts2::frontend::Screen::Play(_) if code == KeyCode::KeyF => {}
                 ts2::frontend::Screen::Play(_) => {}
-                _ => return,
+                _ => return false,
             }
             if matches!(code, KeyCode::Escape | KeyCode::KeyF) {
-                return;
+                return false;
             }
         }
         match code {
-            KeyCode::Escape => el.exit(),
+            KeyCode::Escape => return true,
             KeyCode::KeyP => self.place_creature(),
             KeyCode::KeyF => self.toggle_play(),
             KeyCode::Space if self.player.is_some() => self.jump_pressed = true,
@@ -1853,6 +1928,7 @@ impl Viewer {
             }
             _ => {}
         }
+        false
     }
 }
 
@@ -1865,7 +1941,7 @@ impl ApplicationHandler for Viewer {
             el.create_window(Window::default_attributes().with_title("Toy Story 2 (Rust) - viewer").with_inner_size(winit::dpi::LogicalSize::new(1280, 720)))
                 .expect("create window"),
         );
-        self.attach(window);
+        self.attach(Some(window));
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1882,7 +1958,7 @@ impl ApplicationHandler for Viewer {
 
 impl Viewer {
     /// Puts the loaded scene on the GPU, drawing into `window`.
-    fn attach(&mut self, window: Arc<Window>) {
+    fn attach(&mut self, window: Option<Arc<Window>>) {
         let level = std::mem::take(&mut self.level);
         let level_far = std::mem::take(&mut self.level_far);
         if let Some(s) = self.start {
@@ -1899,6 +1975,7 @@ impl Viewer {
         if let Some(g) = self.gfx.as_mut() {
             g.level_decal = upload(&g.device, &self.level_decal, g.texture_bgs.len() - 1);
             g.level_two_sided = upload(&g.device, &self.level_two_sided, g.texture_bgs.len() - 1);
+            g.level_far_two_sided = upload(&g.device, &self.level_far_two_sided, g.texture_bgs.len() - 1);
         }
         self.last = Instant::now();
     }
@@ -1915,7 +1992,9 @@ impl Viewer {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if event.state == ElementState::Pressed {
                         if !event.repeat {
-                            self.key(code, el);
+                            if self.key(code) {
+                                el.exit();
+                            }
                         }
                         self.keys.insert(code);
                     } else {
@@ -1935,24 +2014,65 @@ impl Viewer {
                 let dt = (now - self.last).as_secs_f32().min(0.1);
                 self.last = now;
                 self.update(dt);
-                if let Some(g) = self.gfx.as_mut() {
-                    let aspect = g.config.width as f32 / g.config.height as f32;
-                    // Reversed depth (near 1, far 0) with an infinite far plane: a float depth
-                    // buffer then keeps its precision far out, so near-coplanar faces (a box lid
-                    // left ajar, a lamp's layered panels) don't fight.
-                    let proj = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), aspect, 0.05);
-                    g.sky = self.backdrop.map_or_else(Vec::new, |b| upload(&g.device, &sky_batch(&b, proj * self.cam.view(), self.cam.forward(), self.backdrop_image.as_ref().map(|_| self.ngn.textures.len()), aspect), g.texture_bgs.len() - 1));
-                    let u = Uniforms {
-                        view_proj: (proj * self.cam.view()).to_cols_array_2d(),
-                        params: [self.color_mode as f32, if self.alpha_test { 1.0 } else { 0.0 }, WORLD_SCALE, 0.0],
-                        range: [0.0, f32::MAX, 0.0, 0.0],
-                    };
-                    g.render(&u);
-                    g.window.request_redraw();
+                self.draw();
+                if let Some(w) = self.gfx.as_ref().and_then(|g| g.window.as_ref()) {
+                    w.request_redraw();
                 }
             }
             _ => {}
         }
+    }
+
+    /// Renders the frame `update` prepared.
+    fn draw(&mut self) {
+        let Some(g) = self.gfx.as_mut() else { return };
+        let aspect = g.config.width as f32 / g.config.height as f32;
+        // Reversed depth (near 1, far 0) with an infinite far plane: a float depth
+        // buffer then keeps its precision far out, so near-coplanar faces (a box lid
+        // left ajar, a lamp's layered panels) don't fight.
+        let proj = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), aspect, 0.05);
+        g.sky = self.backdrop.map_or_else(Vec::new, |b| upload(&g.device, &sky_batch(&b, proj * self.cam.view(), self.cam.forward(), self.backdrop_image.as_ref().map(|_| self.ngn.textures.len()), aspect), g.texture_bgs.len() - 1));
+        let u = Uniforms {
+            view_proj: (proj * self.cam.view()).to_cols_array_2d(),
+            params: [self.color_mode as f32, if self.alpha_test { 1.0 } else { 0.0 }, WORLD_SCALE, 0.0],
+            range: [0.0, f32::MAX, 0.0, 0.0],
+        };
+        g.render(&u);
+    }
+
+    /// `--shot`: runs a script of frames and key presses at 60 Hz without a window, then
+    /// writes the last frame as a PNG.
+    fn run_shot(&mut self, shot: &Shot) {
+        self.attach(None);
+        for step in &shot.script {
+            match step {
+                ShotStep::Frames(n) => {
+                    for _ in 0..*n {
+                        self.update(1.0 / 60.0);
+                        if let Some(c) = shot.cam {
+                            self.cam = c;
+                        }
+                        self.draw();
+                    }
+                }
+                ShotStep::Press(k) => {
+                    self.key(*k);
+                    self.keys.insert(*k);
+                }
+                ShotStep::Release(k) => {
+                    self.keys.remove(k);
+                }
+                ShotStep::Play => self.toggle_play(),
+            }
+        }
+        self.update(1.0 / 60.0);
+        if let Some(c) = shot.cam {
+            self.cam = c;
+        }
+        self.draw();
+        let Some(rgb) = self.gfx.as_ref().and_then(Gfx::capture) else { return };
+        fs::write(&shot.out, ts2::png::encode_rgb(SHOT_SIZE[0], SHOT_SIZE[1], &rgb)).expect("write shot");
+        println!("shot written to {} (camera {:.1?} yaw {:.3} pitch {:.3})", shot.out, self.cam.pos, self.cam.yaw, self.cam.pitch);
     }
 
     fn device_event_inner(&mut self, event: DeviceEvent) {
@@ -1992,12 +2112,13 @@ impl Viewer {
         let path = ts2::campaign::scene_path(&front.game, id);
         match load(&path.to_string_lossy(), None) {
             Ok(mut next) => {
-                let window = self.gfx.take().map(|g| g.window);
+                let attached = self.gfx.is_some();
+                let window = self.gfx.take().and_then(|g| g.window);
                 front.scene = id;
                 next.front = Some(front);
                 *self = next;
-                if let Some(w) = window {
-                    self.attach(w);
+                if attached {
+                    self.attach(window);
                 }
                 self.enter_front_scene();
             }
@@ -2065,6 +2186,9 @@ impl Viewer {
             self.specials.set_pos(id as i32, pos);
             self.specials.set_angles(id as i32, [0, yaw, 0]);
         }
+        for (id, on) in frame.shown {
+            self.specials.set_scale(id as i32, [if on { 0x1000 } else { 0 }; 3]);
+        }
     }
 
     /// Leaving a level started from the front end: its tokens count (0x52F0D7, set as they're
@@ -2097,8 +2221,11 @@ fn front_batches(f: &Front, ngn: &ngn::Ngn) -> Vec<Batch> {
     let frame = f.state.frame(&f.sprites);
     let named = |name: &str| ngn.textures.iter().position(|t| t.name.eq_ignore_ascii_case(name));
     let mut out = Vec::new();
+    // The picture is drawn blended (fully opaque), not as an opaque batch: the HUD pass draws
+    // opaque batches first, writing depth, and the sprites over it would fail the test.
     if let Some(i) = frame.picture.and_then(|p| named(&format!("bgr{p:02}"))) {
-        out.push(Batch { texture: Some(i), blend: scene::Blend::Opaque, vertices: quad(0.0, 0.0, 1.0, 1.0, [0.0, 0.0, 1.0, 1.0], [0xFF; 3]) });
+        let c = |x: f32, y: f32| GpuVertex { pos: [x, y, 0.0], uv: [x, y], color: [0xFF, 0x80, 0x80, 0x80] };
+        out.push(Batch { texture: Some(i), blend: scene::Blend::Alpha, vertices: vec![c(0.0, 0.0), c(1.0, 0.0), c(1.0, 1.0), c(0.0, 0.0), c(1.0, 1.0), c(0.0, 1.0)] });
     }
     let texture = |slot: i16| {
         let i = named(&format!("tex{slot:02}"))?;
@@ -2146,8 +2273,84 @@ fn play_music(a: &mut AudioOut, game: &std::path::Path, index: usize) {
     }
 }
 
+/// `--shot <out.png> "<script>"`: render without a window. The script's words: a number runs
+/// that many 60 Hz frames, `+Key` / `-Key` press and release a key (winit names: Space,
+/// Enter, Escape, ArrowUp, KeyW, …), `play` puts Buzz at the start (F), and
+/// `cam:x,y,z,yaw,pitch` holds the view there (world units, radians).
+struct Shot {
+    out: String,
+    script: Vec<ShotStep>,
+    cam: Option<Camera>,
+}
+
+enum ShotStep {
+    Frames(u32),
+    Press(KeyCode),
+    Release(KeyCode),
+    Play,
+}
+
+impl Shot {
+    /// Removes `--shot` and its two values from `args`.
+    fn take(args: &mut Vec<String>) -> Option<Shot> {
+        let i = args.iter().position(|a| a == "--shot")?;
+        let words: Vec<String> = args.drain(i..(i + 3).min(args.len())).collect();
+        let out = words.get(1)?.clone();
+        let mut shot = Shot { out, script: Vec::new(), cam: None };
+        for w in words.get(2).map_or("", String::as_str).split_whitespace() {
+            let key = |s: &str| -> Option<KeyCode> {
+                Some(match s {
+                    "Space" => KeyCode::Space,
+                    "Enter" => KeyCode::Enter,
+                    "Escape" => KeyCode::Escape,
+                    "ArrowUp" => KeyCode::ArrowUp,
+                    "ArrowDown" => KeyCode::ArrowDown,
+                    "ArrowLeft" => KeyCode::ArrowLeft,
+                    "ArrowRight" => KeyCode::ArrowRight,
+                    "KeyW" => KeyCode::KeyW,
+                    "KeyA" => KeyCode::KeyA,
+                    "KeyS" => KeyCode::KeyS,
+                    "KeyD" => KeyCode::KeyD,
+                    "KeyE" => KeyCode::KeyE,
+                    "KeyQ" => KeyCode::KeyQ,
+                    _ => return None,
+                })
+            };
+            if let Ok(n) = w.parse() {
+                shot.script.push(ShotStep::Frames(n));
+            } else if w == "play" {
+                shot.script.push(ShotStep::Play);
+            } else if let Some(c) = w.strip_prefix("cam:") {
+                let v: Vec<f32> = c.split(',').filter_map(|x| x.parse().ok()).collect();
+                if let [x, y, z, yaw, pitch] = v[..] {
+                    shot.cam = Some(Camera { pos: Vec3::new(x, y, z), yaw, pitch });
+                }
+            } else if let Some(k) = w.strip_prefix('+').and_then(key) {
+                shot.script.push(ShotStep::Press(k));
+            } else if let Some(k) = w.strip_prefix('-').and_then(key) {
+                shot.script.push(ShotStep::Release(k));
+            } else {
+                eprintln!("--shot: unknown step {w}");
+            }
+        }
+        Some(shot)
+    }
+}
+
+fn run(mut viewer: Viewer, shot: Option<Shot>) {
+    match shot {
+        Some(s) => viewer.run_shot(&s),
+        None => {
+            let event_loop = EventLoop::new().expect("event loop");
+            event_loop.run_app(&mut viewer).expect("run");
+        }
+    }
+}
+
 fn main() {
     let mut args: Vec<String> = env::args().collect();
+    let shot = Shot::take(&mut args);
+    SILENT.store(shot.is_some(), std::sync::atomic::Ordering::Relaxed);
     if args.get(1).is_some_and(|s| s == "--level") {
         let selected = args.get(2).and_then(|s| s.parse().ok()).and_then(ts2::campaign::level);
         let Some(selected) = selected else {
@@ -2183,8 +2386,7 @@ fn main() {
         viewer.front = Some(Front { state: front, game, sprites: Vec::new(), scene: ts2::campaign::FRONT, acc: 0.0, track: None });
         viewer.enter_front_scene();
         println!("front end: arrows or WASD move, Space or Enter picks, Escape goes back");
-        let event_loop = EventLoop::new().expect("event loop");
-        event_loop.run_app(&mut viewer).expect("run");
+        run(viewer, shot);
         return;
     }
     let Some(path) = args.get(1) else {
@@ -2192,12 +2394,11 @@ fn main() {
         process::exit(2);
     };
     let viewer = load(path, args.get(2).map(String::as_str));
-    let mut viewer = viewer.unwrap_or_else(|e| {
+    let viewer = viewer.unwrap_or_else(|e| {
         eprintln!("{e}");
         process::exit(1);
     });
-    let event_loop = EventLoop::new().expect("event loop");
-    event_loop.run_app(&mut viewer).expect("run");
+    run(viewer, shot);
 }
 
 /// Loads a level (or a front-end scene) from its `.ngn` and the files beside it.
@@ -2271,7 +2472,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
     let specials = ts2::specials::Specials::new(&ngn);
     // Camera models are specials, excluded here and controlled by first-person mode.
     // Zone 0 also includes houses, fences and the tree in the neighbourhood.
-    let LevelSets { near: level, two_sided: level_two_sided, decal: level_decal, far: level_far, near_bb, far_bb } = level_sets(&ngn, &specials);
+    let LevelSets { near: level, two_sided: level_two_sided, decal: level_decal, far: level_far, far_two_sided: level_far_two_sided, near_bb, far_bb } = level_sets(&ngn, &specials);
     // Collision: the original's TERRAIN.ALL / TERR1.ALL next to the level, else the render mesh.
     let terrain = ts2::formats::terrain::path_for(std::path::Path::new(path))
         .and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)))
@@ -2344,7 +2545,8 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
     let start = game_exe.as_ref().zip(exe::level_number(level_path)).and_then(|(e, level)| e.player_start(level).ok());
     let buzz = game_exe.as_ref().and_then(|e| e.buzz_moves().ok()).map(buzz::BuzzAnimator::new);
     // Sound effects from data\sfx, as the level loads them (0x47EC20).
-    let audio = game_exe.as_ref().zip(exe::level_number(level_path)).and_then(|(e, level)| {
+    // Silent when rendering screenshots (`--shot`).
+    let audio = game_exe.as_ref().zip(exe::level_number(level_path)).filter(|_| !SILENT.load(std::sync::atomic::Ordering::Relaxed)).and_then(|(e, level)| {
         let sfx = level_path.parent()?.parent()?.join("sfx");
         let bank = match ts2::audio::SoundBank::load(e, &sfx, level) {
             Ok(b) => b,
@@ -2399,6 +2601,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         level,
         level_decal,
         level_two_sided,
+        level_far_two_sided,
         level_far,
         billboards: [near_bb, far_bb],
         world,
@@ -2669,6 +2872,31 @@ mod front_tests {
             for id in 0..3u16 {
                 assert!(bank.sound(id).is_some(), "scene {scene}: no sound {id}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod culling_tests {
+    use super::*;
+
+    /// Splitting the level by material sidedness keeps every billboard (level 1's carved
+    /// headboards are billboards in paper-thin meshes, once dropped with them), and level 2's
+    /// two-sided fences are drawn from both sides in the far set too.
+    #[test]
+    fn billboards_kept_and_two_sided_in_both_sets() {
+        let Some(game) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else { return };
+        for level in [1, 2] {
+            let path = ts2::campaign::level(level).unwrap().path(&game);
+            let n = ngn::parse(&fs::read(path).unwrap()).unwrap();
+            let specials = ts2::specials::Specials::new(&n);
+            let dynamic: std::collections::HashSet<_> = specials.instances().collect();
+            let sets = level_sets(&n, &specials);
+            let (_, all_near) = scene::level_parts_where(&n, |l, i, _| l == 0 && !dynamic.contains(&(l, i)));
+            let (_, all_far) = scene::level_parts_where(&n, |l, i, _| l > 0 && !dynamic.contains(&(l, i)));
+            assert_eq!(sets.near_bb.len(), all_near.len(), "level {level}: near billboards lost");
+            assert_eq!(sets.far_bb.len(), all_far.len(), "level {level}: far billboards lost");
+            assert!(!sets.two_sided.is_empty() && !sets.far_two_sided.is_empty(), "level {level}: no two-sided materials");
         }
     }
 }

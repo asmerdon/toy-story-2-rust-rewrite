@@ -21,7 +21,8 @@ fn main() {
                 }
             }
             if l.cmpge(lo).all() && h.cmple(hi).all() {
-                println!("L{li}#{ii} special {:?} flags {:#x} pos {:?} bounds {:?}..{:?} {:?}", specials.get(&(li, ii)), inst.flags, inst.pos, l.round(), h.round(), tex);
+                let flat = if layer.meshes.get(inst.mesh as usize).is_some_and(|m| m.materials.iter().any(|x| x.two_sided())) { " two-sided" } else { "" };
+                println!("L{li}#{ii} special {:?} flags {:#x}{flat} mesh {} pos {:?} bounds {:?}..{:?} {:?}", specials.get(&(li, ii)), inst.flags, inst.mesh, inst.pos, l.round(), h.round(), tex);
             }
         }
     }
