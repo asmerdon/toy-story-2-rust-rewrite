@@ -24,7 +24,7 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 | Footsteps, footprint trails, wading slowdown | Ported; **user confirmed all three** |
 | Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
 | Two-sided materials (fences, boards, cut-outs) | From the material bit (mode 8) in both mesh sets; level 1 confirmed. User still sees level 2 pool water drawing over everything; not reproduced in shots (needs their spot) |
-| Front end (title, main menu, level select, results) | Title, menu and map confirmed by the user. Results screen (0x4398B0, scene 0 variant `levelt1.ngn`) ported after normal levels; needs a playtest |
+| Front end | Title, menu and map confirmed by the user. New, needing a playtest: results after normal levels, boss-defeated after boss levels, game over when lives run out (lives and abilities now carry across levels) |
 | Tests | 134 pass with `TS2_GAME_DIR` set; release build clean |
 
 ### Still to do, in order

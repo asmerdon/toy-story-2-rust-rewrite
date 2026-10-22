@@ -2077,6 +2077,11 @@ impl Viewer {
                     self.keys.remove(k);
                 }
                 ShotStep::Play => self.toggle_play(),
+                ShotStep::Boss => {
+                    if let Some(f) = self.front.as_mut() {
+                        f.state.level_done(None);
+                    }
+                }
                 ShotStep::Results(r) => {
                     if let Some(f) = self.front.as_mut() {
                         f.state.random = self.random_table.clone().unwrap_or_default();
@@ -2118,7 +2123,7 @@ impl Viewer {
     fn enter_front_scene(&mut self) {
         let Some(f) = self.front.as_mut() else { return };
         let exe = fs::read(f.game.join("toy2.exe")).ok().and_then(|b| exe::Exe::parse(b).ok());
-        f.sprites = exe.as_ref().map(|e| ts2::hud::sprite_table(e, f.scene.0)).unwrap_or_default();
+        f.sprites = exe.as_ref().map(|e| ts2::hud::sprite_table(e, if f.scene.0 > ts2::campaign::HUB { ts2::campaign::FRONT } else { f.scene.0 })).unwrap_or_default();
         f.track = None;
         match f.state.screen {
             ts2::frontend::Screen::Select => f.state.begin_select(&self.level_lists, self.random_table.clone().unwrap_or_default()),
@@ -2269,7 +2274,7 @@ fn front_batches(f: &Front, ngn: &ngn::Ngn) -> Vec<Batch> {
     let mut out = Vec::new();
     // The picture is drawn blended (fully opaque), not as an opaque batch: the HUD pass draws
     // opaque batches first, writing depth, and the sprites over it would fail the test.
-    if let Some(i) = frame.picture.and_then(|p| named(&format!("bgr{p:02}"))) {
+    if let Some(i) = frame.picture.and_then(|p| named(&format!("bgr{p:02}")).or_else(|| named(&format!("tex{p:02}")))) {
         let c = |x: f32, y: f32| GpuVertex { pos: [x, y, 0.0], uv: [x, y], color: [0xFF, 0x80, 0x80, 0x80] };
         out.push(Batch { texture: Some(i), blend: scene::Blend::Alpha, vertices: vec![c(0.0, 0.0), c(1.0, 0.0), c(1.0, 1.0), c(0.0, 0.0), c(1.0, 1.0), c(0.0, 1.0)] });
     }
@@ -2336,6 +2341,8 @@ enum ShotStep {
     Play,
     /// `results:before,now,coins,abilities`: the front end's results screen with these numbers.
     Results(ts2::frontend::LevelResult),
+    /// `boss`: the boss-defeated screen.
+    Boss,
 }
 
 impl Shot {
@@ -2371,6 +2378,8 @@ impl Shot {
                 if let [before, now, coins, abilities] = v[..] {
                     shot.script.push(ShotStep::Results(ts2::frontend::LevelResult { before: before as u8, now: now as u8, coins, abilities: abilities as u8 }));
                 }
+            } else if w == "boss" {
+                shot.script.push(ShotStep::Boss);
             } else if w == "play" {
                 shot.script.push(ShotStep::Play);
             } else if let Some(c) = w.strip_prefix("cam:") {
@@ -2909,6 +2918,8 @@ mod front_tests {
             (ts2::campaign::HUB, 0, &[0x36, 0x37, 0x39, 0x3A][..], &["tex31"][..]),
             // The results screen.
             (ts2::campaign::FRONT, 1, &[0x4C, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53][..], &["bgr40", "bgr41", "tex31"][..]),
+            // The boss-defeated picture.
+            (ts2::campaign::BOSS_DONE, 0, &[][..], &["tex37"][..]),
         ] {
             let v = load(&ts2::campaign::variant_path(&game, scene, variant).to_string_lossy(), None).unwrap();
             let table = ts2::hud::sprite_table(&exe, scene);

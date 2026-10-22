@@ -153,6 +153,10 @@ impl PlayerStart {
 /// Campaign positions 3 and 6 are swapped; use `crate::campaign` for user-facing selection.
 pub fn level_number(path: &std::path::Path) -> Option<usize> {
     let dir = path.parent()?.file_name()?.to_str()?.to_ascii_lowercase();
+    // The full-screen pictures in `gfx\` (loading, boss defeated) take the front end's sounds.
+    if dir == "gfx" {
+        return Some(0);
+    }
     let nn: usize = dir.strip_prefix("level")?.parse().ok()?;
     // Variants (`levelt1`–`3`, `level1t1`–`3`: see `campaign::variant_path`) are the same level.
     match path.file_stem()?.to_str()?.to_ascii_lowercase().as_str() {

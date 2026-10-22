@@ -21,8 +21,8 @@
 //!   black over 0x17 ticks (0x53CA60).
 //!
 //! Not ported yet: the attract demo after 900 ticks on the title, options, load game, the
-//! movie viewer, the boss victory screen (0x453D90), game over
-//! (0x437B20), the credits, FMVs, and the level select's sound at each level (0x4A3B90).
+//! movie viewer, the credits, FMVs, the pause menu,
+//! the loading pictures (`gfxevelNx`), and the level select's sound at each level (0x4A3B90).
 
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
@@ -137,6 +137,8 @@ pub enum Screen {
     Results,
     /// Out of lives (0x437B20): back to the title, and a new game.
     GameOver,
+    /// A boss beaten (0x453D90).
+    BossDone,
     Quit,
 }
 
@@ -162,6 +164,7 @@ impl Screen {
     pub fn scene(self, t: &Tables) -> usize {
         match self {
             Screen::Title | Screen::Menu | Screen::Results | Screen::GameOver | Screen::Quit => crate::campaign::FRONT,
+            Screen::BossDone => crate::campaign::BOSS_DONE,
             Screen::Select => crate::campaign::HUB,
             Screen::Play(n) => t.order.get(n - 1).copied().unwrap_or(1),
         }
@@ -311,7 +314,26 @@ impl FrontEnd {
                 self.clock = 0x4B0;
                 self.events.push(Event::Music { track: crate::music::GAME_OVER, repeat: false });
             }
+            Screen::BossDone => self.events.push(Event::Music { track: crate::music::LEVEL_DONE, repeat: false }),
             _ => {}
+        }
+    }
+
+    /// 0x453D90, after a boss level: picture 0x25 (`bossdefeated`) and music 0x15, fading in over
+    /// 0x1C ticks; jump plays sound 7 and fades out over 0x1C. Then the level select, or after
+    /// the last level the title (the credits, FMV 0x12 and screen 0xB, aren't ported). Not drawn:
+    /// its blinking prompt, sprite 0x80, past the 128-entry sprite table as we read it.
+    fn boss_done_tick(&mut self, pressed: Pad) {
+        self.clock += 1;
+        if self.leaving > 0 {
+            self.leaving -= 1;
+            if self.leaving == 0 {
+                self.enter(if self.level >= 15 { Screen::Title } else { Screen::Select });
+            }
+        } else if self.clock > 0x1C && pressed.0 & Pad::JUMP != 0 {
+            self.leaving = 0x1C;
+            self.fade.to(0, 0xC);
+            self.events.push(Event::Sound(7));
         }
     }
 
@@ -347,8 +369,7 @@ impl FrontEnd {
     }
 
     /// The level just played ended (0x52B7DC = 1 or 5): a normal level shows how it went
-    /// (`result`), then the level select; a boss level goes straight back to it (its victory
-    /// screen, 0x453D90, isn't ported).
+    /// (`result`), then the level select; a boss level shows its victory screen (0x453D90).
     pub fn level_done(&mut self, result: Option<LevelResult>) {
         match result {
             Some(r) => {
@@ -356,7 +377,7 @@ impl FrontEnd {
                 self.results = Some(Results::new(r, level));
                 self.enter(Screen::Results);
             }
-            None => self.enter(Screen::Select),
+            None => self.enter(Screen::BossDone),
         }
     }
 
@@ -373,6 +394,7 @@ impl FrontEnd {
             Screen::Title => self.title(pressed),
             Screen::Menu => self.menu(pressed),
             Screen::GameOver => self.game_over_tick(pressed),
+            Screen::BossDone => self.boss_done_tick(pressed),
             Screen::Results => {
                 if let Some(r) = self.results.as_mut()
                     && r.tick(pressed, &mut self.fade, &mut self.events, &self.random)
@@ -506,6 +528,7 @@ impl FrontEnd {
                 }
             }
             Screen::GameOver => f.picture = Some(0x29),
+            Screen::BossDone => f.picture = Some(0x25),
             _ => {}
         }
         f

@@ -74,7 +74,15 @@ fn level_select_flies_to_a_level_and_gates_on_tokens() {
     f.progress.tokens[1] = 1;
     f.progress.tokens[2] = 0x80;
     f.first_clear = true;
+    // A boss level: its victory screen, left with jump, then the level select.
     f.level_done(None);
+    assert_eq!(f.screen, Screen::BossDone);
+    for b in [0, Pad::JUMP] {
+        for _ in 0..0x20 {
+            f.tick(Pad(b));
+        }
+    }
+    assert_eq!(f.screen, Screen::Select);
     select(&dir, &mut f);
     assert_eq!(f.select.as_ref().unwrap().level, 3, "the select moves on after a first clear");
     for _ in 0..0x40 {
