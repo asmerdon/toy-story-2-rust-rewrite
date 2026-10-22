@@ -74,11 +74,17 @@ fn level_select_flies_to_a_level_and_gates_on_tokens() {
     f.progress.tokens[1] = 1;
     f.progress.tokens[2] = 0x80;
     f.first_clear = true;
-    // A boss level: its victory screen, left with jump, then the level select.
+    // A boss level: its victory screen, left with jump; "SAVE GAME?" (no); the level select.
     f.level_done(None);
     assert_eq!(f.screen, Screen::BossDone);
     for b in [0, Pad::JUMP] {
         for _ in 0..0x20 {
+            f.tick(Pad(b));
+        }
+    }
+    assert_eq!(f.screen, Screen::SavePrompt);
+    for (b, n) in [(0, 50), (Pad::RIGHT, 1), (0, 1), (Pad::JUMP, 1), (0, 0x36)] {
+        for _ in 0..n {
             f.tick(Pad(b));
         }
     }

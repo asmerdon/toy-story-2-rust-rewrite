@@ -20,6 +20,11 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x453D90 | `BossDefeated` ✔ | `gfx/boss.ngn` (0x4500A0 with level + 0x20), picture 0x25 (tex37), music 0x15; 0x1C fade in, jump: sound 7, 0x1C fade out. Its blinking sprite 0x80 is not drawn |
 | 0x4500A0 | `LoadGfxScene(n)` ✔ | 0 loading, 1–15 `level1a`…`level5c` (loading pictures), 0x10/0x11 congrats, 0x1E bonus, 0x1F gamewin, boss levels + 0x20 boss, −1 film; `.raw` → `.ngn`; 0x44FF50 picks the picture (0x24, 0x25, then 0x28–0x2F, 0x58–0x5F) |
 | 0x437B20 | `GameOver` ✔ | Picture 1 (bgr41 of `levelt1`), music 0x11, 0x4B0 ticks; a button from 0x474 down cuts to 0x18; fade below 0x18; then the title and a new game (0x4A2C20: lives 5, health 0xE) |
+| 0x454020 / 0x453F20 | `SaveAfterLevel` / `LoadFromMenu` ✔ | Map scene variant 3 (flags 0xF8, `level1t3.ngn`); after a level with 0x731F18 set: 0x43A130 then 0x49B9E0(1); from the menu 0x49B9E0(0). Both pack (0x4A2C80) and unpack (0x4A2CC0) the state block 0x52EF90 |
+| 0x43A130 | `SavePrompt` ✔ | "SAVE GAME?" y 0x30, YES/NO y 0x80 (left / right, sound 1; arrow sprite 0x39 at 0x1C0 / 0x20), "jump to select" y 200; jump once faded in: sound 0, 0x35-tick fade; returns yes |
+| 0x49B9E0 | `SaveLoadScreen(after_level)` ✔ | See `frontend::SaveScreen`: options list, load / save slot lists (8, `Toy2%02d.sav`), titles "TOK %d LEV %d" |
+| 0x49B830 | `WriteSave(slot, title)` ✔ | u32 title length, title, 0x188 bytes of 0x52EF90 (slot 99: 0x529B08). See `src/save.rs` for the block |
+| 0x4A2C20 / 0x4A2C80 / 0x4A2CC0 | `NewGameState` / `PackState` / `UnpackState` ✔ | +0x138 lives (new 5), +0x139 level, +0x13A abilities, +0x144 health (new 0xE), +0x13D / +0x13E volumes, +0x147 + id tokens |
 | 0x453CD0 | `FrontScreenWidth` ✔ | Sprite screen 320 × 256 (0x4F7414 / 0x4F7418) for the menus |
 | 0x49EB50 | `ProgressSummary` ✔ | Campaign levels in a row with 0x52F0D7 ≠ 0 (n), tokens in them (5 bits each): (need[n] << 16) + (tokens << 8) + n |
 | 0x49EB20 | `PlayFmvOnce(n, …, force)` | Flag 0x52F0E7[n]; plays movie n + 10 (0x49AB90) |

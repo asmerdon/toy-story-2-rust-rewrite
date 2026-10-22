@@ -139,6 +139,10 @@ pub enum Screen {
     GameOver,
     /// A boss beaten (0x453D90).
     BossDone,
+    /// "SAVE GAME?" after a level (0x43A130).
+    SavePrompt,
+    /// The load and save screens (0x49B9E0).
+    Saves,
     Quit,
 }
 
@@ -155,9 +159,14 @@ pub struct LevelResult {
 
 impl Screen {
     /// The scene's variant (`campaign::variant_path`): the results screen loads scene 0 with
-    /// flags 0x47C, variant 1 (`levelt1.ngn`: picture 40 is `token256`, Slinky's `levcomp`).
+    /// flags 0x47C, variant 1 (`levelt1.ngn`: picture 40 is `token256`, Slinky's `levcomp`); the
+    /// save screens the map with 0xF8, variant 3 (`level1t3.ngn`: picture 40 `save_load256`).
     pub fn variant(self) -> u8 {
-        u8::from(matches!(self, Screen::Results | Screen::GameOver))
+        match self {
+            Screen::Results | Screen::GameOver => 1,
+            Screen::SavePrompt | Screen::Saves => 3,
+            _ => 0,
+        }
     }
 
     /// The internal id of the scene this screen runs in.
@@ -165,6 +174,7 @@ impl Screen {
         match self {
             Screen::Title | Screen::Menu | Screen::Results | Screen::GameOver | Screen::Quit => crate::campaign::FRONT,
             Screen::BossDone => crate::campaign::BOSS_DONE,
+            Screen::SavePrompt | Screen::Saves => crate::campaign::HUB,
             Screen::Select => crate::campaign::HUB,
             Screen::Play(n) => t.order.get(n - 1).copied().unwrap_or(1),
         }
@@ -248,6 +258,13 @@ pub struct FrontEnd {
     pub events: Vec<Event>,
     pub select: Option<Select>,
     pub results: Option<Results>,
+    pub saves: Option<SaveScreen>,
+    /// Where saves are written and read, and the controls a new save starts with (`Toy200.sav`).
+    pub save_dir: std::path::PathBuf,
+    pub defaults: Vec<u8>,
+    /// 0x731F18: something worth saving happened (new tokens, a boss beaten).
+    pub dirty: bool,
+    prompt_yes: bool,
     /// Random bytes (`rand.dat`) for the results screen's sparkles.
     pub random: Vec<u8>,
     fade: Fade,
@@ -276,6 +293,11 @@ impl FrontEnd {
             events: Vec::new(),
             select: None,
             results: None,
+            saves: None,
+            save_dir: crate::save::dir(),
+            defaults: Vec::new(),
+            dirty: false,
+            prompt_yes: true,
             random: Vec::new(),
             fade: Fade::default(),
             clock: 0,
@@ -315,6 +337,13 @@ impl FrontEnd {
                 self.events.push(Event::Music { track: crate::music::GAME_OVER, repeat: false });
             }
             Screen::BossDone => self.events.push(Event::Music { track: crate::music::LEVEL_DONE, repeat: false }),
+            Screen::SavePrompt => {
+                self.clock = 4000;
+                self.prompt_yes = true;
+                self.fade.speed = 6;
+                self.events.push(Event::Music { track: crate::music::MENU, repeat: true });
+            }
+            Screen::Saves => self.fade.speed = 6,
             _ => {}
         }
     }
@@ -328,12 +357,90 @@ impl FrontEnd {
         if self.leaving > 0 {
             self.leaving -= 1;
             if self.leaving == 0 {
-                self.enter(if self.level >= 15 { Screen::Title } else { Screen::Select });
+                self.dirty = true;
+                self.after_level();
             }
         } else if self.clock > 0x1C && pressed.0 & Pad::JUMP != 0 {
             self.leaving = 0x1C;
             self.fade.to(0, 0xC);
             self.events.push(Event::Sound(7));
+        }
+    }
+
+    /// After the results or a boss's screen: if something worth saving happened (0x731F18),
+    /// "SAVE GAME?" (0x454020); then the level select, or the title after the last level.
+    fn after_level(&mut self) {
+        if std::mem::take(&mut self.dirty) {
+            self.enter(Screen::SavePrompt);
+        } else {
+            self.leave_saving();
+        }
+    }
+
+    fn leave_saving(&mut self) {
+        self.enter(if self.level >= 15 { Screen::Title } else { Screen::Select });
+    }
+
+    /// The load and save screens (0x49B9E0): from the main menu (0x453F20) at the "load / save
+    /// options" list, or after a level (0x454020) straight to the save slots.
+    fn open_saves(&mut self, after_level: bool) {
+        self.saves = Some(SaveScreen::new(&self.save_dir, after_level));
+        self.enter(Screen::Saves);
+    }
+
+    /// 0x43A130: "SAVE GAME?", yes or no by left / right (arrow sprite 0x39), jump picks once
+    /// the screen has faded in (sound 0), fading out over 0x35 ticks.
+    fn prompt_tick(&mut self, pressed: Pad) {
+        if self.clock > 1000 {
+            if pressed.0 & Pad::LEFT != 0 && !self.prompt_yes {
+                self.prompt_yes = true;
+                self.events.push(Event::Sound(1));
+            }
+            if pressed.0 & Pad::RIGHT != 0 && self.prompt_yes {
+                self.prompt_yes = false;
+                self.events.push(Event::Sound(1));
+            }
+            if pressed.0 & Pad::JUMP != 0 && self.fade.level == 0x80 {
+                self.fade.to(0, 6);
+                self.clock = 0x35;
+                self.events.push(Event::Sound(0));
+            }
+        } else if self.clock > 0 {
+            self.clock -= 1;
+            if self.clock == 0 {
+                if self.prompt_yes {
+                    self.open_saves(true);
+                } else {
+                    self.leave_saving();
+                }
+            }
+        }
+    }
+
+    fn draw_prompt(&self, f: &mut Frame, sprites: &[Option<SpriteDef>]) {
+        f.picture = Some(0x28);
+        let (x, cell) = if self.prompt_yes { (0x1C0, 1) } else { (0x20, 0) };
+        put(&mut f.quads, sprites, 512.0, x, 0x70, 0x39, cell, [0x80; 3], 0xFF, 0x1000, 0x1000);
+        font_text(&mut f.glyphs, 200, 0x100, "jump to select");
+        font_text(&mut f.glyphs, 0x30, 0x100, "SAVE GAME?");
+        font_text(&mut f.glyphs, 0x80, 0x100, if self.prompt_yes { "YES" } else { "NO" });
+    }
+
+    fn saves_tick(&mut self, pressed: Pad) {
+        let Some(s) = self.saves.as_mut() else { return };
+        let Some(out) = s.tick(pressed, &mut self.fade, &mut self.events, &self.progress, self.level, &self.tables, &self.defaults) else { return };
+        let after_level = s.after_level;
+        self.saves = None;
+        if let Some(save) = out {
+            self.progress = save.progress();
+            self.level = save.level() + 1;
+            self.shown = self.level;
+            self.started = true;
+        }
+        if after_level {
+            self.leave_saving();
+        } else {
+            self.enter(Screen::Menu);
         }
     }
 
@@ -373,6 +480,7 @@ impl FrontEnd {
     pub fn level_done(&mut self, result: Option<LevelResult>) {
         match result {
             Some(r) => {
+                self.dirty = r.now & !r.before & 0x1F != 0;
                 let level = self.level.saturating_sub(1);
                 self.results = Some(Results::new(r, level));
                 self.enter(Screen::Results);
@@ -395,12 +503,14 @@ impl FrontEnd {
             Screen::Menu => self.menu(pressed),
             Screen::GameOver => self.game_over_tick(pressed),
             Screen::BossDone => self.boss_done_tick(pressed),
+            Screen::SavePrompt => self.prompt_tick(pressed),
+            Screen::Saves => self.saves_tick(pressed),
             Screen::Results => {
                 if let Some(r) = self.results.as_mut()
                     && r.tick(pressed, &mut self.fade, &mut self.events, &self.random)
                 {
                     self.results = None;
-                    self.enter(Screen::Select);
+                    self.after_level();
                 }
             }
             Screen::Select => {
@@ -465,6 +575,7 @@ impl FrontEnd {
                 match self.choice {
                     2 => self.enter(Screen::Select),
                     // Options, load game and the movie viewer aren't ported: back to the menu.
+                    4 => self.open_saves(false),
                     _ => self.enter(Screen::Menu),
                 }
             }
@@ -529,6 +640,12 @@ impl FrontEnd {
             }
             Screen::GameOver => f.picture = Some(0x29),
             Screen::BossDone => f.picture = Some(0x25),
+            Screen::SavePrompt => self.draw_prompt(&mut f, sprites),
+            Screen::Saves => {
+                if let Some(s) = &self.saves {
+                    s.draw(&mut f);
+                }
+            }
             _ => {}
         }
         f
@@ -1129,6 +1246,152 @@ impl Results {
     }
 }
 
+/// The load and save screens (0x49B9E0), over picture 40 (`save_load256`), in the 512-wide
+/// font of 0x49D390 centred on x 0x100.
+///
+/// - Options (from the main menu): "load / save options" (y 0x19), then "load game",
+///   "save game", "main menu" (y 0x4B, 100, 0x7D); up / down (sound 1), jump (sound 0), the
+///   chosen line blinking (hidden 10 ticks in 20). Cancel or "main menu": sound 2, out.
+/// - Slots: "select slot to load" / "select slot to save" (y 3), slots 1–8 at y 0x21 + 0x17k
+///   ("empty slot", or the save's title), the prompt at y 0xDC ("jump:select  cancel:menu",
+///   or after a level "jump:save  cancel:continue"). Jump saves ("TOK %d LEV %d") or loads a
+///   saved slot, then out; cancel goes back to the options, or after a level, out.
+/// - Leaving fades to black at speed 6; the screen ends once the fade is done.
+///
+/// Approximated: the slots' one-pixel cosine wobble is left out.
+pub struct SaveScreen {
+    /// 0 options, 1 load slots, 2 save slots, 3 leaving (0x49B9E0's local_440).
+    mode: u8,
+    pub after_level: bool,
+    option: i32,
+    slot: usize,
+    blink: i32,
+    cooldown: i32,
+    titles: Vec<Option<String>>,
+    dir: std::path::PathBuf,
+    loaded: Option<crate::save::Save>,
+}
+
+impl SaveScreen {
+    fn new(dir: &std::path::Path, after_level: bool) -> SaveScreen {
+        let mut s = SaveScreen { mode: if after_level { 2 } else { 0 }, after_level, option: 0, slot: 0, blink: 0x14, cooldown: 0, titles: Vec::new(), dir: dir.to_path_buf(), loaded: None };
+        s.read_titles();
+        s
+    }
+
+    fn read_titles(&mut self) {
+        self.titles = (1..=crate::save::SLOTS).map(|k| crate::save::read(&self.dir, k).map(|s| s.title)).collect();
+    }
+
+    fn leave(&mut self, fade: &mut Fade) {
+        self.mode = 3;
+        fade.to(0, 6);
+    }
+
+    /// One tick; once over, `Some(the save loaded, if any)`.
+    #[allow(clippy::too_many_arguments)]
+    fn tick(&mut self, pressed: Pad, fade: &mut Fade, events: &mut Vec<Event>, p: &Progress, level: usize, t: &Tables, defaults: &[u8]) -> Option<Option<crate::save::Save>> {
+        self.blink -= 1;
+        if self.blink < 0 {
+            self.blink += 0x14;
+        }
+        let ready = self.cooldown < 1;
+        self.cooldown = (self.cooldown - 1).max(0);
+        let has = |b: u32| pressed.0 & b != 0;
+        match self.mode {
+            0 if ready => {
+                if has(Pad::UP) && self.option > 0 {
+                    self.option -= 1;
+                    events.push(Event::Sound(1));
+                }
+                if has(Pad::DOWN) && self.option < 2 {
+                    self.option += 1;
+                    events.push(Event::Sound(1));
+                }
+                if has(Pad::JUMP) {
+                    if self.option == 2 {
+                        events.push(Event::Sound(2));
+                        self.leave(fade);
+                    } else {
+                        self.mode = self.option as u8 + 1;
+                        self.slot = 0;
+                        self.cooldown = 0x1E;
+                        events.push(Event::Sound(0));
+                    }
+                } else if has(Pad::CANCEL) {
+                    events.push(Event::Sound(2));
+                    self.leave(fade);
+                }
+            }
+            1 | 2 if ready => {
+                if has(Pad::UP) && self.slot > 0 {
+                    self.slot -= 1;
+                    events.push(Event::Sound(1));
+                }
+                if has(Pad::DOWN) && self.slot < crate::save::SLOTS - 1 {
+                    self.slot += 1;
+                    events.push(Event::Sound(1));
+                }
+                if has(Pad::JUMP) {
+                    let n = self.slot + 1;
+                    if self.mode == 2 {
+                        let mut save = crate::save::read(&self.dir, n).unwrap_or_else(|| crate::save::Save::new_game(defaults));
+                        save.store(p, level.saturating_sub(1), t);
+                        if let Err(e) = crate::save::write(&self.dir, n, &save) {
+                            eprintln!("cannot save to slot {n}: {e}");
+                        }
+                        self.read_titles();
+                        events.push(Event::Sound(0));
+                        self.leave(fade);
+                    } else if let Some(save) = crate::save::read(&self.dir, n) {
+                        self.loaded = Some(save);
+                        events.push(Event::Sound(0));
+                        self.leave(fade);
+                    }
+                } else if has(Pad::CANCEL) {
+                    events.push(Event::Sound(2));
+                    if self.after_level {
+                        self.leave(fade);
+                    } else {
+                        self.mode = 0;
+                        self.cooldown = 0x1E;
+                    }
+                }
+            }
+            3 if fade.level == 0 => return Some(self.loaded.take()),
+            _ => {}
+        }
+        None
+    }
+
+    fn draw(&self, f: &mut Frame) {
+        f.picture = Some(0x28);
+        let g = &mut f.glyphs;
+        let shown = self.blink >= 10;
+        match self.mode {
+            0 => {
+                font_text(g, 0x19, 0x100, "load / save options");
+                for (k, (y, s)) in [(0x4B, "load game"), (100, "save game"), (0x7D, "main menu")].into_iter().enumerate() {
+                    if k as i32 != self.option || shown {
+                        font_text(g, y, 0x100, s);
+                    }
+                }
+            }
+            1 | 2 => {
+                font_text(g, 3, 0x100, if self.mode == 1 { "select slot to load" } else { "select slot to save" });
+                for (k, title) in self.titles.iter().enumerate() {
+                    if k != self.slot || shown {
+                        font_text(g, 0x21 + 0x17 * k as i32, 0x100, title.as_deref().unwrap_or("empty slot"));
+                    }
+                }
+                let prompt = if self.after_level { "jump:save  cancel:continue" } else { "jump:select  cancel:menu" };
+                font_text(g, self.titles.len() as i32 * 0x19 + 0x1C, 0x100, prompt);
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,12 +1461,12 @@ mod tests {
         assert_eq!(r.shown, 12);
         assert_eq!(f.events.iter().filter(|e| **e == Event::Sound(1)).count(), 2 + 12);
         assert_eq!(f.screen, Screen::Results);
-        // Jump, once it's all counted, leaves: a fade, then the level select.
+        // Jump, once it's all counted, leaves: a fade, then (new tokens) "SAVE GAME?".
         f.tick(Pad(Pad::JUMP));
         for _ in 0..0x18 {
             f.tick(Pad(0));
         }
-        assert_eq!(f.screen, Screen::Select);
+        assert_eq!(f.screen, Screen::SavePrompt);
     }
 
     #[test]
@@ -1229,6 +1492,62 @@ mod tests {
         assert_eq!(f.screen, Screen::Title);
         assert_eq!(f.progress, Progress::default());
         assert!(!f.started);
+    }
+
+    #[test]
+    fn save_after_a_level_then_load_from_the_menu() {
+        let dir = std::env::temp_dir().join(format!("ts2-saves-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut f = FrontEnd::new(tables());
+        f.save_dir = dir.clone();
+        let run = |f: &mut FrontEnd, pad: u32, n: usize| {
+            for _ in 0..n {
+                f.tick(Pad(pad));
+            }
+        };
+        // Level 2 done with a new token: the results, then "SAVE GAME?" (yes), slot 3.
+        f.level = 2;
+        f.progress.tokens[1] = 1;
+        f.progress.tokens[2] = 4;
+        f.level_done(Some(LevelResult { before: 0, now: 4, coins: 0, abilities: 0 }));
+        run(&mut f, 0, 320);
+        run(&mut f, Pad::JUMP, 1);
+        run(&mut f, 0, 0x18);
+        assert_eq!(f.screen, Screen::SavePrompt);
+        // Jump counts once it has faded in (3 a tick).
+        run(&mut f, 0, 50);
+        run(&mut f, Pad::JUMP, 1);
+        run(&mut f, 0, 0x36);
+        assert_eq!(f.screen, Screen::Saves);
+        run(&mut f, 0, 40);
+        for _ in 0..2 {
+            run(&mut f, Pad::DOWN, 1);
+            run(&mut f, 0, 1);
+        }
+        run(&mut f, Pad::JUMP, 1);
+        run(&mut f, 0, 60);
+        assert_eq!(f.screen, Screen::Select);
+        let saved = crate::save::read(&dir, 3).unwrap();
+        assert_eq!(saved.title, "TOK 2 LEV 2");
+        assert_eq!(saved.level(), 1);
+
+        // A new session: main menu → load game → load game → slot 3.
+        let mut f = FrontEnd::new(tables());
+        f.save_dir = dir.clone();
+        f.open_saves(false);
+        run(&mut f, 0, 40);
+        run(&mut f, Pad::JUMP, 1);
+        run(&mut f, 0, 40);
+        for _ in 0..2 {
+            run(&mut f, Pad::DOWN, 1);
+            run(&mut f, 0, 1);
+        }
+        run(&mut f, Pad::JUMP, 1);
+        run(&mut f, 0, 60);
+        assert_eq!(f.screen, Screen::Menu);
+        assert!(f.started, "continue game");
+        assert_eq!((f.progress.tokens[1], f.progress.tokens[2], f.level), (1, 4, 2));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

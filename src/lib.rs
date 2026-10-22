@@ -39,6 +39,7 @@ pub mod png;
 pub mod pickups;
 pub mod rewards;
 pub mod script;
+pub mod save;
 pub mod scene;
 pub mod specials;
 

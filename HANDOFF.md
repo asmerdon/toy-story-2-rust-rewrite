@@ -24,22 +24,22 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 | Footsteps, footprint trails, wading slowdown | Ported; **user confirmed all three** |
 | Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
 | Two-sided materials (fences, boards, cut-outs) | From the material bit (mode 8) in both mesh sets; level 1 confirmed. User still sees level 2 pool water drawing over everything; not reproduced in shots (needs their spot) |
-| Front end | Title, menu and map confirmed by the user. New, needing a playtest: results after normal levels, boss-defeated after boss levels, game over when lives run out (lives and abilities now carry across levels) |
-| Tests | 134 pass with `TS2_GAME_DIR` set; release build clean |
+| Front end | Title, menu and map confirmed by the user. New, needing a playtest: results after normal levels, boss-defeated after boss levels, game over when lives run out (lives and abilities now carry across levels), "SAVE GAME?" (Slinky) and the load / save screens |
+| Tests | 138 pass with `TS2_GAME_DIR` set; release build clean |
 
 ### Still to do, in order
 
 1. **User re-tests** the paint jingles, then the claw machine, boots and hook (paint, fence
    and level 1 confirmed 2026-10-21). Fix what they report.
-2. **Front end, rest of it:** title, main menu and level select are done (0x49D910's flow is
-   in functions.md). Left: the results screen (0x4398B0, after a normal level), boss victory
-   (0x453D90), game over when lives run out (0x437B20; the viewer respawns forever), the
-   pause menu (Escape quits to the menu for now), options (0x4371B0), load game (0x453F20),
-   the movie viewer (0x453FA0), credits (0x43A380), logos (0x438520), the attract demo, and
-   the level select's per-level sound (0x4A3B90). The viewer switches scenes by rebuilding
-   itself with `load()` and `attach()` on the same window.
-3. **Saves:** `Toy2xx.sav` (407 bytes, not decoded yet): tokens per level, abilities
-   (0x52F2D8), lives. Needed for the front end's progress.
+2. **Front end, rest of it:** done: title, menu, level select, results, boss defeated, game
+   over, save prompt and the load / save screens (0x49D910's flow is in functions.md;
+   scenes and variants in `campaign::variant_path`). Left: the pause menu (Escape quits to
+   the menu for now), options (0x4371B0, scene 0 variant 2), the movie viewer (0x453FA0),
+   credits (0x43A380, variant 3), logos (0x438520), loading pictures (`gfx\levelNx`), the
+   attract demo, and the level select's per-level sound (0x4A3B90). The viewer switches
+   scenes by rebuilding itself with `load()` and `attach()` on the same window.
+3. **Saves:** done (`src/save.rs`, the original's format). Not kept yet: health between
+   levels, the movies-seen and boss flags (+0x157 / +0x158, kept as loaded), volumes.
 4. **Music changes:** boss, race and completion themes (only the level theme loops now;
    `src/music.rs`).
 5. **FMV playback:** 22 MPEG-1 files on the disc named `.dll` (see `docs/re/asset-audit.md`;

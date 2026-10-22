@@ -80,7 +80,7 @@ campaign level. It reports script availability separately from asset availabilit
 
 - Levels 2–10 are ported but not yet playtested, so expect bugs there.
 - Level 4's paint puzzle and level 8's claw machine are ported and simulation-tested. A few small gadgets are still skipped (level 8's electric arcs and cannon, drips and lights).
-- The front end has the title, main menu and level select (with token gates and progress while the game runs). Still missing: saves, options, load game, the movie viewer, the results, boss-victory and game-over screens, the pause menu, the attract demo and FMVs.
+- The front end has the title, main menu, level select, results, boss-defeated and game-over screens, and saving and loading (eight slots). Still missing: options, the movie viewer, the pause menu, the credits, the attract demo and FMVs.
 - Original stereo level music loops in the viewer; **M** mutes/unmutes music independently of sound effects. Set `TS2_CD_DIR` to the extracted disc folder containing `audio/`, or put that folder path in local ignored `ts2-media.txt` (already configured on this machine). Track selection follows the original executable, including campaign levels 3/6. Boss/race theme transitions and FMV playback remain to do. The disc contains 23 WAVs and 22 MPEG videos named `.dll`; see `docs/re/asset-audit.md`.
 - The rocket boots, hover boots and grappling hook are ported but not playtested. To use the hook: pick up hooks, go into first person (Q), lock on to a hook point (X), and fire.
 - Levels 11 (Al's Penthouse), 13 (Airport Infiltration), 14 (Tarmac Trouble) and 15 (Prospector Showdown) have their scripts ported and simulation-tested, but not playtested. Every campaign level now has its script.
@@ -95,6 +95,7 @@ A few things are deliberately different, mostly to fix what looked wrong when dr
 - The PS1 background picture is drawn behind windows and the sky (the PC version only used two colours from it).
 - Faces stored pure black in otherwise lit objects take the object's light, and fully transparent-textured glass (the kitchen jars) is drawn as green glass.
 - Level 1's garage drill bits move and hurt, matched to the original by eye.
+- Saves go to `%APPDATA%/ts2-rust` (or `TS2_SAVE_DIR`) instead of beside the game, which is usually read-only. They use the original's `Toy2NN.sav` format, so saves copied between the two work.
 
 ## Requirements
 

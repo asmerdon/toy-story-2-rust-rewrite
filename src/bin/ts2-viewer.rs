@@ -2439,7 +2439,10 @@ fn main() {
             eprintln!("toy2.exe not found in {}", game.display());
             process::exit(1);
         });
-        let front = ts2::frontend::FrontEnd::new(ts2::frontend::Tables::read(&exe));
+        let mut front = ts2::frontend::FrontEnd::new(ts2::frontend::Tables::read(&exe));
+        // New saves start with the controls and settings of the game's slot 0.
+        front.defaults = fs::read(game.join("data").join("Toy200.sav")).ok().and_then(|b| ts2::save::Save::parse(&b)).map(|s| s.state).unwrap_or_default();
+        println!("saves: {}", front.save_dir.display());
         let path = ts2::campaign::scene_path(&game, ts2::campaign::FRONT);
         let mut viewer = load(&path.to_string_lossy(), None).unwrap_or_else(|e| {
             eprintln!("{e}");
