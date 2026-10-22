@@ -21,8 +21,8 @@
 //!   black over 0x17 ticks (0x53CA60).
 //!
 //! Not ported yet: the attract demo after 900 ticks on the title, options, load game, the
-//! movie viewer, the credits, FMVs, the pause menu,
-//! the loading pictures (`gfxevelNx`), and the level select's sound at each level (0x4A3B90).
+//! movie viewer, the credits, FMVs, the pause menu, the loading pictures (`gfx\levelNx`), and
+//! the level select's sound at each level (0x4A3B90).
 
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
