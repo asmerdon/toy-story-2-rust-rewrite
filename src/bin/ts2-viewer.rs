@@ -409,6 +409,7 @@ struct Viewer {
     /// Escape in a level, and the level's end, for the front end to act on.
     quit_level: bool,
     level_ended: bool,
+    out_of_lives: bool,
 }
 
 /// The front end and what it keeps across scene loads.
@@ -855,6 +856,12 @@ impl Viewer {
         }
         if std::mem::take(&mut self.level_ended) {
             self.finish_level(false);
+        }
+        if std::mem::take(&mut self.out_of_lives)
+            && let Some(f) = self.front.as_mut()
+        {
+            f.state.game_over();
+            self.player = None;
         }
         self.front_update(dt);
         let fwd = self.cam.forward();
@@ -1314,7 +1321,10 @@ impl Viewer {
                 }
             }
             // Death (0x52B7DC = 2): after the countdown, back at the start with a life fewer.
-            if player.health < 0 && player.dying == 0 {
+            if player.health < 0 && player.dying == 0 && player.lives == 0 && self.front.is_some() {
+                // No lives left: game over (the front end takes it from here).
+                self.out_of_lives = true;
+            } else if player.health < 0 && player.dying == 0 {
                 let (at, facing) = match self.start {
                     Some(s) => {
                         let g = Vec3::from(s.pos);
@@ -2112,7 +2122,16 @@ impl Viewer {
         f.track = None;
         match f.state.screen {
             ts2::frontend::Screen::Select => f.state.begin_select(&self.level_lists, self.random_table.clone().unwrap_or_default()),
-            ts2::frontend::Screen::Play(_) => self.toggle_play(),
+            ts2::frontend::Screen::Play(_) => {
+                let (lives, abilities) = (f.state.progress.lives, f.state.progress.abilities);
+                self.toggle_play();
+                if let Some(p) = self.player.as_mut() {
+                    p.lives = lives;
+                }
+                if let Some(l) = self.script.as_mut() {
+                    l.abilities |= abilities;
+                }
+            }
             _ => {}
         }
     }
@@ -2216,6 +2235,13 @@ impl Viewer {
         }
         let before = f.state.progress.tokens[id];
         f.state.progress.tokens[id] |= bits;
+        // Lives and abilities are the game's, not the level's: they carry on.
+        if let Some(p) = &self.player {
+            f.state.progress.lives = p.lives;
+        }
+        if let Some(l) = &self.script {
+            f.state.progress.abilities = l.abilities;
+        }
         if quit {
             f.state.level_quit();
         } else {
@@ -2705,6 +2731,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         front: None,
         level_lists,
         quit_level: false,
+        out_of_lives: false,
         level_ended: false,
     };
     // The first-person helmet and arms only show in first person.
@@ -2881,7 +2908,7 @@ mod front_tests {
             (ts2::campaign::FRONT, 0, &[0x32, 0x3E][..], &["bgr40", "bgr44"][..]),
             (ts2::campaign::HUB, 0, &[0x36, 0x37, 0x39, 0x3A][..], &["tex31"][..]),
             // The results screen.
-            (ts2::campaign::FRONT, 1, &[0x4C, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53][..], &["bgr40", "tex31"][..]),
+            (ts2::campaign::FRONT, 1, &[0x4C, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53][..], &["bgr40", "bgr41", "tex31"][..]),
         ] {
             let v = load(&ts2::campaign::variant_path(&game, scene, variant).to_string_lossy(), None).unwrap();
             let table = ts2::hud::sprite_table(&exe, scene);

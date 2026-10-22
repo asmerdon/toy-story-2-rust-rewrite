@@ -74,11 +74,15 @@ impl Tables {
 pub struct Progress {
     /// 0x52F0D7[internal id]: collected tokens (bits 0–4); 0x80 once a boss is beaten.
     pub tokens: [u8; 17],
+    /// Lives (0x52F39A) and abilities (0x52F2D8), carried from level to level.
+    pub lives: i32,
+    pub abilities: u8,
 }
 
 impl Default for Progress {
+    /// A new game (0x4A2C20): five lives, nothing done.
     fn default() -> Progress {
-        Progress { tokens: [0; 17] }
+        Progress { tokens: [0; 17], lives: 5, abilities: 0 }
     }
 }
 
@@ -131,6 +135,8 @@ pub enum Screen {
     Play(usize),
     /// How the level went (0x4398B0), after a normal level.
     Results,
+    /// Out of lives (0x437B20): back to the title, and a new game.
+    GameOver,
     Quit,
 }
 
@@ -149,13 +155,13 @@ impl Screen {
     /// The scene's variant (`campaign::variant_path`): the results screen loads scene 0 with
     /// flags 0x47C, variant 1 (`levelt1.ngn`: picture 40 is `token256`, Slinky's `levcomp`).
     pub fn variant(self) -> u8 {
-        u8::from(self == Screen::Results)
+        u8::from(matches!(self, Screen::Results | Screen::GameOver))
     }
 
     /// The internal id of the scene this screen runs in.
     pub fn scene(self, t: &Tables) -> usize {
         match self {
-            Screen::Title | Screen::Menu | Screen::Results | Screen::Quit => crate::campaign::FRONT,
+            Screen::Title | Screen::Menu | Screen::Results | Screen::GameOver | Screen::Quit => crate::campaign::FRONT,
             Screen::Select => crate::campaign::HUB,
             Screen::Play(n) => t.order.get(n - 1).copied().unwrap_or(1),
         }
@@ -301,7 +307,35 @@ impl FrontEnd {
                 self.fade.speed = 6;
                 self.events.push(Event::Music { track: crate::music::LEVEL_DONE, repeat: false });
             }
+            Screen::GameOver => {
+                self.clock = 0x4B0;
+                self.events.push(Event::Music { track: crate::music::GAME_OVER, repeat: false });
+            }
             _ => {}
+        }
+    }
+
+    /// Buzz died with no lives left (0x52B7DC = 2, 0x52F39A = 0): the game-over screen.
+    pub fn game_over(&mut self) {
+        self.enter(Screen::GameOver);
+    }
+
+    /// 0x437B20: picture 1 (`game_over256`) for 0x4B0 ticks, or until a button after the first
+    /// 60; it fades over the last 0x18. Then the title, and a new game (0x4A2C20).
+    fn game_over_tick(&mut self, pressed: Pad) {
+        self.clock = (self.clock - 1).max(0);
+        if pressed.0 & (Pad::JUMP | Pad::CANCEL) != 0 && (0x18..0x474).contains(&self.clock) {
+            self.clock = 0x18;
+        }
+        if self.clock < 0x18 && self.fade.target != 0 {
+            self.fade.to(0, 0xC);
+        }
+        if self.clock == 0 {
+            self.progress = Progress::default();
+            self.started = false;
+            self.level = 1;
+            self.shown = 0;
+            self.enter(Screen::Title);
         }
     }
 
@@ -338,6 +372,7 @@ impl FrontEnd {
         match self.screen {
             Screen::Title => self.title(pressed),
             Screen::Menu => self.menu(pressed),
+            Screen::GameOver => self.game_over_tick(pressed),
             Screen::Results => {
                 if let Some(r) = self.results.as_mut()
                     && r.tick(pressed, &mut self.fade, &mut self.events, &self.random)
@@ -470,6 +505,7 @@ impl FrontEnd {
                     r.draw(&mut f, sprites);
                 }
             }
+            Screen::GameOver => f.picture = Some(0x29),
             _ => {}
         }
         f
@@ -1145,6 +1181,31 @@ mod tests {
             f.tick(Pad(0));
         }
         assert_eq!(f.screen, Screen::Select);
+    }
+
+    #[test]
+    fn game_over_returns_to_the_title_with_a_new_game() {
+        let mut f = FrontEnd::new(tables());
+        f.progress.tokens[1] = 3;
+        f.progress.lives = 0;
+        f.started = true;
+        f.game_over();
+        assert_eq!((f.screen, f.screen.variant()), (Screen::GameOver, 1));
+        assert_eq!(f.frame(&[]).picture, Some(0x29));
+        // A press in the first 60 ticks is ignored; after, it cuts to the fade.
+        f.tick(Pad(Pad::JUMP));
+        f.tick(Pad(0));
+        for _ in 0..100 {
+            f.tick(Pad(0));
+        }
+        assert_eq!(f.screen, Screen::GameOver);
+        f.tick(Pad(Pad::JUMP));
+        for _ in 0..0x18 {
+            f.tick(Pad(0));
+        }
+        assert_eq!(f.screen, Screen::Title);
+        assert_eq!(f.progress, Progress::default());
+        assert!(!f.started);
     }
 
     #[test]
