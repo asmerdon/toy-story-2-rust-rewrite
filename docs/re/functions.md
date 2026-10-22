@@ -26,6 +26,7 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x49B830 | `WriteSave(slot, title)` ✔ | u32 title length, title, 0x188 bytes of 0x52EF90 (slot 99: 0x529B08). See `src/save.rs` for the block |
 | 0x4A2C20 / 0x4A2C80 / 0x4A2CC0 | `NewGameState` / `PackState` / `UnpackState` ✔ | +0x138 lives (new 5), +0x139 level, +0x13A abilities, +0x144 health (new 0xE), +0x13D / +0x13E volumes, +0x147 + id tokens |
 | 0x49EAC0 | `LevelMusic` ✔ | Each frame from the level scripts: HUD element 7 timer (0x52C832, boss bar) → track 0xF; element 6 (0x52C830, laps) with 0x52F2F8 ≥ 2 → 0x10; else the level (0x52AD8A); 0x47D880 only on a change (0x559C68) |
+| 0x438520 | `Still(n)` ✔ | Picture n (screen 10: 2 trademarks, 3 rating) for 600 ticks; a button below 300 (600 after the first boot) cuts to 0x18; fade below 0x18 |
 | 0x453CD0 | `FrontScreenWidth` ✔ | Sprite screen 320 × 256 (0x4F7414 / 0x4F7418) for the menus |
 | 0x49EB50 | `ProgressSummary` ✔ | Campaign levels in a row with 0x52F0D7 ≠ 0 (n), tokens in them (5 bits each): (need[n] << 16) + (tokens << 8) + n |
 | 0x49EB20 | `PlayFmvOnce(n, …, force)` ✔ | Flag 0x52F0E7[n] (save +0x157 + n; n = level doubles as 0x52F0E8 "boss beaten"); plays movie n + 10 (0x49AB90). Called: startup n 0 (after movies 2, 0, 1), before a normal level n = level (level 12: 0x10), a boss beaten first n = level (forced), level 15 then 0x12, all 50 tokens 0x11 |

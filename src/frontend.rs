@@ -20,7 +20,7 @@
 //!   Screens start black, fade in at speed 0xC (the level select 6), and leave by fading to
 //!   black over 0x17 ticks (0x53CA60).
 //!
-//! Not ported yet: the attract demo after 900 ticks on the title, options, load game, the
+//! Not ported yet: the attract demo after 900 ticks on the title, options, the
 //! movie viewer, the credits, FMVs, the pause menu, the loading pictures (`gfx\levelNx`), and
 //! the level select's sound at each level (0x4A3B90).
 
@@ -130,6 +130,8 @@ impl Pad {
 /// Where the front end is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    /// A still at startup (0x438520): picture 2 (the trademarks) or 3 (the rating).
+    Logo(u8),
     Title,
     Menu,
     Select,
@@ -174,7 +176,7 @@ impl Screen {
     /// The internal id of the scene this screen runs in.
     pub fn scene(self, t: &Tables) -> usize {
         match self {
-            Screen::Title | Screen::Menu | Screen::Results | Screen::GameOver | Screen::Quit => crate::campaign::FRONT,
+            Screen::Logo(_) | Screen::Title | Screen::Menu | Screen::Results | Screen::GameOver | Screen::Quit => crate::campaign::FRONT,
             Screen::BossDone => crate::campaign::BOSS_DONE,
             Screen::SavePrompt | Screen::Saves => crate::campaign::HUB,
             Screen::Select => crate::campaign::HUB,
@@ -311,10 +313,8 @@ impl FrontEnd {
             arrows: 0x78,
             prev: Pad::default(),
         };
-        // The logos (movies 2, 0, 1), then the trailer (0x49EB20(0)).
-        f.events.extend([Event::Movie(2), Event::Movie(0), Event::Movie(1)]);
-        f.movie_once(0, true);
-        f.enter(Screen::Title);
+        // First the legal notice and rating (screen 10: pictures 2 and 3).
+        f.enter(Screen::Logo(2));
         f
     }
 
@@ -467,6 +467,31 @@ impl FrontEnd {
         }
     }
 
+    /// 0x438520: a still for 600 ticks; a button from 300 down (the first time) cuts to the
+    /// last 0x18, which fade out. After picture 3: the logo movies (2, 0, 1) and the trailer
+    /// (0x49EB20(0)), then the title.
+    fn logo_tick(&mut self, n: u8, pressed: Pad) {
+        if self.clock == 0 {
+            self.clock = 600;
+        }
+        self.clock -= 1;
+        if pressed.0 & (Pad::JUMP | Pad::CANCEL) != 0 && (0x18..300).contains(&self.clock) {
+            self.clock = 0x18;
+        }
+        if self.clock < 0x18 && self.fade.target != 0 {
+            self.fade.to(0, 0xC);
+        }
+        if self.clock == 0 {
+            if n == 2 {
+                self.enter(Screen::Logo(3));
+            } else {
+                self.events.extend([Event::Movie(2), Event::Movie(0), Event::Movie(1)]);
+                self.movie_once(0, true);
+                self.enter(Screen::Title);
+            }
+        }
+    }
+
     /// Buzz died with no lives left (0x52B7DC = 2, 0x52F39A = 0): the game-over screen.
     pub fn game_over(&mut self) {
         self.enter(Screen::GameOver);
@@ -522,6 +547,7 @@ impl FrontEnd {
         let pressed = Pad(pad.0 & !self.prev.0);
         self.fade.step();
         match self.screen {
+            Screen::Logo(n) => self.logo_tick(n, pressed),
             Screen::Title => self.title(pressed),
             Screen::Menu => self.menu(pressed),
             Screen::GameOver => self.game_over_tick(pressed),
@@ -646,6 +672,7 @@ impl FrontEnd {
             if u > 0x1F { 0x3F - u } else { u }
         };
         match self.screen {
+            Screen::Logo(n) => f.picture = Some(0x28 + n as u32),
             Screen::Title => {
                 f.picture = Some(0x28);
                 let a = pulse(self.clock) * 4;
@@ -1451,6 +1478,7 @@ mod tests {
     #[test]
     fn title_and_menu_lead_to_the_level_select() {
         let mut f = FrontEnd::new(tables());
+        f.enter(Screen::Title);
         let run = |f: &mut FrontEnd, pad: u32, n: usize| {
             for _ in 0..n {
                 f.tick(Pad(pad));
@@ -1588,6 +1616,16 @@ mod tests {
     fn movies_at_startup_and_once_per_level() {
         let mut f = FrontEnd::new(tables());
         let movies = |f: &FrontEnd| f.events.iter().filter_map(|e| if let Event::Movie(n) = e { Some(*n) } else { None }).collect::<Vec<_>>();
+        // The two stills first (a press before 300 ticks left is ignored), then the movies.
+        assert_eq!(f.screen, Screen::Logo(2));
+        assert!(movies(&f).is_empty());
+        f.tick(Pad(Pad::JUMP));
+        f.tick(Pad(0));
+        assert_eq!(f.screen, Screen::Logo(2));
+        for _ in 0..1200 {
+            f.tick(Pad(0));
+        }
+        assert_eq!(f.screen, Screen::Title);
         assert_eq!(movies(&f), vec![2, 0, 1, 10]);
         f.events.clear();
         // Level 1's intro the first time it's played, not the second; level 3 (a boss) none.
