@@ -24,8 +24,8 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 | Footsteps, footprint trails, wading slowdown | Ported; **user confirmed all three** |
 | Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
 | Two-sided materials (fences, boards, cut-outs) | From the material bit (mode 8) in both mesh sets; level 1 confirmed. User still sees level 2 pool water drawing over everything; not reproduced in shots (needs their spot) |
-| Front end | Title, menu and map confirmed by the user. New, needing a playtest: results after normal levels, boss-defeated after boss levels, game over when lives run out (lives and abilities now carry across levels), "SAVE GAME?" (Slinky) and the load / save screens |
-| Tests | 139 pass with `TS2_GAME_DIR` set; release build clean |
+| Front end | Title, menu and map confirmed by the user. New, needing a playtest: movies (logos, trailer, level intros, boss movies), results after normal levels, boss-defeated after boss levels, game over when lives run out (lives and abilities now carry across levels), "SAVE GAME?" (Slinky) and the load / save screens |
+| Tests | 142 pass with `TS2_GAME_DIR` set; release build clean |
 
 ### Still to do, in order
 
@@ -42,8 +42,9 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
    levels, the movies-seen and boss flags (+0x157 / +0x158, kept as loaded), volumes.
 4. **Music changes:** done: miniboss and race themes (0x49EAC0, `music::theme`), and the
    front end's tracks (title, menu, results, game over, boss defeated). Needs a listen.
-5. **FMV playback:** 22 MPEG-1 files on the disc named `.dll` (see `docs/re/asset-audit.md`;
-   21 report an MP2 packet error at the end). Needs a decoder crate or ffmpeg.
+5. **FMV playback:** done (`src/fmv.rs`: own demux, `oxideav-mpeg12video` for the video in
+   background runs of 4 GOPs, Symphonia for MP2). Needs a watch. The movie viewer menu (0x453FA0)
+   isn't ported.
 6. **Playtest-and-fix pass over levels 2–15** in campaign order.
 7. **Smaller gadgets still skipped:** level 8's electric arcs (0x422D20) and room 2 cannon,
    level 11's lights / room 5 overlay / slot 31 constraint, drips, dynamic lights (0x44F200),

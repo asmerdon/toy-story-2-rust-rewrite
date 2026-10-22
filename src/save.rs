@@ -25,6 +25,10 @@ const LEVEL: usize = 0x139;
 const ABILITIES: usize = 0x13A;
 const HEALTH: usize = 0x144;
 const TOKENS: usize = 0x147;
+/// 0x52F0E7[n]: movie n + 10 seen (n = level for the boss movies, so 0x52F0E8[level − 1] is
+/// also "boss beaten"; n = 0x11 is 0x52F0F8, the all-tokens ending).
+const MOVIES: usize = 0x157;
+const MOVIE_FLAGS: usize = 0x13;
 /// Slots shown by the load and save screens.
 pub const SLOTS: usize = 8;
 
@@ -73,7 +77,8 @@ impl Save {
     /// The progress this save holds.
     pub fn progress(&self) -> Progress {
         let mut p = Progress { lives: self.byte(LIVES) as i32, abilities: self.byte(ABILITIES), ..Progress::default() };
-        for (id, t) in p.tokens.iter_mut().enumerate() {
+        p.movies = (0..MOVIE_FLAGS).filter(|&n| self.byte(MOVIES + n) != 0).fold(0, |m, n| m | 1 << n);
+        for (id, t) in p.tokens.iter_mut().enumerate().take(16) {
             *t = self.byte(TOKENS + id);
         }
         p
@@ -86,8 +91,12 @@ impl Save {
         self.state[LIVES] = p.lives.clamp(0, 255) as u8;
         self.state[LEVEL] = level.min(14) as u8;
         self.state[ABILITIES] = p.abilities;
-        for (id, &bits) in p.tokens.iter().enumerate() {
+        // Levels 0–15 (16, the map, would be the first movie flag).
+        for (id, &bits) in p.tokens.iter().enumerate().take(16) {
             self.state[TOKENS + id] = bits;
+        }
+        for n in 0..MOVIE_FLAGS {
+            self.state[MOVIES + n] = (p.movies >> n & 1) as u8;
         }
         let s = p.summary(t);
         self.title = format!("TOK {} LEV {}", s.tokens, s.levels);
@@ -132,6 +141,7 @@ mod tests {
         p.tokens[2] = 0b1;
         p.lives = 3;
         p.abilities = 4;
+        p.movies = 1 << 3 | 1;
         s.store(&p, 2, &tables());
         assert_eq!(s.title, "TOK 4 LEV 2");
         let b = s.bytes();

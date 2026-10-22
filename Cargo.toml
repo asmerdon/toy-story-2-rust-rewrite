@@ -19,7 +19,9 @@ path = "src/bin/ts2-viewer.rs"
 [dependencies]
 bytemuck = { version = "1.21", features = ["derive"] }
 glam = "0.29"
+oxideav-mpeg12video = "0.0.13"
 pollster = "0.4"
 rodio = { version = "0.19", default-features = false }
+symphonia = { version = "0.6.1", default-features = false, features = ["mp2"] }
 wgpu = "24.0"
 winit = "0.30"

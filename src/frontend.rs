@@ -77,12 +77,14 @@ pub struct Progress {
     /// Lives (0x52F39A) and abilities (0x52F2D8), carried from level to level.
     pub lives: i32,
     pub abilities: u8,
+    /// 0x52F0E7[n]: movie n + 10 seen (0x49EB20), bit n.
+    pub movies: u32,
 }
 
 impl Default for Progress {
     /// A new game (0x4A2C20): five lives, nothing done.
     fn default() -> Progress {
-        Progress { tokens: [0; 17], lives: 5, abilities: 0 }
+        Progress { tokens: [0; 17], lives: 5, abilities: 0, movies: 0 }
     }
 }
 
@@ -188,6 +190,8 @@ pub enum Event {
     Sound(u16),
     /// Music track (index into 0x4ECCD8, see `music`); `repeat` as 0x47D880 plays it.
     Music { track: usize, repeat: bool },
+    /// Movie `n` (see `fmv::name`).
+    Movie(usize),
 }
 
 /// A character of 0x49D390's font: texture 31, a 32-pixel cell.
@@ -307,6 +311,9 @@ impl FrontEnd {
             arrows: 0x78,
             prev: Pad::default(),
         };
+        // The logos (movies 2, 0, 1), then the trailer (0x49EB20(0)).
+        f.events.extend([Event::Movie(2), Event::Movie(0), Event::Movie(1)]);
+        f.movie_once(0, true);
         f.enter(Screen::Title);
         f
     }
@@ -357,6 +364,13 @@ impl FrontEnd {
         if self.leaving > 0 {
             self.leaving -= 1;
             if self.leaving == 0 {
+                // A boss beaten for the first time: its movie; the last one, the ending too.
+                if self.first_clear {
+                    self.movie_once(self.level, true);
+                }
+                if self.level >= 15 {
+                    self.movie_once(0x12, true);
+                }
                 self.dirty = true;
                 self.after_level();
             }
@@ -444,6 +458,15 @@ impl FrontEnd {
         }
     }
 
+    /// 0x49EB20(n, …, force): movie n + 10, unless seen this game (0x52F0E7[n]) and not forced.
+    fn movie_once(&mut self, n: usize, force: bool) {
+        let bit = 1u32 << n.min(31);
+        if self.progress.movies & bit == 0 || force {
+            self.progress.movies |= bit;
+            self.events.push(Event::Movie(n + 10));
+        }
+    }
+
     /// Buzz died with no lives left (0x52B7DC = 2, 0x52F39A = 0): the game-over screen.
     pub fn game_over(&mut self) {
         self.enter(Screen::GameOver);
@@ -510,6 +533,10 @@ impl FrontEnd {
                     && r.tick(pressed, &mut self.fade, &mut self.events, &self.random)
                 {
                     self.results = None;
+                    // All 50 tokens: the bonus ending (0x52F0F8), once.
+                    if self.progress.summary(&self.tables).tokens >= 50 {
+                        self.movie_once(0x11, false);
+                    }
                     self.after_level();
                 }
             }
@@ -528,6 +555,13 @@ impl FrontEnd {
                         self.started = true;
                         self.first_clear = false;
                         self.screen = Screen::Play(self.level);
+                        // A normal level's intro (level 12's is movie 16), the first time.
+                        let n = self.level;
+                        if n % 3 != 0 {
+                            self.movie_once(n, false);
+                        } else if n == 12 {
+                            self.movie_once(0x10, false);
+                        }
                     }
                 }
                 return;
@@ -1548,6 +1582,24 @@ mod tests {
         assert!(f.started, "continue game");
         assert_eq!((f.progress.tokens[1], f.progress.tokens[2], f.level), (1, 4, 2));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn movies_at_startup_and_once_per_level() {
+        let mut f = FrontEnd::new(tables());
+        let movies = |f: &FrontEnd| f.events.iter().filter_map(|e| if let Event::Movie(n) = e { Some(*n) } else { None }).collect::<Vec<_>>();
+        assert_eq!(movies(&f), vec![2, 0, 1, 10]);
+        f.events.clear();
+        // Level 1's intro the first time it's played, not the second; level 3 (a boss) none.
+        for _ in 0..2 {
+            f.level = 1;
+            f.screen = Screen::Select;
+            f.movie_once(1, false);
+        }
+        assert_eq!(movies(&f), vec![11]);
+        let mut save = crate::save::Save::new_game(&[]);
+        save.store(&f.progress, 0, &f.tables);
+        assert_eq!(save.progress().movies, f.progress.movies, "kept in saves");
     }
 
     #[test]

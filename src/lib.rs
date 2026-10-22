@@ -13,6 +13,7 @@ pub mod cutscene;
 pub mod dialog;
 pub mod camera;
 pub mod export;
+pub mod fmv;
 pub mod formats;
 pub mod frontend;
 pub mod game;

@@ -297,6 +297,11 @@ struct Gfx {
     /// The background (0x48FB70): cleared to the sky colour, the ground band over it.
     sky: Vec<GpuBatch>,
     clear: [f64; 3],
+    /// For textures made after loading (movie frames): the layout and sampler, and the movie's
+    /// texture, its bind group and size.
+    texture_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    movie: Option<(wgpu::Texture, wgpu::BindGroup, [u32; 2])>,
 }
 
 struct Viewer {
@@ -414,6 +419,20 @@ struct Viewer {
     game_dir: Option<std::path::PathBuf>,
     level_track: Option<usize>,
     music_track: Option<usize>,
+    /// The movie playing, those waiting, and a skip pressed.
+    movie: Option<Movie>,
+    movies: std::collections::VecDeque<usize>,
+    movie_skip: bool,
+}
+
+/// A movie playing (`ts2::fmv`): frames from the decoder thread, the frame rate, when its
+/// first frame showed, frames shown so far, and its sound.
+struct Movie {
+    frames: std::sync::mpsc::Receiver<Option<ts2::fmv::Frame>>,
+    rate: f32,
+    start: Option<Instant>,
+    shown: u64,
+    sound: Option<rodio::Sink>,
 }
 
 /// The front end and what it keeps across scene loads.
@@ -714,7 +733,7 @@ impl Gfx {
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
         let level_far = upload(&device, level_far, texture_bgs.len() - 1);
-        Gfx { window, surface, target, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1] }
+        Gfx { window, surface, target, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1], texture_layout, sampler, movie: None }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -743,6 +762,102 @@ impl Gfx {
         self.device.poll(wgpu::Maintain::Wait);
         let data = buf.slice(..).get_mapped_range();
         Some((0..h as usize).flat_map(|y| data[y * row as usize..][..w as usize * 4].chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect::<Vec<_>>()).collect())
+    }
+
+    /// Puts a movie frame in the movie texture (made, or remade, to the frame's size).
+    fn movie_frame(&mut self, f: &ts2::fmv::Frame) {
+        let size = [f.width, f.height];
+        if self.movie.as_ref().is_none_or(|m| m.2 != size) {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("movie"),
+                size: wgpu::Extent3d { width: f.width, height: f.height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&Default::default());
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            });
+            self.movie = Some((tex, bg, size));
+        }
+        if let Some((tex, _, _)) = &self.movie {
+            self.queue.write_texture(
+                tex.as_image_copy(),
+                &f.rgba,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(f.width * 4), rows_per_image: Some(f.height) },
+                wgpu::Extent3d { width: f.width, height: f.height, depth_or_array_layers: 1 },
+            );
+        }
+    }
+
+    /// Draws the movie frame alone, as large as fits, on black.
+    fn render_movie(&mut self) {
+        let Some((_, bg, [w, h])) = &self.movie else { return };
+        let frame = match &self.surface {
+            Some(surface) => match surface.get_current_texture() {
+                Ok(f) => Some(f),
+                Err(_) => {
+                    surface.configure(&self.device, &self.config);
+                    return;
+                }
+            },
+            None => None,
+        };
+        let view = match (&frame, &self.target) {
+            (Some(f), _) => f.texture.create_view(&Default::default()),
+            (None, Some(t)) => t.create_view(&Default::default()),
+            (None, None) => return,
+        };
+        // Fit the picture's aspect inside the window's (screen space 0..1, y down).
+        let (sw, sh) = (self.config.width as f32, self.config.height as f32);
+        let scale = (sw / *w as f32).min(sh / *h as f32);
+        let (qw, qh) = (*w as f32 * scale / sw, *h as f32 * scale / sh);
+        let (x0, y0) = ((1.0 - qw) / 2.0, (1.0 - qh) / 2.0);
+        let c = |x: f32, y: f32, u: f32, v: f32| GpuVertex { pos: [x, y, 0.0], uv: [u, v], color: [0xFF, 0x80, 0x80, 0x80] };
+        let verts = [c(x0, y0, 0.0, 0.0), c(x0 + qw, y0, 1.0, 0.0), c(x0 + qw, y0 + qh, 1.0, 1.0), c(x0, y0, 0.0, 0.0), c(x0 + qw, y0 + qh, 1.0, 1.0), c(x0, y0 + qh, 0.0, 1.0)];
+        let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+        let hud = Uniforms {
+            view_proj: Mat4::from_cols(glam::Vec4::new(2.0, 0.0, 0.0, 0.0), glam::Vec4::new(0.0, 2.0, 0.0, 0.0), glam::Vec4::ZERO, glam::Vec4::new(-1.0, 1.0, 0.5, 1.0)).to_cols_array_2d(),
+            params: [1.0, 0.0, 1.0, 0.0],
+            range: [0.0, f32::MAX, 0.0, 0.0],
+        };
+        self.queue.write_buffer(&self.uniform_bufs[3], 0, bytemuck::bytes_of(&hud));
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipelines[0]);
+            pass.set_bind_group(0, &self.uniform_bgs[3], &[]);
+            pass.set_bind_group(1, bg, &[]);
+            pass.set_vertex_buffer(0, buf.slice(..));
+            pass.draw(0..6, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+        if let Some(f) = frame {
+            f.present();
+        }
     }
 
     fn render(&mut self, uniforms: &Uniforms) {
@@ -855,6 +970,10 @@ impl Viewer {
     }
 
     fn update(&mut self, dt: f32) {
+        if self.movie.is_some() || !self.movies.is_empty() {
+            self.movie_update();
+            return;
+        }
         if std::mem::take(&mut self.quit_level) {
             self.finish_level(true);
         }
@@ -1877,6 +1996,11 @@ impl Viewer {
 
     /// A key pressed; true to close the window.
     fn key(&mut self, code: KeyCode) -> bool {
+        // A movie playing: jump, Enter or Escape skips it.
+        if self.movie.is_some() {
+            self.movie_skip |= matches!(code, KeyCode::Space | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape);
+            return false;
+        }
         let n_anims = self.anims.get(self.creature_idx).map_or(0, Vec::len).max(1);
         // In the front end's menus the keys are the pad's (read each tick); Escape on the
         // title closes the window, and in a level it quits to the main menu (the pause
@@ -2053,9 +2177,13 @@ impl Viewer {
         }
     }
 
-    /// Renders the frame `update` prepared.
+    /// Renders the frame `update` prepared (or the movie playing).
     fn draw(&mut self) {
         let Some(g) = self.gfx.as_mut() else { return };
+        if self.movie.is_some() && g.movie.is_some() {
+            g.render_movie();
+            return;
+        }
         let aspect = g.config.width as f32 / g.config.height as f32;
         // Reversed depth (near 1, far 0) with an infinite far plane: a float depth
         // buffer then keeps its precision far out, so near-coplanar faces (a box lid
@@ -2093,6 +2221,7 @@ impl Viewer {
                     self.keys.remove(k);
                 }
                 ShotStep::Play => self.toggle_play(),
+                ShotStep::Movie(n) => self.movies.push_back(*n),
                 ShotStep::Boss => {
                     if let Some(f) = self.front.as_mut() {
                         f.state.level_done(None);
@@ -2132,6 +2261,79 @@ impl Viewer {
             self.cam.yaw += dx as f32 * 0.003;
             self.cam.pitch = (self.cam.pitch - dy as f32 * 0.003).clamp(-1.5, 1.5);
         }
+    }
+
+    /// The movie playing, or the next one waiting: frames on the movie's clock (from its first
+    /// frame), audio started with it, music paused meanwhile.
+    fn movie_update(&mut self) {
+        if self.movie.is_none() {
+            let Some(n) = self.movies.pop_front() else { return };
+            self.movie = self.start_movie(n);
+            self.movie_skip = false;
+            if self.movie.is_none() {
+                return;
+            }
+            if let Some(m) = self.audio.as_ref().and_then(|a| a.music.as_ref()) {
+                m.pause();
+            }
+        }
+        let Some(m) = self.movie.as_mut() else { return };
+        let mut latest = None;
+        let mut ended = std::mem::take(&mut self.movie_skip);
+        let due = m.start.map_or(1, |s| (s.elapsed().as_secs_f32() * m.rate) as u64 + 1);
+        while m.shown < due {
+            match m.frames.try_recv() {
+                Ok(Some(f)) => {
+                    latest = Some(f);
+                    m.shown += 1;
+                    if m.start.is_none() {
+                        m.start = Some(Instant::now());
+                        if let Some(s) = &m.sound {
+                            s.play();
+                        }
+                    }
+                }
+                Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    ended = true;
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            }
+        }
+        if let (Some(f), Some(g)) = (latest, self.gfx.as_mut()) {
+            g.movie_frame(&f);
+        }
+        if ended {
+            self.movie = None;
+            if self.movies.is_empty() {
+                if let Some(g) = self.gfx.as_mut() {
+                    g.movie = None;
+                }
+                if let Some(m) = self.audio.as_ref().and_then(|a| a.music.as_ref()) {
+                    m.play();
+                }
+            }
+            self.last = Instant::now();
+        }
+    }
+
+    /// Opens movie `n` from the disc (as the music, `TS2_CD_DIR` or `ts2-media.txt`).
+    fn start_movie(&mut self, n: usize) -> Option<Movie> {
+        let game = self.front.as_ref().map(|f| f.game.clone()).or_else(|| self.game_dir.clone())?;
+        let path = ts2::music::media_root(&game).and_then(|root| ts2::fmv::path(&root, n))?;
+        let bytes = fs::read(&path).map_err(|e| println!("no movie {}: {e}", path.display())).ok()?;
+        let (video, audio) = ts2::fmv::demux(&bytes);
+        let rate = ts2::fmv::frame_rate(&video);
+        let frames = ts2::fmv::decode_video(video, 60);
+        let sound = self.audio.as_ref().and_then(|a| {
+            let (samples, channels, sample_rate) = ts2::fmv::decode_audio(audio)?;
+            let sink = rodio::Sink::try_new(&a.handle).ok()?;
+            sink.pause();
+            sink.append(rodio::buffer::SamplesBuffer::new(channels, sample_rate, samples));
+            Some(sink)
+        });
+        println!("movie: {} (jump, Enter or Escape skips)", ts2::fmv::name(n).unwrap_or("?"));
+        Some(Movie { frames, rate, start: None, shown: 0, sound })
     }
 
     /// Sets up the front end for the scene just loaded: its sprites, the level select's lists,
@@ -2216,6 +2418,9 @@ impl Viewer {
                         }
                     }
                 }
+                // Not in screenshots: they'd sit through the logos.
+                Event::Movie(n) if !SILENT.load(std::sync::atomic::Ordering::Relaxed) => self.movies.push_back(n),
+                Event::Movie(_) => {}
             }
         }
         let want = (f.state.screen.scene(&f.state.tables), f.state.screen.variant());
@@ -2359,6 +2564,8 @@ enum ShotStep {
     Play,
     /// `results:before,now,coins,abilities`: the front end's results screen with these numbers.
     Results(ts2::frontend::LevelResult),
+    /// `movie:n`: plays movie n.
+    Movie(usize),
     /// `boss`: the boss-defeated screen.
     Boss,
 }
@@ -2396,6 +2603,8 @@ impl Shot {
                 if let [before, now, coins, abilities] = v[..] {
                     shot.script.push(ShotStep::Results(ts2::frontend::LevelResult { before: before as u8, now: now as u8, coins, abilities: abilities as u8 }));
                 }
+            } else if let Some(n) = w.strip_prefix("movie:").and_then(|n| n.parse().ok()) {
+                shot.script.push(ShotStep::Movie(n));
             } else if w == "boss" {
                 shot.script.push(ShotStep::Boss);
             } else if w == "play" {
@@ -2765,6 +2974,9 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         game_dir: level_path.ancestors().nth(3).map(std::path::Path::to_path_buf),
         level_track: level_no.and_then(|lv| ts2::campaign::LEVELS.iter().position(|l| l.internal_id == lv)),
         music_track: level_no.and_then(|lv| ts2::campaign::LEVELS.iter().position(|l| l.internal_id == lv)),
+        movie: None,
+        movies: std::collections::VecDeque::new(),
+        movie_skip: false,
         level_ended: false,
     };
     // The first-person helmet and arms only show in first person.

@@ -28,7 +28,8 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x49EAC0 | `LevelMusic` ✔ | Each frame from the level scripts: HUD element 7 timer (0x52C832, boss bar) → track 0xF; element 6 (0x52C830, laps) with 0x52F2F8 ≥ 2 → 0x10; else the level (0x52AD8A); 0x47D880 only on a change (0x559C68) |
 | 0x453CD0 | `FrontScreenWidth` ✔ | Sprite screen 320 × 256 (0x4F7414 / 0x4F7418) for the menus |
 | 0x49EB50 | `ProgressSummary` ✔ | Campaign levels in a row with 0x52F0D7 ≠ 0 (n), tokens in them (5 bits each): (need[n] << 16) + (tokens << 8) + n |
-| 0x49EB20 | `PlayFmvOnce(n, …, force)` | Flag 0x52F0E7[n]; plays movie n + 10 (0x49AB90) |
+| 0x49EB20 | `PlayFmvOnce(n, …, force)` ✔ | Flag 0x52F0E7[n] (save +0x157 + n; n = level doubles as 0x52F0E8 "boss beaten"); plays movie n + 10 (0x49AB90). Called: startup n 0 (after movies 2, 0, 1), before a normal level n = level (level 12: 0x10), a boss beaten first n = level (forced), level 15 then 0x12, all 50 tokens 0x11 |
+| 0x49AB90 / 0x49A930 | `PlayMovie(m)` ✔ (`src/fmv.rs`) | `<CD>tlibs<name>.dll` handed to the system player (0x4CE5F0): 0 dlogo, 1 tt, 2 acti, 10 1st trailer, 11–25 `l NN in` / `l NN bo`, 26 `l 12 in`, 27 `l 15 bo 2`, 28 `end 01` |
 | 0x48F1B0 | `SetPicture(n)` ✔ | Picture id 0x500A58[n + 1] (fallback 0x500A7C): texture number, i.e. `bgr40`–`bgr44` in scene 0 |
 | 0x49B580 | `MenuText(y, s, fade)` ✔ | Sprite 0x32, cell c − 'a' (`'` → 0x2F), x from 0xA0 − 6·len step 0xC, half size; fade 0x80 grey, else white mode fade·0x200 + 0x60 |
 | 0x49D390 / 0x49D750 | `FontText(s, y, x)` ✔ | Texture 31, 32-pixel cells 8 a row (a–z 0–25, digits 26–35, punctuation table), 16 px, step 13, centred on x |
