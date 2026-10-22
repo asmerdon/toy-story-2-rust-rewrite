@@ -17,7 +17,7 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | 0x438790 | `SelectCameraPosts(cam, vel, list)` ✔ | List 3 pairs: centre and radius point; inside the post's height and radius: velocity pushed out by min(0x800 − d²·0x800/r², 0x180) |
 | 0x438910 | `SelectMapPiece(special, list, phase)` ✔ | Phase + 0x40 a tick (wraps before the last 5 points); lerp of points phase >> 8 and + 1; yaw eased a quarter towards heading + 0x800 |
 | 0x453CF0 | `RunLevelSelect` ✔ | Loads scene 0x10, picture 0x24, screen width 512, then 0x438A50 |
-| 0x453D90 | `BossDefeated` ✔ | `gfxboss.ngn` (0x4500A0 with level + 0x20), picture 0x25 (tex37), music 0x15; 0x1C fade in, jump: sound 7, 0x1C fade out. Its blinking sprite 0x80 is not drawn |
+| 0x453D90 | `BossDefeated` ✔ | `gfx/boss.ngn` (0x4500A0 with level + 0x20), picture 0x25 (tex37), music 0x15; 0x1C fade in, jump: sound 7, 0x1C fade out. Its blinking sprite 0x80 is not drawn |
 | 0x4500A0 | `LoadGfxScene(n)` ✔ | 0 loading, 1–15 `level1a`…`level5c` (loading pictures), 0x10/0x11 congrats, 0x1E bonus, 0x1F gamewin, boss levels + 0x20 boss, −1 film; `.raw` → `.ngn`; 0x44FF50 picks the picture (0x24, 0x25, then 0x28–0x2F, 0x58–0x5F) |
 | 0x437B20 | `GameOver` ✔ | Picture 1 (bgr41 of `levelt1`), music 0x11, 0x4B0 ticks; a button from 0x474 down cuts to 0x18; fade below 0x18; then the title and a new game (0x4A2C20: lives 5, health 0xE) |
 | 0x453CD0 | `FrontScreenWidth` ✔ | Sprite screen 320 × 256 (0x4F7414 / 0x4F7418) for the menus |
