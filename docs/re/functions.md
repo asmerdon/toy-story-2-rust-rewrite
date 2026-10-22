@@ -8,6 +8,7 @@ Decompiler output lives in git-ignored `re/out/` (see PROJECT.md). Never commit 
 | Address | Name | Notes |
 |---|---|---|
 | 0x49D910 | `MainLoop` ✔ (flow, `src/frontend.rs`) | Scene 0, logos (screen 10), title/menu (screen 2) → 0x830C88: 0 attract demo (levels 0, 3, 7, 10, 13 in turn), 1 start (0x830D58 = 1, level select 0x453CF0), 2 options (screen 9), 3 load 0x453F20, 4 movies 0x453FA0, 8 screen 8, 9 quit. Play loop runs 0x49DFE0 until 0x52B7DC: 2 died (no lives → game over, screen 5), 3 title, 4 menu, 1/5 done: boss (internal id % 3 = 0) → 0x453D90, 0x52F0E8[level] = 1, save 0x454020, FMV level + 1 once, level 15 → FMV 0x12 and credits (screen 0xB); else results (screen 4), save; then the level select again |
+| 0x4398B0 | `ResultsScreen` ✔ | See `frontend::Results`: scene 0 variant 1 (`levelt1.ngn`, flags 0x47C), picture 0 (token256), music 0x15; title sprites 0x52 (0xF, level, 0x10, 0x11) and 0x53 (level); tokens 0x4C (old spin, rest black), new ones one per 0x1E ticks with 15 sparks 0x50; coins 0x4E × 0x4F counting every 3 ticks (sound 1); abilities 0x51 by 0x52F2D8 bits 1, 2, 4, 0x10, 8; timer 0x168 holding at 0x79–0xB4, "press jump to exit" |
 | 0x4381F0 | `FrontScreen(n)` ✔ | 1/6 timed pictures, 2 title+menu (0x437FB0), 4 results (0x4398B0), 5 game over (0x437B20), 8, 9 options (0x4371B0), 10 logos (0x438520(2), (3)), 0xB credits (0x43A380) |
 | 0x437FB0 | `TitleScreen` ✔ | Picture 0, music 0x14; "press jump" (0x49B580 at y 0xCC, alpha pulse fold(t & 0x3F) × 4); after 0x1E ticks jump → sound 0, fade, menu; 900 ticks → demo (not ported) |
 | 0x437C40 | `MainMenu` ✔ | Picture 4, music 0x13; rows y 0x78 + 0x14k: start/continue game, options, load game, movie viewer, exit; arrows sprite 0x3E cells 0/1 at x 0x40 / 0xF0, colour (a, a, 0x80), sliding 2 a tick; up/down sound 1; jump after 0x1F ticks: sound 0, fade 0x17 ticks; exit → 0x4CF359 |
@@ -383,7 +384,7 @@ Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid
 
 | Address | Status | Findings |
 |---|---|---|
-| 0x452FC0 | confirmed | Internal IDs above 10 subtract 10 for their folder and use level1.*; TERR1.ALL supplies collision. Campaign 3/6 select internal 6/3. |
+| 0x452FC0 | confirmed | Internal IDs above 10 subtract 10 for their folder and use level1.*; TERR1.ALL supplies collision. Campaign 3/6 select internal 6/3. Load flags 0x55A114 bits 6–7 pick the variant: `level.*`, or `levelt1`–`3.ngn` with `level1`–`3.raw/.dat` (scene 0: results, options, credits) |
 | 0x42B300 / 0x42B3A0 | partial port, `level12.rs` | Zurg slot 0/type 57, initially 29 health; entrance at Buzz x >= -0x18B2A; 300-tick introduction, 302-tick attack cycles with shots at 146/138/126; 60-tick recovery; death below 10 health, 300-tick scene then completion. Lights/marker omitted; visual validation pending. |
 | 0x43C1C0 | node attachment supported | Zurg gun uses node 1, local (-250,-250,0). Current animation matrix followed by actor rotation (yaw + pi), scale and object-space translation. Shares renderer math; numeric equivalence to original fixed-point code not established. |
 | 0x42B090 / 0x42B250 | ported | Zurg lobbed shot arena floor/wall bounce and trail; homing-shot trail; central-hole removal for both. Shadows omitted. |

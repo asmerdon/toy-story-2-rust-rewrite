@@ -21,7 +21,7 @@
 //!   black over 0x17 ticks (0x53CA60).
 //!
 //! Not ported yet: the attract demo after 900 ticks on the title, options, load game, the
-//! movie viewer, the results screen (0x4398B0), the boss victory screen (0x453D90), game over
+//! movie viewer, the boss victory screen (0x453D90), game over
 //! (0x437B20), the credits, FMVs, and the level select's sound at each level (0x4A3B90).
 
 use crate::formats::exe::Exe;
@@ -129,14 +129,33 @@ pub enum Screen {
     Select,
     /// Playing campaign level `n` (1–15).
     Play(usize),
+    /// How the level went (0x4398B0), after a normal level.
+    Results,
     Quit,
 }
 
+/// What the results screen shows of the level just played.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelResult {
+    /// The level's token bits before it was played (0x830CA8) and now (0x52F0D7[level]).
+    pub before: u8,
+    pub now: u8,
+    /// Coins collected (0x52F39E), and the abilities held (0x52F2D8 bits).
+    pub coins: i32,
+    pub abilities: u8,
+}
+
 impl Screen {
+    /// The scene's variant (`campaign::variant_path`): the results screen loads scene 0 with
+    /// flags 0x47C, variant 1 (`levelt1.ngn`: picture 40 is `token256`, Slinky's `levcomp`).
+    pub fn variant(self) -> u8 {
+        u8::from(self == Screen::Results)
+    }
+
     /// The internal id of the scene this screen runs in.
     pub fn scene(self, t: &Tables) -> usize {
         match self {
-            Screen::Title | Screen::Menu | Screen::Quit => crate::campaign::FRONT,
+            Screen::Title | Screen::Menu | Screen::Results | Screen::Quit => crate::campaign::FRONT,
             Screen::Select => crate::campaign::HUB,
             Screen::Play(n) => t.order.get(n - 1).copied().unwrap_or(1),
         }
@@ -219,6 +238,9 @@ pub struct FrontEnd {
     pub first_clear: bool,
     pub events: Vec<Event>,
     pub select: Option<Select>,
+    pub results: Option<Results>,
+    /// Random bytes (`rand.dat`) for the results screen's sparkles.
+    pub random: Vec<u8>,
     fade: Fade,
     /// Ticks on this screen; 0x53E4A8 (the choice) and 0x53CA60 (ticks left while leaving).
     clock: i32,
@@ -244,6 +266,8 @@ impl FrontEnd {
             first_clear: false,
             events: Vec::new(),
             select: None,
+            results: None,
+            random: Vec::new(),
             fade: Fade::default(),
             clock: 0,
             choice: 0,
@@ -273,6 +297,10 @@ impl FrontEnd {
                 self.fade.speed = 6;
                 self.events.push(Event::Music { track: crate::music::MENU, repeat: true });
             }
+            Screen::Results => {
+                self.fade.speed = 6;
+                self.events.push(Event::Music { track: crate::music::LEVEL_DONE, repeat: false });
+            }
             _ => {}
         }
     }
@@ -284,9 +312,18 @@ impl FrontEnd {
         self.select = Some(Select::new(lists, random, self, s));
     }
 
-    /// The level just played ended (0x52B7DC = 1 or 5): back to the level select.
-    pub fn level_done(&mut self) {
-        self.enter(Screen::Select);
+    /// The level just played ended (0x52B7DC = 1 or 5): a normal level shows how it went
+    /// (`result`), then the level select; a boss level goes straight back to it (its victory
+    /// screen, 0x453D90, isn't ported).
+    pub fn level_done(&mut self, result: Option<LevelResult>) {
+        match result {
+            Some(r) => {
+                let level = self.level.saturating_sub(1);
+                self.results = Some(Results::new(r, level));
+                self.enter(Screen::Results);
+            }
+            None => self.enter(Screen::Select),
+        }
     }
 
     /// The level was quit (0x52B7DC = 4): back to the main menu.
@@ -301,6 +338,14 @@ impl FrontEnd {
         match self.screen {
             Screen::Title => self.title(pressed),
             Screen::Menu => self.menu(pressed),
+            Screen::Results => {
+                if let Some(r) = self.results.as_mut()
+                    && r.tick(pressed, &mut self.fade, &mut self.events, &self.random)
+                {
+                    self.results = None;
+                    self.enter(Screen::Select);
+                }
+            }
             Screen::Select => {
                 let s = self.progress.summary(&self.tables);
                 let Some(mut sel) = self.select.take() else { return };
@@ -420,6 +465,11 @@ impl FrontEnd {
                     s.draw(&mut f, sprites, &self.progress, &self.tables);
                 }
             }
+            Screen::Results => {
+                if let Some(r) = &self.results {
+                    r.draw(&mut f, sprites);
+                }
+            }
             _ => {}
         }
         f
@@ -459,6 +509,11 @@ fn menu_text(q: &mut Vec<Quad>, sprites: &[Option<SpriteDef>], y: i32, s: &str, 
 
 /// 0x49D390: a line in texture 31's font, centred on `x`, in a 512-wide screen.
 fn font_text(g: &mut Vec<Glyph>, y: i32, x: i32, s: &str) {
+    font_text_in(g, 512.0, y, x, s);
+}
+
+/// As [`font_text`], in a `width`-wide screen.
+fn font_text_in(g: &mut Vec<Glyph>, width: f32, y: i32, x: i32, s: &str) {
     let mut at = x - (s.len() as i32 * 0xD) / 2;
     for c in s.bytes() {
         let cell: Option<(i32, i32)> = match c {
@@ -484,7 +539,7 @@ fn font_text(g: &mut Vec<Glyph>, y: i32, x: i32, s: &str) {
             _ => None,
         };
         if let Some((u, v)) = cell {
-            g.push(Glyph { pos: [at as f32, y as f32], size: [16.0, 16.0], width: 512.0, cell: [u as u8, v as u8] });
+            g.push(Glyph { pos: [at as f32, y as f32], size: [16.0, 16.0], width, cell: [u as u8, v as u8] });
         }
         at += 0xD;
     }
@@ -840,6 +895,181 @@ impl Select {
     }
 }
 
+/// The results screen (0x4398B0), in scene 0 over picture 0, music `levcomp`.
+///
+/// - Across the top, the level's title in sprites 0x52 (cells 0xF, the level, 0x10, 0x11) and
+///   0x53 (the level), and its five token slots (sprite 0x4C at x 0x24 + 0x34k, y 0x20):
+///   tokens held before the level spin, the rest are black.
+/// - After 60 ticks, the tokens won this time appear one every 0x1E ticks (sound 1), each in
+///   a burst of 15 sparks (sprite 0x50, falling: + 0x18 a tick down, 0x1F ticks). Then the
+///   coin count (sprite 0x4E spinning, × 0x4F cell 10, two digits) counts up, one every 3
+///   ticks with sound 1.
+/// - The five abilities (sprite 0x51, cells 0–4 at x 0x44 + 0x28k, y 0xAD) are lit if held
+///   (0x52F2D8 bits 1, 2, 4, 0x10, 8), else black.
+/// - A timer from 0x168 counts down and holds between 0x79 and 0xB4; "press jump to exit"
+///   blinks while it's between 0x79 and 0xEF. Jump there (sound 0) skips to the end of the
+///   counting (timer 0x78), or, once it's done, leaves (timer 0x18). Below 0x18 it fades out;
+///   at 0 it's over.
+///
+/// Approximated: the sparks are drawn blended, not added (mode 0x20).
+pub struct Results {
+    level: usize,
+    before: [bool; 5],
+    now: [bool; 5],
+    coins: i32,
+    abilities: u8,
+    timer: i32,
+    reveal: i32,
+    reveal_mark: i32,
+    count: i32,
+    count_mark: i32,
+    shown: i32,
+    blink: i32,
+    clock: i32,
+    faded: bool,
+    rand_at: usize,
+    /// Sparks: position and velocity (1/256 pixel), ticks left.
+    sparks: Vec<([i32; 2], [i32; 2], i32)>,
+}
+
+impl Results {
+    fn new(r: LevelResult, level: usize) -> Results {
+        let bits = |b: u8| std::array::from_fn(|k| b & (1 << k) != 0);
+        let (before, now): ([bool; 5], [bool; 5]) = (bits(r.before), bits(r.now));
+        let won = (0..5).filter(|&k| now[k] && !before[k]).count() as i32;
+        let mut reveal = won * 0x3C;
+        if reveal != 0 {
+            reveal += 0x3C;
+        }
+        let count = r.coins * 3 + 0x10;
+        Results {
+            level,
+            before,
+            now,
+            coins: r.coins,
+            abilities: r.abilities,
+            timer: 0x168,
+            reveal,
+            reveal_mark: reveal - 0x1E,
+            count,
+            count_mark: count,
+            shown: 0,
+            blink: 0,
+            clock: 0,
+            faded: false,
+            rand_at: 0,
+            sparks: Vec::new(),
+        }
+    }
+
+    /// One tick; true once it's over.
+    fn tick(&mut self, pressed: Pad, fade: &mut Fade, events: &mut Vec<Event>, random: &[u8]) -> bool {
+        for (p, v, life) in &mut self.sparks {
+            p[0] += v[0];
+            p[1] += v[1];
+            v[1] += 0x18;
+            *life -= 1;
+        }
+        self.sparks.retain(|s| s.2 > 0);
+        if self.timer < 300 {
+            if self.reveal < 1 {
+                if self.count < 1 {
+                    self.shown = (self.shown + 1).min(self.coins);
+                } else {
+                    if self.count_mark - self.count > 3 {
+                        if self.shown < self.coins {
+                            events.push(Event::Sound(1));
+                        }
+                        while self.count_mark - self.count > 3 {
+                            self.count_mark -= 3;
+                            self.shown = (self.shown + 1).min(self.coins);
+                        }
+                    }
+                    self.count -= 1;
+                }
+            } else if self.reveal_mark - self.reveal >= 0x1E {
+                self.reveal_mark -= 0x1E;
+                if let Some(k) = (0..5).find(|&k| !self.before[k] && self.now[k]) {
+                    events.push(Event::Sound(1));
+                    self.before[k] = true;
+                    self.burst(k, random);
+                }
+                self.reveal -= 1;
+            } else {
+                self.reveal -= 1;
+            }
+        }
+        if 0x78 < self.timer && self.timer < 0xF0 {
+            self.blink = (self.blink + 1) & 0x3F;
+        }
+        if !(0x78 < self.timer && self.timer < 0xB5) {
+            self.timer -= 1;
+        }
+        if self.timer < 0x18 {
+            self.timer = self.timer.max(0);
+            if !self.faded {
+                fade.to(0, 0xC);
+                self.faded = true;
+            }
+        }
+        self.clock += 1;
+        if pressed.0 & Pad::JUMP != 0 && 0x78 < self.timer && self.timer < 0xF0 {
+            events.push(Event::Sound(0));
+            if self.reveal == 0 && self.count == 0 {
+                self.timer = 0x18;
+            } else {
+                self.shown = self.coins;
+                self.timer = 0x78;
+                self.before = self.now;
+            }
+        }
+        self.timer < 1
+    }
+
+    /// 15 sparks from token slot `k`, from four random bytes each.
+    fn burst(&mut self, k: usize, random: &[u8]) {
+        let r = |i: usize| random.get(i % random.len().max(1)).copied().unwrap_or(0x80) as i32;
+        for _ in 0..15 {
+            let (a, b, c) = (r(self.rand_at), r(self.rand_at + 1), r(self.rand_at + 2));
+            self.rand_at = (self.rand_at + 4) % 0x5DC;
+            let dx = (a - 0x80) * 0x10;
+            let dy = b * 8 - 0x400;
+            let pos = [(k as i32 * 0xD + 0xD) * 0x400 + dx, b * 8 + 0x2400];
+            let vel = [dx / 7 + (c >> 4) - 0x10, -0x180 + dy / 7 + (c >> 1)];
+            self.sparks.push((pos, vel, 0x1F));
+        }
+    }
+
+    fn draw(&self, f: &mut Frame, sprites: &[Option<SpriteDef>]) {
+        f.picture = Some(0x28);
+        let q = &mut f.quads;
+        let white = [0xFF; 3];
+        let lv = self.level;
+        for (x, sprite, cell) in [(0x2C, 0x52, 0xF), (0x60, 0x52, lv), (0x94, 0x52, 0x10), (200, 0x52, 0x11), (0xFC, 0x53, lv)] {
+            put(q, sprites, 320.0, x, 0x3C, sprite, cell, white, 0xFF, 0x800, 0x800);
+        }
+        for k in 0..5 {
+            let cell = ((self.clock / 2 + 4 * k as i32) & 0x1F) as usize;
+            let color = if self.before[k] { [0x80; 3] } else { [0; 3] };
+            put(q, sprites, 320.0, k as i32 * 0x34 + 0x24, 0x20, 0x4C, cell, color, 0, 0x1000, 0x1000);
+        }
+        for (k, bit) in [1u8, 2, 4, 0x10, 8].into_iter().enumerate() {
+            let color = if self.abilities & bit != 0 { white } else { [0; 3] };
+            put(q, sprites, 320.0, k as i32 * 0x28 + 0x44, 0xAD, 0x51, k, color, 0xFF, 0x800, 0x800);
+        }
+        put(q, sprites, 320.0, 0x5C, 0x76, 0x4E, ((10 + self.clock) & 0xF) as usize, [0x80; 3], 0, 0x1000, 0x1000);
+        put(q, sprites, 320.0, 0x98, 0x7A, 0x4F, 10, [0x80; 3], 0, 0x1000, 0x1000);
+        put(q, sprites, 320.0, 0xBE, 0x7A, 0x4F, (self.shown / 10 % 10) as usize, [0x80; 3], 0, 0x1000, 0x1000);
+        put(q, sprites, 320.0, 0xD0, 0x7A, 0x4F, (self.shown % 10) as usize, [0x80; 3], 0, 0x1000, 0x1000);
+        for (p, _, life) in &self.sparks {
+            put(q, sprites, 320.0, p[0] >> 8, p[1] >> 8, 0x50, (life >> 3) as usize, [0x40, 0x40, 0], 0, 0x1000, 0x1000);
+        }
+        if 0x78 < self.timer && self.timer < 0xF0 && self.blink < 0x30 {
+            font_text_in(&mut f.glyphs, 320.0, 0xDC, 0xA0, "press jump to exit");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -891,6 +1121,30 @@ mod tests {
         run(&mut f, 0, 0x17);
         assert_eq!(f.screen, Screen::Select);
         assert!(f.events.contains(&Event::Sound(0)) && f.events.contains(&Event::Sound(1)));
+    }
+
+    #[test]
+    fn results_reveal_count_and_leave_on_jump() {
+        let mut f = FrontEnd::new(tables());
+        f.level = 1;
+        f.level_done(Some(LevelResult { before: 1, now: 0b1011, coins: 12, abilities: 0 }));
+        assert_eq!(f.screen, Screen::Results);
+        // Nothing happens for 60 ticks; two new tokens then take 3 × 0x3C, coins 12 × 3 + 0x10,
+        // while the timer holds at 0xB4 (from tick 180) until jump.
+        for _ in 0..320 {
+            f.tick(Pad(0));
+        }
+        let r = f.results.as_ref().unwrap();
+        assert_eq!(r.before, [true, true, false, true, false]);
+        assert_eq!(r.shown, 12);
+        assert_eq!(f.events.iter().filter(|e| **e == Event::Sound(1)).count(), 2 + 12);
+        assert_eq!(f.screen, Screen::Results);
+        // Jump, once it's all counted, leaves: a fade, then the level select.
+        f.tick(Pad(Pad::JUMP));
+        for _ in 0..0x18 {
+            f.tick(Pad(0));
+        }
+        assert_eq!(f.screen, Screen::Select);
     }
 
     #[test]

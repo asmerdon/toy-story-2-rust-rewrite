@@ -417,8 +417,8 @@ struct Front {
     game: std::path::PathBuf,
     /// The scene's sprite table (0x447D40).
     sprites: Vec<Option<ts2::pickups::SpriteDef>>,
-    /// The internal id of the scene loaded.
-    scene: usize,
+    /// The internal id and variant of the scene loaded.
+    scene: (usize, u8),
     /// Time not yet run as 60 Hz ticks.
     acc: f32,
     /// The music track playing.
@@ -1459,7 +1459,11 @@ impl Viewer {
                     if j.timer < 0
                         && let Some(s) = j.steps.get(j.next)
                     {
-                        if let Some(a) = self.audio.as_mut() {
+                        // A note on the sample the last one played is only a pitch change on the
+                        // PS1, which the PC ignores: the PC game is heard playing such runs once
+                        // (the user's comparison: pickups, level 4's paint), so it's skipped.
+                        let repeat = j.next > 0 && j.steps[j.next - 1].slot == s.slot;
+                        if !repeat && let Some(a) = self.audio.as_mut() {
                             a.play_slot(s.slot, s.volume, j.pos - listener, right_g, fwd_g);
                         }
                         j.timer = s.delay;
@@ -2063,6 +2067,13 @@ impl Viewer {
                     self.keys.remove(k);
                 }
                 ShotStep::Play => self.toggle_play(),
+                ShotStep::Results(r) => {
+                    if let Some(f) = self.front.as_mut() {
+                        f.state.random = self.random_table.clone().unwrap_or_default();
+                        f.state.level = 1;
+                        f.state.level_done(Some(*r));
+                    }
+                }
             }
         }
         self.update(1.0 / 60.0);
@@ -2097,7 +2108,7 @@ impl Viewer {
     fn enter_front_scene(&mut self) {
         let Some(f) = self.front.as_mut() else { return };
         let exe = fs::read(f.game.join("toy2.exe")).ok().and_then(|b| exe::Exe::parse(b).ok());
-        f.sprites = exe.as_ref().map(|e| ts2::hud::sprite_table(e, f.scene)).unwrap_or_default();
+        f.sprites = exe.as_ref().map(|e| ts2::hud::sprite_table(e, f.scene.0)).unwrap_or_default();
         f.track = None;
         match f.state.screen {
             ts2::frontend::Screen::Select => f.state.begin_select(&self.level_lists, self.random_table.clone().unwrap_or_default()),
@@ -2107,14 +2118,14 @@ impl Viewer {
     }
 
     /// Loads internal scene `id` in place of this one, keeping the window and the front end.
-    fn switch_scene(&mut self, id: usize) {
+    fn switch_scene(&mut self, scene: (usize, u8)) {
         let Some(mut front) = self.front.take() else { return };
-        let path = ts2::campaign::scene_path(&front.game, id);
+        let path = ts2::campaign::variant_path(&front.game, scene.0, scene.1);
         match load(&path.to_string_lossy(), None) {
             Ok(mut next) => {
                 let attached = self.gfx.is_some();
                 let window = self.gfx.take().and_then(|g| g.window);
-                front.scene = id;
+                front.scene = scene;
                 next.front = Some(front);
                 *self = next;
                 if attached {
@@ -2167,7 +2178,7 @@ impl Viewer {
                 }
             }
         }
-        let want = f.state.screen.scene(&f.state.tables);
+        let want = (f.state.screen.scene(&f.state.tables), f.state.screen.variant());
         if want != f.scene && f.state.screen != Screen::Quit {
             self.switch_scene(want);
             return;
@@ -2209,7 +2220,16 @@ impl Viewer {
             f.state.level_quit();
         } else {
             f.state.first_clear = before == 0 && f.state.progress.tokens[id] != 0;
-            f.state.level_done();
+            let result = (!boss).then(|| ts2::frontend::LevelResult {
+                before,
+                now: f.state.progress.tokens[id],
+                coins: self.pickups.as_ref().map_or(0, |p| p.coins),
+                abilities: self.script.as_ref().map_or(0, |l| l.abilities),
+            });
+            if f.state.random.is_empty() {
+                f.state.random = self.random_table.clone().unwrap_or_default();
+            }
+            f.state.level_done(result);
         }
         self.player = None;
     }
@@ -2288,6 +2308,8 @@ enum ShotStep {
     Press(KeyCode),
     Release(KeyCode),
     Play,
+    /// `results:before,now,coins,abilities`: the front end's results screen with these numbers.
+    Results(ts2::frontend::LevelResult),
 }
 
 impl Shot {
@@ -2318,6 +2340,11 @@ impl Shot {
             };
             if let Ok(n) = w.parse() {
                 shot.script.push(ShotStep::Frames(n));
+            } else if let Some(r) = w.strip_prefix("results:") {
+                let v: Vec<i32> = r.split(',').filter_map(|x| x.parse().ok()).collect();
+                if let [before, now, coins, abilities] = v[..] {
+                    shot.script.push(ShotStep::Results(ts2::frontend::LevelResult { before: before as u8, now: now as u8, coins, abilities: abilities as u8 }));
+                }
             } else if w == "play" {
                 shot.script.push(ShotStep::Play);
             } else if let Some(c) = w.strip_prefix("cam:") {
@@ -2383,7 +2410,7 @@ fn main() {
             eprintln!("{e}");
             process::exit(1);
         });
-        viewer.front = Some(Front { state: front, game, sprites: Vec::new(), scene: ts2::campaign::FRONT, acc: 0.0, track: None });
+        viewer.front = Some(Front { state: front, game, sprites: Vec::new(), scene: (ts2::campaign::FRONT, 0), acc: 0.0, track: None });
         viewer.enter_front_scene();
         println!("front end: arrows or WASD move, Space or Enter picks, Escape goes back");
         run(viewer, shot);
@@ -2850,11 +2877,13 @@ mod front_tests {
     fn front_scenes_load_with_their_pictures_and_sprites() {
         let Some(game) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else { return };
         let exe = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
-        for (scene, sprites, textures) in [
-            (ts2::campaign::FRONT, &[0x32, 0x3E][..], &["bgr40", "bgr44"][..]),
-            (ts2::campaign::HUB, &[0x36, 0x37, 0x39, 0x3A][..], &["tex31"][..]),
+        for (scene, variant, sprites, textures) in [
+            (ts2::campaign::FRONT, 0, &[0x32, 0x3E][..], &["bgr40", "bgr44"][..]),
+            (ts2::campaign::HUB, 0, &[0x36, 0x37, 0x39, 0x3A][..], &["tex31"][..]),
+            // The results screen.
+            (ts2::campaign::FRONT, 1, &[0x4C, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53][..], &["bgr40", "tex31"][..]),
         ] {
-            let v = load(&ts2::campaign::scene_path(&game, scene).to_string_lossy(), None).unwrap();
+            let v = load(&ts2::campaign::variant_path(&game, scene, variant).to_string_lossy(), None).unwrap();
             let table = ts2::hud::sprite_table(&exe, scene);
             for t in textures {
                 assert!(v.ngn.textures.iter().any(|x| x.name.eq_ignore_ascii_case(t)), "scene {scene}: no {t}");

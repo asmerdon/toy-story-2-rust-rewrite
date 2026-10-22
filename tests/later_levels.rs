@@ -317,6 +317,9 @@ fn construction_paint_mixes_and_delivers_for_token_three() {
         }
     }
     assert!(l.script.reveals.contains(&3));
+    // One delivery jingle (−5) each, not one a tick.
+    let delivered = l.script.sounds.iter().filter(|(id, _)| *id == 0xFFFB).count();
+    assert_eq!(delivered, 3, "delivery jingles");
 }
 
 #[test]

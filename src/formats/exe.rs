@@ -154,9 +154,10 @@ impl PlayerStart {
 pub fn level_number(path: &std::path::Path) -> Option<usize> {
     let dir = path.parent()?.file_name()?.to_str()?.to_ascii_lowercase();
     let nn: usize = dir.strip_prefix("level")?.parse().ok()?;
+    // Variants (`levelt1`–`3`, `level1t1`–`3`: see `campaign::variant_path`) are the same level.
     match path.file_stem()?.to_str()?.to_ascii_lowercase().as_str() {
-        "level" => Some(nn),
-        "level1" => Some(nn + 10),
+        "level" | "levelt1" | "levelt2" | "levelt3" => Some(nn),
+        "level1" | "level1t1" | "level1t2" | "level1t3" => Some(nn + 10),
         _ => None,
     }
 }

@@ -18,14 +18,14 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 | Level 1 | Complete, signed off by the user |
 | Levels 2–10 | Scripts ported; not playtested (the user is working through them in order) |
 | Levels 11–15 | Scripts ported and simulation-tested; not playtested |
-| Level 4 paint puzzle (token 3) | **User confirmed it works.** Its delivery / drain jingles (−5 / −6) were silent: the viewer dropped negative ids from level scripts. Now routed to jingles (also fixes levels 11, 13–15); awaiting a listen |
+| Level 4 paint puzzle (token 3) | **User confirmed it works**, jingles included; they repeated (same-sample notes), now played once per run of one sample |
 | Level 8 claw machine (token 3) | Ported and simulation-tested; not playtested |
 | Rocket boots, hover boots, grappling hook | Ported and unit-tested; not playtested |
 | Footsteps, footprint trails, wading slowdown | Ported; **user confirmed all three** |
 | Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
-| Two-sided materials (fences, boards, cut-outs) | Now from the material bit (mode 8) in both mesh sets; bed headboards back (billboards were dropped); needs a re-check of levels 1–2 |
-| Front end (title, main menu, level select) | Ported (`src/frontend.rs`). Menus were hidden behind their picture (fixed); the map now swaps blueprints for finished models (0x4F6DC4). Needs a re-test |
-| Tests | 133 pass with `TS2_GAME_DIR` set; release build clean |
+| Two-sided materials (fences, boards, cut-outs) | From the material bit (mode 8) in both mesh sets; level 1 confirmed. User still sees level 2 pool water drawing over everything; not reproduced in shots (needs their spot) |
+| Front end (title, main menu, level select, results) | Title, menu and map confirmed by the user. Results screen (0x4398B0, scene 0 variant `levelt1.ngn`) ported after normal levels; needs a playtest |
+| Tests | 134 pass with `TS2_GAME_DIR` set; release build clean |
 
 ### Still to do, in order
 

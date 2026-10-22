@@ -13,7 +13,7 @@ fn main() {
             let mut tex = std::collections::BTreeSet::new();
             for batch in &b {
                 if let Some(t) = batch.texture {
-                    tex.insert(n.textures[t].name.clone());
+                    tex.insert(format!("{}:{:?}", n.textures[t].name, batch.blend));
                 }
                 for v in &batch.vertices {
                     l = l.min(glam::Vec3::from(v.pos));

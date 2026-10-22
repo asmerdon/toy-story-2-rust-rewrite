@@ -99,8 +99,15 @@ pub const HUB: usize = 16;
 
 /// The `.ngn` of internal level `id` (0x452FC0): ids above 10 are `level1.*` in folder id − 10.
 pub fn scene_path(game: &Path, id: usize) -> PathBuf {
+    variant_path(game, id, 0)
+}
+
+/// Variant `v` (1–3) of a scene (0x452FC0 load flags 0x55A114 bits 6–7): `levelt<v>.ngn`
+/// beside `level.ngn`. Scene 0's are the results screen (1), options (2) and credits (3).
+pub fn variant_path(game: &Path, id: usize, v: u8) -> PathBuf {
     let (folder, stem) = if id > 10 { (id - 10, "level1") } else { (id, "level") };
-    game.join("data").join(format!("level{folder:02}")).join(format!("{stem}.ngn"))
+    let name = if v == 0 { format!("{stem}.ngn") } else { format!("{stem}t{v}.ngn") };
+    game.join("data").join(format!("level{folder:02}")).join(name)
 }
 
 impl Level {
