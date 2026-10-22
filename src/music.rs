@@ -23,6 +23,31 @@ pub const MENU: usize = 0x13;
 pub const TITLE: usize = 0x14;
 pub const LEVEL_DONE: usize = 0x15;
 
+/// The track a level plays (0x49EAC0, each frame from the level scripts): the miniboss theme
+/// while the boss bar shows (HUD element 7's timer, 0x52C832), the race theme while the laps
+/// show (element 6, 0x52C830) with a race on (0x52F2F8 ≥ 2), else the level's own.
+pub fn theme(level_track: usize, boss_shown: bool, laps_shown: bool, race: i32) -> usize {
+    if boss_shown {
+        MINIBOSS
+    } else if laps_shown && race >= 2 {
+        RACE
+    } else {
+        level_track
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn theme_follows_the_boss_bar_and_the_race() {
+        use super::*;
+        assert_eq!(theme(3, false, false, 0), 3);
+        assert_eq!(theme(3, true, true, 2), MINIBOSS);
+        assert_eq!(theme(3, false, true, 1), 3, "the laps show before the start");
+        assert_eq!(theme(3, false, true, 2), RACE);
+    }
+}
+
 /// The name of track `index` in 0x4ECCD8: 0–14 the levels in campaign order, then the above.
 pub fn track(exe: &Exe, index: usize) -> Result<String, String> {
     let u32_at = |va| exe.at(va, 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).map_err(|e| e.to_string());

@@ -97,6 +97,11 @@ pub fn sprite_table(exe: &Exe, level: usize) -> Vec<Option<SpriteDef>> {
 }
 
 impl Hud {
+    /// Whether element `k`'s show timer is running (0x52C824 + 2k ≠ 0).
+    pub fn showing(&self, k: usize) -> bool {
+        self.timer.get(k).is_some_and(|&t| t != 0)
+    }
+
     /// Shows element `k` for `ticks`.
     pub fn show(&mut self, k: usize, ticks: i32) {
         self.timer[k] = self.timer[k].max(ticks);

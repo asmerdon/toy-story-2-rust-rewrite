@@ -410,6 +410,10 @@ struct Viewer {
     quit_level: bool,
     level_ended: bool,
     out_of_lives: bool,
+    /// The game folder, the level's own music track (its campaign index) and the track playing.
+    game_dir: Option<std::path::PathBuf>,
+    level_track: Option<usize>,
+    music_track: Option<usize>,
 }
 
 /// The front end and what it keeps across scene loads.
@@ -1134,6 +1138,18 @@ impl Viewer {
                     boss: self.script.as_ref().and_then(|l| l.boss_bar).unwrap_or_else(|| self.creatures.as_ref().map_or(0, |c| c.boss.bar)),
                     boss_on: self.script.as_ref().is_some_and(|l| l.boss_hud),
                 });
+                // 0x49EAC0: the miniboss theme while the boss bar shows, the race theme while
+                // the laps show with a race on (0x52F2F8 ≥ 2), else the level's own.
+                if let Some(level_track) = self.level_track {
+                    let race = self.script.as_ref().map_or(0, |l| l.race);
+                    let want = ts2::music::theme(level_track, self.hud_state.showing(ts2::hud::BOSS), self.hud_state.showing(ts2::hud::LAPS), race);
+                    if self.music_track != Some(want)
+                        && let (Some(a), Some(game)) = (self.audio.as_mut(), self.game_dir.as_ref())
+                    {
+                        self.music_track = Some(want);
+                        play_music(a, game, want);
+                    }
+                }
             }
             // Creatures (0x4086F0) near the camera.
             if let Some(cr) = self.creatures.as_mut() {
@@ -2306,6 +2322,8 @@ fn front_batches(f: &Front, ngn: &ngn::Ngn) -> Vec<Batch> {
 
 /// Plays music track `index` (0x4ECCD8) on a loop, in place of what was playing.
 fn play_music(a: &mut AudioOut, game: &std::path::Path, index: usize) {
+    // Muted (M) stays muted.
+    let volume = a.music.as_ref().map_or(0.5, |m| m.volume());
     let sink = (|| -> Result<rodio::Sink, String> {
         let exe = exe::Exe::parse(fs::read(game.join("toy2.exe")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let root = ts2::music::media_root(game).ok_or("CD music not found; set TS2_CD_DIR to the folder containing audio/")?;
@@ -2313,7 +2331,7 @@ fn play_music(a: &mut AudioOut, game: &std::path::Path, index: usize) {
         let path = root.join("audio").join(format!("{name}.wav"));
         let wav = ts2::music::decode_pcm(&fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)?;
         let sink = rodio::Sink::try_new(&a.handle).map_err(|e| e.to_string())?;
-        sink.set_volume(0.5);
+        sink.set_volume(volume);
         sink.append(rodio::buffer::SamplesBuffer::new(wav.channels, wav.rate, wav.samples).repeat_infinite());
         println!("music: {name}");
         Ok(sink)
@@ -2744,6 +2762,9 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         level_lists,
         quit_level: false,
         out_of_lives: false,
+        game_dir: level_path.ancestors().nth(3).map(std::path::Path::to_path_buf),
+        level_track: level_no.and_then(|lv| ts2::campaign::LEVELS.iter().position(|l| l.internal_id == lv)),
+        music_track: level_no.and_then(|lv| ts2::campaign::LEVELS.iter().position(|l| l.internal_id == lv)),
         level_ended: false,
     };
     // The first-person helmet and arms only show in first person.

@@ -25,7 +25,7 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
 | Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
 | Two-sided materials (fences, boards, cut-outs) | From the material bit (mode 8) in both mesh sets; level 1 confirmed. User still sees level 2 pool water drawing over everything; not reproduced in shots (needs their spot) |
 | Front end | Title, menu and map confirmed by the user. New, needing a playtest: results after normal levels, boss-defeated after boss levels, game over when lives run out (lives and abilities now carry across levels), "SAVE GAME?" (Slinky) and the load / save screens |
-| Tests | 138 pass with `TS2_GAME_DIR` set; release build clean |
+| Tests | 139 pass with `TS2_GAME_DIR` set; release build clean |
 
 ### Still to do, in order
 
@@ -40,8 +40,8 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
    scenes by rebuilding itself with `load()` and `attach()` on the same window.
 3. **Saves:** done (`src/save.rs`, the original's format). Not kept yet: health between
    levels, the movies-seen and boss flags (+0x157 / +0x158, kept as loaded), volumes.
-4. **Music changes:** boss, race and completion themes (only the level theme loops now;
-   `src/music.rs`).
+4. **Music changes:** done: miniboss and race themes (0x49EAC0, `music::theme`), and the
+   front end's tracks (title, menu, results, game over, boss defeated). Needs a listen.
 5. **FMV playback:** 22 MPEG-1 files on the disc named `.dll` (see `docs/re/asset-audit.md`;
    21 report an MP2 packet error at the end). Needs a decoder crate or ffmpeg.
 6. **Playtest-and-fix pass over levels 2–15** in campaign order.
