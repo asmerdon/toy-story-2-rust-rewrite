@@ -35,7 +35,7 @@ know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `al
    over, save prompt and the load / save screens (0x49D910's flow is in functions.md;
    scenes and variants in `campaign::variant_path`). Left: the pause menu (Escape quits to
    the menu for now), options (0x4371B0, scene 0 variant 2), the movie viewer (0x453FA0),
-   credits (0x43A380, variant 3), logos (0x438520), loading pictures (`gfx\levelNx`), the
+   credits (0x43A380, variant 3), loading pictures (`gfx\levelNx`), the
    attract demo, and the level select's per-level sound (0x4A3B90). The viewer switches
    scenes by rebuilding itself with `load()` and `attach()` on the same window.
 3. **Saves:** done (`src/save.rs`, the original's format). Not kept yet: health between
