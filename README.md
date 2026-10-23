@@ -6,85 +6,88 @@ The original game's behaviour was worked out by reverse-engineering the exe with
 
 - Ported functions are documented in [`docs/re/functions.md`](docs/re/functions.md).
 - File formats are documented in [`docs/formats/`](docs/formats/).
+- Where work stopped and what comes next is in [`HANDOFF.md`](HANDOFF.md).
 
-## What it does
+## Requirements
 
-`ts2-viewer` is a viewer you can play in. It loads the original levels, models, textures, animations and sounds. It runs Buzz and the level logic at the original 60 Hz, using the original's integer maths.
+- An installed copy of the PC game, by default at `C:\Program Files\Disney Interactive\Toy Story 2`. Set `TS2_GAME_DIR` if it's somewhere else.
+- For music and movies, the files from the game disc: set `TS2_CD_DIR` to the folder that contains `audio\` and `rtlibs\`, or put that path in a file named `ts2-media.txt` in the repository folder (it's git-ignored). Without them the game runs silent of music and skips the movies.
+- Stable Rust with the MSVC build tools.
 
-Started with no level, it opens the original front end: the title, the main menu and the level-select map. Arrows or WASD move, Space or Enter picks, and Escape goes back (in a level, Escape quits to the main menu).
+## Playing
+
+Start the whole game, from the startup screens and title onwards:
 
 ```bash
 cargo run --release --bin ts2-viewer
 ```
 
-Or open one level directly:
+Or jump straight into one level by its campaign number (1–15), then press F to play as Buzz:
 
 ```bash
-cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn"
+cargo run --release --bin ts2-viewer -- --level 4
 ```
 
-Prefer campaign numbers (including the correct order for Bombs Away and Slime Time):
+The numbers follow the campaign order, so 3 is Bombs Away and 6 is Slime Time. `--level <1..15> [game_dir]` uses `TS2_GAME_DIR`, or the default install above. A direct path to a `level.ngn` file also works, but it takes the exe's internal level numbering.
 
-```powershell
-cargo run --release --bin ts2-viewer -- --level 3
-cargo run --release --bin ts2-viewer -- --level 12
-```
+### Controls
 
-`--level <1..15> [game_dir]` uses `TS2_GAME_DIR`, or the default install above.
-Direct file paths remain supported and refer to internal asset IDs. Press F to play as Buzz.
-Campaign 3 loads `level06/level.ngn`; campaign 6 loads `level03/level.ngn`.
-Levels 11–15 load `level01`–`level05` respectively, using **`level1.ngn`**.
-Their companion data is present; folders named `level11`–`level15` contain conversion configs.
+| Key | Action |
+|---|---|
+| WASD (arrows in menus) | Move |
+| Space | Jump (again in the air for a double jump); pick in menus |
+| E | Spin attack on the ground (hold to charge), stomp in the air |
+| Left mouse | Wrist laser (hold to charge) |
+| Q | First person (mouse to look); X locks on to a target |
+| Escape | Back in menus; in a level, quit to the main menu |
+| Space, Enter or Escape | Skip a movie |
+| M | Mute or unmute the music |
+| V | Switch between the original camera and a free follow camera |
 
-Validate all 15 asset sets with:
+When a level is opened with `--level`, F toggles between playing and a free camera, and Escape closes the window.
 
-```powershell
-cargo run --release --bin ts2-tool -- audit-levels "C:\Program Files\Disney Interactive\Toy Story 2"
-```
+## What's in
 
-This parses geometry/textures/models, point lists, spawn packets and collision for every
-campaign level. It reports script availability separately from asset availability.
+### The game
 
-## Ported so far
-
-- **Buzz:**
-  - Running, jumping, double jump, stomp, spin attack and charged super spin.
-  - The laser, including the charged shot.
-  - First-person aiming with target lock.
-  - Poles, ledge grabs, mantling, zip lines, pushing boxes and swimming.
-  - Being thrown by springs.
-  - Getting hurt, dying, and lives.
-- **World:**
-  - The original collision data.
-  - Movers that switch on and off, slide and tilt, and carry Buzz.
-  - Platforms that follow scripted paths.
-  - Room detection.
+- **Buzz:** running, jumping, double jump, stomp, spin attack and charged super spin; the laser and its charged shot; first-person aiming with target lock; poles, ledge grabs, mantling, zip lines, swing bars, pushing boxes and swimming; springs; rocket boots, hover boots and the grappling hook; getting hurt, dying and lives.
+- **World:** the original collision data, movers that switch on and off, slide, tilt and carry Buzz, platforms on scripted paths, and room detection.
 - **Camera:** the original follow camera, the cutscene camera and the look-at scenes.
-- **Creatures:**
-  - The shared behaviour-script interpreter.
-  - Hit shapes, combat and coin drops.
-  - Type-specific routines for most enemies and characters in levels 1–10.
-- **HUD:** lives, batteries, coins, charge meters, challenge counters and boss bars.
-- **Particles:** driven by the exe's own particle tables.
-- **Conversations:** typed speech boxes and the talk camera.
-- **Sound:** positional sound with jingles.
-- **Pickups:** tokens, power-ups, the info signposts and ability-locked items.
-- **Level scripts:**
-  - **Level 1 (Andy's House): complete and playable start to finish.** This includes the crib escape, Bo Peep's sheep, Hamm's coins, Mr Potato Head and his missing ear, the RC race, the Tin Man boss, the attic see-saw, the lift, springs, push boxes, swing bars, the garage drills and the tutorial signposts. Collecting a token brings up the "keep playing / exit level" menu and the exit animation.
-  - **Levels 2–10:** each level's own script is ported, including its characters, gadgets, challenges and bosses (the Zurg kite, the slime, the drill, the clown, the dino, the car, the level 9 boss with its minions and the spider). These still need playtesting.
-- **Rendering:** the original two-pass level draw, back-face culling, the PS1 background picture behind the windows and sky, and fixes for the level data's black faces and glass.
-- **Front end:** the title, main menu and the level-select map with its flying camera, token gates and moving pieces.
-- **Tests:** 132 tests, many driving the real game data, covering movement, combat, bosses, races and gadgets.
+- **Creatures:** the shared behaviour-script interpreter, hit shapes, combat and coin drops, and type-specific routines for the enemies and characters of every level.
+- **Pickups:** coins, batteries, extra lives, tokens, power-ups, the info signposts and ability-locked items.
+- **Level scripts:** all 15 campaign levels, with their characters, gadgets, challenges, races and bosses.
+  - **Level 1 (Andy's House)** is complete and signed off.
+  - **Levels 2–15** are ported; they still need a full playtest.
+- **HUD and conversations:** lives, batteries, coins, charge meters, challenge counters and boss bars; typed speech boxes and the talk camera; the "keep playing / exit level" token menu.
+- **Particles**, driven by the exe's own particle tables.
+
+### The front end
+
+- The startup screens (trademarks and rating), the logo movies and the trailer.
+- The title screen and main menu.
+- The level-select map, with its flying camera, its models changing from blueprints to finished levels as they unlock, and the token gates on levels 3, 6, 9, 12 and 15.
+- After a level: the results screen (tokens, coins, abilities), or the "boss defeated" screen after a boss.
+- "Save game?" and eight save slots; "load game" from the main menu. Lives, abilities, tokens and movies seen carry through a game and into saves.
+- Game over when the lives run out.
+
+### Sound, music and movies
+
+- Positional sound effects and jingles, from the game's own sound tables.
+- The original stereo music, chosen as the exe chooses it: each level's theme, the miniboss and race themes, and the front end's tracks.
+- The disc's movies, played when the original plays them: level intros the first time a level is started, boss movies, and the endings.
+
+### Rendering
+
+- The original two-pass level draw (low-detail set in the distance, detailed set close up).
+- Back-face culling decided per material, as the original does, so fences, boards and cut-outs are drawn from both sides.
+- Fixes for the level data's black faces and glass, and the PS1 background picture behind windows and the sky.
 
 ## Not done yet
 
-- Levels 2–10 are ported but not yet playtested, so expect bugs there.
-- Level 4's paint puzzle and level 8's claw machine are ported and simulation-tested. A few small gadgets are still skipped (level 8's electric arcs and cannon, drips and lights).
-- The front end has the title, main menu, level select, results, boss-defeated and game-over screens, and saving and loading (eight slots). Still missing: options, the movie viewer, the pause menu, the credits and the attract demo.
-- Original stereo music plays as the exe picks it: the level theme, the miniboss and race themes, and the front end's tracks; **M** mutes/unmutes music independently of sound effects. The movies (logos, trailer, level intros, boss and ending movies) play from the disc when the original plays them; jump, Enter or Escape skips one. Set `TS2_CD_DIR` to the extracted disc folder containing `audio/`, or put that folder path in local ignored `ts2-media.txt` (already configured on this machine). Track selection follows the original executable, including campaign levels 3/6. The disc contains 23 WAVs and 22 MPEG videos named `.dll`; see `docs/re/asset-audit.md`.
-- The rocket boots, hover boots and grappling hook are ported but not playtested. To use the hook: pick up hooks, go into first person (Q), lock on to a hook point (X), and fire.
-- Levels 11 (Al's Penthouse), 13 (Airport Infiltration), 14 (Tarmac Trouble) and 15 (Prospector Showdown) have their scripts ported and simulation-tested, but not playtested. Every campaign level now has its script.
-- Level 12 (Zurg): entrance, attacks, hit recovery, arena boundaries, death and completion are ported and simulation-tested with real data. Visual playtesting remains; lighting and the nearest-light marker are omitted.
+- A playtest-and-fix pass over levels 2–15 in campaign order. Expect bugs there.
+- The pause menu (Escape quits to the main menu for now), options, the movie viewer, the credits, the loading pictures and the attract demo.
+- A few small gadgets: level 8's electric arcs and cannon, drips, dynamic lights, floor shadows and the stomp's camera shake; level 11's lights; level 12's lighting.
+- Health isn't carried between levels yet, and the sound and music volume settings aren't saved.
 
 ## Deviations from the original
 
@@ -97,20 +100,23 @@ A few things are deliberately different, mostly to fix what looked wrong when dr
 - Level 1's garage drill bits move and hurt, matched to the original by eye.
 - Saves go to `%APPDATA%/ts2-rust` (or `TS2_SAVE_DIR`) instead of beside the game, which is usually read-only. They use the original's `Toy2NN.sav` format, so saves copied between the two work.
 
-## Requirements
-
-- An installed copy of the PC game, by default at `C:\Program Files\Disney Interactive\Toy Story 2`.
-- Stable Rust with the MSVC build tools.
-
 ## Running the tests
 
-The tests that use game data are skipped unless `TS2_GAME_DIR` is set:
+The tests that use game data are skipped unless `TS2_GAME_DIR` is set; the movie test also needs the disc files.
 
 ```bash
 set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
 
-## Status
+There are 142 tests, many driving the real game data, covering movement, combat, bosses, races, gadgets, the front end, saves and movie decoding.
 
-See [`HANDOFF.md`](HANDOFF.md) for where work stopped and what comes next.
+## Tools for development
+
+- **Screenshots without a window:** `ts2-viewer [--level N] --shot out.png "<script>"` renders offscreen and silently. In the script, numbers run that many frames, `+Space` / `-Space` press and release a key, `play` starts Buzz, and `cam:x,y,z,yaw,pitch` holds the camera.
+- **Asset audit:** `cargo run --release --bin ts2-tool -- audit-levels "<game dir>"` parses the geometry, textures, models, point lists, spawns and collision of every campaign level.
+- **Diagnostics:** about 50 examples in `examples/` (`cargo run --release --example <name>`), listed in HANDOFF.
+
+## Third-party crates
+
+Rendering uses wgpu and winit, sound uses rodio, the movies' video is decoded by `oxideav-mpeg12video` and their sound by Symphonia.
