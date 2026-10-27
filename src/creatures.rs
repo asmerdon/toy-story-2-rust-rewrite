@@ -1709,7 +1709,7 @@ impl Creatures {
                 } else {
                     // Landed from a jump: on with the script.
                     c.wait = 0;
-                    c.pc += 2;
+                    c.pc += 1; // Original advances two bytes; this PC counts i16 words.
                     if c.flags & 0x400 != 0 {
                         c.flags &= !0x400;
                         if jump_mode == 2 {
@@ -2086,3 +2086,4 @@ mod tests {
         assert_eq!((r.behaviour, r.turn, r.health, r.respawn, r.flags, r.zone, r.speed), (1, 10, 4, 100, 0x180, [25, 155], 64));
     }
 }
+

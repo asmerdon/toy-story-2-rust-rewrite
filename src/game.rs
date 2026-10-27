@@ -142,7 +142,7 @@ struct ObjectInfo {
     moved: std::cell::Cell<Vec3>,
 }
 
-/// The rotation of 12-bit angles about X, then Y, then Z (the order `scene` draws specials
+/// The rotation of 12-bit angles about Z, then Y, then X (the order `scene` draws specials
 /// with), as a row-vector matrix: p' = p · m.
 fn turn_matrix(a: [i32; 3]) -> [[f32; 3]; 3] {
     let r = |v: i32| v as f32 / 4096.0 * std::f32::consts::TAU;
@@ -151,7 +151,7 @@ fn turn_matrix(a: [i32; 3]) -> [[f32; 3]; 3] {
     let ry = [[cy, 0.0, -sy], [0.0, 1.0, 0.0], [sy, 0.0, cy]];
     let rz = [[cz, sz, 0.0], [-sz, cz, 0.0], [0.0, 0.0, 1.0]];
     let mul = |a: [[f32; 3]; 3], b: [[f32; 3]; 3]| std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()));
-    mul(mul(rx, ry), rz)
+    mul(mul(rz, ry), rx)
 }
 
 fn turn_by(m: &[[f32; 3]; 3], p: Vec3) -> Vec3 {
@@ -2747,6 +2747,23 @@ mod tests {
     use super::*;
     use crate::scene::{Batch, GpuVertex};
 
+    #[test]
+    fn tilted_mover_matches_rendered_special_rotation() {
+        for angles in [[0, 0x961, -0x1C0], [0, 0xB4A, 0x1C0], [137, 591, -240]] {
+            let instance = crate::formats::ngn::Instance {
+                pos: [0.; 3], rot: angles.map(|v| ((v as u32) << 4) & 0xFFFF),
+                scale: [1.; 3], mesh: 0, flags: 0,
+            };
+            let render = crate::scene::instance_matrix(&instance);
+            for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+                let expected = Vec3::from_array(std::array::from_fn(|j|
+                    axis.x * render[0][j] + axis.y * render[1][j] + axis.z * render[2][j]));
+                let collision = turn_by(&turn_matrix(angles), axis);
+                assert!((expected - collision).length() < 0.00001,
+                    "angles {angles:?}: render {expected:?}, collision {collision:?}");
+            }
+        }
+    }
     fn v(x: f32, y: f32, z: f32) -> GpuVertex {
         GpuVertex { pos: [x, y, z], uv: [0.0; 2], color: [0; 4] }
     }
@@ -3234,3 +3251,5 @@ mod power_tests {
         assert_eq!(p.power, 1200 - 10 * shots.len() as i32);
     }
 }
+
+

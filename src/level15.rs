@@ -75,7 +75,8 @@ impl Level15 {
             specials.set_pos(id, p.map(|v| v >> 5));
         }
         for id in [1, 4] {
-            specials.set_pos(id, p.map(|v| v >> 7));
+            // PC NGN and Specials use full level units, including the far layer.
+            specials.set_pos(id, p.map(|v| v >> 5));
         }
         if self.wobble > 0 {
             self.wobble = (self.wobble - 256).max(0);
@@ -172,7 +173,7 @@ impl Level15 {
                         k,
                         3,
                         if k == 0 { 0x18 } else { 9 },
-                        if k == 0 { [0x40; 2] } else { [-48; 2] },
+                        if k == 0 { [-0x40; 2] } else { [-48; 2] },
                     );
                     self.shot[k] = if k == 0 { 63 } else { 44 };
                     if k == 2 {
@@ -374,3 +375,5 @@ impl Script for Level15 {
         }
     }
 }
+
+

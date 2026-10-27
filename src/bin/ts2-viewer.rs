@@ -3037,7 +3037,8 @@ fn sky_batch(b: &packets::Backdrop, view_proj: Mat4, forward: Vec3, picture: Opt
             v.extend(quad(s, top, s + w, line, [u0, 0.0, u1, 1.0], [0xFF; 3]));
             s += w;
         }
-        out.push(Batch { texture: Some(tex), blend: scene::Blend::Opaque, vertices: v });
+        // The opaque picture must win equal-depth tests against the flat fills.
+        out.insert(0, Batch { texture: Some(tex), blend: scene::Blend::Opaque, vertices: v });
     }
     out
 }
@@ -3203,3 +3204,4 @@ mod culling_tests {
         }
     }
 }
+

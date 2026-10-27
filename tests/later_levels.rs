@@ -384,3 +384,39 @@ fn space_land_claw_catches_the_prize_and_drops_it_out() {
     // With rand.dat's bytes the shuffled prize lands under the claw.
     assert!(caught);
 }
+
+#[test]
+fn final_arena_lod_suitcases_stay_aligned_during_intro() {
+    let Some(mut l) = load(15) else { return };
+    let p = Player::new(Vec3::new(-4000., -1000., 0.));
+    for frame in 0..500 {
+        l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+        l.script.tick_look();
+        for (near, far) in [(0, 1), (3, 4)] {
+            let a = Vec3::from(l.specials.pos_obj(near).unwrap().map(|v| v as f32));
+            let b = Vec3::from(l.specials.pos_obj(far).unwrap().map(|v| v as f32));
+            assert!((a-b).length() < 256., "frame {frame}: near {a:?}, far {b:?}");
+        }
+    }
+}
+
+#[test]
+fn final_arena_coupled_creature_simulation() {
+    let Some(mut l) = load(15) else { return };
+    let p = Player::new(Vec3::new(-4000., -1000., 0.));
+    let mut positions = [Vec::new(), Vec::new(), Vec::new()];
+    for frame in 0..1000 {
+        l.cr.tick(&l.world, p.pos_obj(), p.pos_obj());
+        l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+        l.script.tick_look();
+        if frame > 600 {
+            for k in 0..3 { positions[k].push(l.cr.slots[k].pos); }
+        }
+    }
+    for k in 0..3 {
+        let c = &l.cr.slots[k];
+        eprintln!("boss {k}: pos={:?} health={} active={} anim={} state={} flags={:x}", c.pos,c.health,c.active,c.anim,c.rec.state,c.flags);
+        assert!(positions[k].iter().any(|p| *p != positions[k][0]), "boss {k} never moved");
+    }
+    assert!(l.script.boss_hud);
+}
