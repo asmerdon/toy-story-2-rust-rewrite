@@ -287,9 +287,11 @@ impl Level14 {
                 self.boss_phase = 3;
                 self.shot = 0;
             } else {
-                if c.anim == 1 && near(c.pos, player.pos_obj(), 200) {
+                // 0x42D3E0: only with Buzz in its zone this tick (bit 1 of byte +6 of
+                // 0x4076F0's struct); 0x405CF0 alone, its animation rates untouched.
+                if c.step.chase & 1 != 0 && c.anim == 1 && near(c.pos, player.pos_obj(), 200) {
                     c.rec.speed = 0;
-                    cr.animate_slot(K, 3, 0x18, [0x40; 2]);
+                    cr.set_slot_anim(K, 3, 0x18);
                     self.shot = 63;
                 }
                 let c = &mut cr.slots[K];
@@ -308,7 +310,8 @@ impl Level14 {
                             .unwrap_or(fallback);
                         self.particles.push(ParticleRequest {
                             pos,
-                            vel: [0, -1, 0],
+                            // vy −2 as 0x42D3E0 passes it (halved to −1: home on Buzz).
+                            vel: [0, -2, 0],
                             gravity: a << 2,
                             angle: 0,
                             spin: 0,

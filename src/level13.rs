@@ -281,7 +281,9 @@ impl Level13 {
                 self.boss_bar = Some(0);
                 self.shot = 0;
             } else {
-                if c.anim == 4 && near(c.pos, player.pos_obj(), 200) {
+                // 0x42BE60 only on a tick its shared update found Buzz in its zone (bit 1 of
+                // byte +6 of 0x4076F0's struct).
+                if c.step.chase & 1 != 0 && c.anim == 4 && near(c.pos, player.pos_obj(), 200) {
                     c.rec.speed = 0;
                     cr.animate_slot(SLOT, 3, 9, [-48, -48]);
                     self.shot = 44;

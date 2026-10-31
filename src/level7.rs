@@ -406,6 +406,8 @@ impl Script for Level7 {
             }
         }
         let room = world.room_at(player.pos);
+        // The dino's routine (0x420AF0) acts on 0x54DEA0 == 4: Buzz in its room.
+        cr.boss.hud = room == Some(4);
         self.dino(room, player, cr);
         if touched(cr, FINDER.0) && cr.sheep >= 0 {
             let at = cr.slots[FINDER.0].pos;

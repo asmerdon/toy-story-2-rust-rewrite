@@ -44,9 +44,11 @@ fn slime_shrinks_over_four_rounds() {
             let lid = specials.pos_obj(0).unwrap();
             let head = cr.node_point(0, 10, [0.0, -700.0, 0.0]).expect("slime animation loaded");
             lid_checks += 1;
-            // Within a few level units of the head (+0x20 level units above it).
+            // Within a few level units of the head (+0x20 level units above it). 0x41AA10 places
+            // the lid before it sets this tick's scale, so while the slime regrows (held through
+            // the scene, then growing fast) the lid trails the head by one tick's growth in height.
             let d = [lid[0] - head[0], lid[1] - (head[1] - 0x400), lid[2] - head[2]];
-            if d.iter().any(|v| v.abs() > 0x400) {
+            if d[0].abs() > 0x400 || d[1].abs() > 0x600 || d[2].abs() > 0x400 {
                 lid_off += 1;
             }
         }

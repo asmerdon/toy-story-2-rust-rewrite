@@ -593,6 +593,19 @@ impl Creatures {
         }
     }
 
+    /// 0x405CF0 alone on slot `slot`: animation and frame list, its rates left as they are.
+    pub fn set_slot_anim(&mut self, slot: usize, anim: u16, seq: usize) {
+        if let Some(mut c) = self.slots.get(slot).cloned() {
+            self.set_anim(&mut c, anim, seq);
+            self.slots[slot] = c;
+        }
+    }
+
+    /// Slot `slot`'s animation rates on the ground / in the air (+0x6E / +0x6F).
+    pub fn slot_rates(&self, slot: usize) -> Option<[i8; 2]> {
+        self.slots.get(slot).map(|c| c.rates)
+    }
+
     fn set_anim(&self, c: &mut Creature, anim: u16, seq: usize) {
         c.anim = anim;
         c.seq = (seq, 0);
@@ -1230,7 +1243,11 @@ impl Creatures {
             c.rec.state = 4;
             self.sounds.push((0x79, c.pos));
         }
-        if c.timer != 0 {
+        // Breathing fire only with Buzz in its room (0x54DEA0 == 4, `boss.hud` from the level
+        // script); the timer runs down either way.
+        if c.timer != 0 && !self.boss.hud {
+            c.timer = (c.timer - 1).max(0);
+        } else if c.timer != 0 {
             let at = Self::local(c, [0x14, -0x258, 0]);
             let u = (c.angles[1] - 0x80 + self.rand() as i32) & 0xFFF;
             self.sounds.push((0x78, c.pos));
@@ -1264,11 +1281,24 @@ impl Creatures {
             self.boss.jingles.push((-2, c.pos));
             self.boss.state = 3;
         }
-        if self.boss.state >= 3 && self.clock.is_multiple_of(7) {
+        // Beaten, in its room: smoke (every 7 ticks) from its back and its mouth on alternate
+        // ticks, and sparks at frame 10.
+        if self.boss.state >= 3 && self.boss.hud {
             let f = c.angles[1];
-            let at = [c.pos[0] - 3 * (sin(f - 0x400) >> 2), c.pos[1] - 0x400, c.pos[2] - 3 * (sin(f) >> 2)];
-            let spin = self.rand() as i32 - 0x80;
-            self.spawns.push((at, 0x11, 10, spin));
+            let at = if !self.boss.blink {
+                [c.pos[0] - 3 * (sin(f - 0x400) >> 2), c.pos[1] - 0x400, c.pos[2] - 3 * (sin(f) >> 2)]
+            } else {
+                [c.pos[0] + (sin(f - 0x400) >> 2), c.pos[1] - 0x1D00, c.pos[2] + (sin(f) >> 2)]
+            };
+            if self.clock.is_multiple_of(7) {
+                let spin = self.rand() as i32 - 0x80;
+                self.spawns.push((at, 0x11, 10, spin));
+            }
+            if self.rand() & 3 != 0 && c.time >> 16 == 0xA {
+                // Its life (+0x24) comes from one more random byte.
+                self.rand();
+                self.spawns.push((at, 4, 4, 0));
+            }
         }
     }
 
@@ -1335,7 +1365,9 @@ impl Creatures {
                 self.sounds.push((0x4C, c.pos));
                 c.timer = 400;
                 let at = [c.pos[0] + (sin(f - 0x800) >> 2), c.pos[1] - 0x2000, c.pos[2] + (sin(f - 0x400) >> 2)];
-                self.particles.push(ParticleRequest { pos: at, vel: [0, -2, 0], gravity: 0, angle: f * 4, spin: 0x80, typ: 0x72 });
+                // 0x40FAE0's seventh argument (facing × 4) is the heading the homing missile starts
+                // from; its pitch (+0x20) starts at 0x400, straight up (particles::create).
+                self.particles.push(ParticleRequest { pos: at, vel: [0, -2, 0], gravity: f * 4, angle: 0, spin: 0x80, typ: 0x72 });
             }
         }
         if c.health < 10 && self.boss.state == 2 {

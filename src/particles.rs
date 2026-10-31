@@ -224,7 +224,12 @@ impl Particles {
             rgb: t.rgb,
             // 0x42F310 sets +0x20 to -1 (flat) on the blacksmith's 0x66 shockwave, the only
             // spawner of it; the other homing shots steer their pitch from 0.
-            homing_pitch: if typ == 0x66 { -1 } else { 0 },
+            homing_pitch: match typ {
+                0x66 => -1,
+                // 0x422660 sets +0x20 = 0x400 on the level-8 boss's missile, the only spawner.
+                0x72 => 0x400,
+                _ => 0,
+            },
             ..Default::default()
         };
         if t.period < 0 {

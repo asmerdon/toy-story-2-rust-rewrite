@@ -30,6 +30,16 @@ const FLAILS: std::ops::RangeInclusive<usize> = 1..=6;
 /// The minion pairs called up each round (0x4F2F5C…).
 const PAIRS: [(usize, usize); 6] = [(8, 8), (7, 7), (8, 9), (10, 7), (11, 8), (11, 7)];
 
+/// The beam's heading (0x424490): towards Buzz, at most 0x200 off its facing. The turn is
+/// wrapped by 0xFFF, not 0x1000, so a turn just left of ahead comes out one unit further right.
+pub fn beam_heading(facing: i32, to_buzz: i32) -> i32 {
+    let mut d = (to_buzz - facing) & 0xFFF;
+    if d > 0x800 {
+        d -= 0xFFF;
+    }
+    (d.clamp(-0x200, 0x200) + facing) & 0xFFF
+}
+
 pub struct Level9 {
     /// 0x52FC04: 0 waiting, 1 rising, 2 fighting, 3 chasing, 4 dying, 5 over.
     phase: i32,
@@ -134,7 +144,6 @@ impl Script for Level9 {
         }
         self.clock = self.clock.wrapping_add(1);
         let buzz = player.pos_obj();
-        let look = self.look_ticks();
         // Kept within reach of the middle.
         let reach = if self.phase < 3 { 0x1068 } else { 0x1388 };
         let c = &mut cr.slots[BOSS];
@@ -143,6 +152,24 @@ impl Script for Level9 {
             let a = crate::boxes::angle12(x as f32, z as f32);
             c.pos[0] = sin_table(a) * reach >> 9;
             c.pos[2] = sin_table(a + 0x400) * reach >> 9;
+        }
+        // Once a pair has been called (0x52FBF4 > 0): no sideways speed while a scene holds
+        // play (0x52B816 bit 1) and both kept within 0x15E0 of the middle.
+        if self.pair_at > 0 {
+            let frozen = self.look.is_some();
+            for m in [self.pair.0, self.pair.1] {
+                let c = &mut cr.slots[m];
+                if frozen {
+                    c.vel[0] = 0;
+                    c.vel[2] = 0;
+                }
+                let (x, z) = (c.pos[0] >> 5, c.pos[2] >> 5);
+                if x * x + z * z > 0x15E0 * 0x15E0 {
+                    let a = crate::boxes::angle12(x as f32, z as f32);
+                    c.pos[0] = sin_table(a) * 0x15E0 >> 9;
+                    c.pos[2] = sin_table(a + 0x400) * 0x15E0 >> 9;
+                }
+            }
         }
         let at = cr.slots[BOSS].pos;
         // The flails: round the boss, turning; their tips knock Buzz back.
@@ -240,7 +267,7 @@ impl Script for Level9 {
             if self.base < -0x8000 {
                 self.base = (self.base + 0x280).min(-0x8000);
             }
-            if look == 0 {
+            if self.look_ticks() == 0 {
                 self.phase = 2;
                 cr.slots[BOSS].rec.speed = 0x10;
             }
@@ -252,7 +279,7 @@ impl Script for Level9 {
             if self.hurt > 0x1E0 {
                 self.hurt = 600;
             }
-            if look == 0 {
+            if self.look_ticks() == 0 {
                 if !self.pair_fixed {
                     if self.hurt >= 0x1A4 {
                         self.pair_fixed = true;
@@ -277,7 +304,7 @@ impl Script for Level9 {
                     let f = cr.slots[flail].angles[1];
                     l.from = [tip[0] + sin_table(f + 0x400) * 3, tip[1], tip[2] + sin_table(f - 0x800) * 3];
                 }
-                if look < 300 && !self.called {
+                if self.look_ticks() < 300 && !self.called {
                     self.called = true;
                     for m in [p0, p1] {
                         cr.restart(m);
@@ -296,7 +323,7 @@ impl Script for Level9 {
                             c.timer = 0x1CC;
                         }
                     }
-                    if look < 0x3C && !self.burst {
+                    if self.look_ticks() < 0x3C && !self.burst {
                         self.burst = true;
                         for _ in 0..4 {
                             let spin = self.common.rand() - 0x80;
@@ -331,14 +358,14 @@ impl Script for Level9 {
                     if let Some(l) = self.look.as_mut() {
                         l.from[1] += 0x80;
                     }
-                    if look < 0x78 {
+                    if self.look_ticks() < 0x78 {
                         cr.kill_slot(BOSS);
                         self.phase = 5;
                     }
                     self.cool = (self.cool - 1).max(0);
                 }
                 5 => {
-                    if look == 0 && !self.done {
+                    if self.look_ticks() == 0 && !self.done {
                         self.done = true;
                         self.phase = 6;
                     }
@@ -354,11 +381,7 @@ impl Script for Level9 {
             let f = c.angles[1] + 0x800;
             let from = [at[0] + (-400 * sin_table(f) >> 14), at[1], at[2] + (-400 * sin_table(f + 0x400) >> 14)];
             let to_buzz = crate::boxes::angle12((buzz[0] - from[0]) as f32, (buzz[2] - from[2]) as f32);
-            let mut d = (to_buzz - c.angles[1]) & 0xFFF;
-            if d > 0x800 {
-                d -= 0x1000;
-            }
-            let u = (d.clamp(-0x200, 0x200) + c.angles[1]) & 0xFFF;
+            let u = beam_heading(c.angles[1], to_buzz);
             let delta = [sin_table(u) << 2, 96000, sin_table(u + 0x400) << 2];
             let o = glam::Vec3::from(from.map(|v| v as f32 / 32.0));
             let dv = glam::Vec3::from(delta.map(|v| v as f32 / 32.0));

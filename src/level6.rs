@@ -78,7 +78,6 @@ impl Script for Level6 {
             self.health = c0.health;
         }
         let buzz = player.pos_obj();
-        let look = self.look_ticks();
         let c = &mut cr.slots[BOSS];
         // A hit.
         if c.health != 0 && c.health != self.health {
@@ -100,6 +99,7 @@ impl Script for Level6 {
         if self.hurt < 0 {
             self.hurt = 0;
             c.rec.state = 7;
+            c.lit = false;
         } else if c.id != 0 {
             if let Some(l) = self.look.as_mut() {
                 l.at = c.pos;
@@ -107,6 +107,9 @@ impl Script for Level6 {
             if self.hurt < 0x5A {
                 self.common.sounds.push((0x66, c.pos));
             }
+            // Lit (+0x34, light 0x2000) on alternate ticks (0x52F9A8).
+            c.lit = self.clock & 1 != 0;
+            c.light = [0x2000; 3];
         }
         // Its lift: rising while it's outside the arena.
         let inside = c.pos[0] > -0x390AF && c.pos[0] < 0x390AF && c.pos[2] > -0x21F9E && c.pos[2] < 0x21F9E;
@@ -139,13 +142,13 @@ impl Script for Level6 {
         }
         if self.phase == 1 {
             let c = &mut cr.slots[BOSS];
-            if look < 0x1E {
+            if self.look_ticks() < 0x1E {
                 c.flags |= 4;
             }
-            let i = (look - 0x1E).max(0);
+            let i = (self.look_ticks() - 0x1E).max(0);
             c.angles[2] = ((sin_table(i * 0x14 + 0x400) as u16 as i32 >> 3) - 0x800) & 0xFFF;
             c.pos[0] -= 0x800;
-            if look == 0 {
+            if self.look_ticks() == 0 {
                 self.phase = 2;
             }
         }
@@ -195,12 +198,30 @@ impl Script for Level6 {
             if let Some(l) = self.look.as_mut() {
                 l.from[1] -= 0x80;
             }
-            if c.health < 0xB && look < 0x78 && c.id != 0 && c.hurt == 0 {
+            if c.health < 0xB && self.look_ticks() < 0x78 && c.id != 0 && c.hurt == 0 {
                 cr.kill_slot(BOSS);
             }
-            if look == 0 {
+            if self.look_ticks() == 0 {
                 self.done = true;
                 self.phase = 4;
+            }
+        }
+        // Its lean (flag 4, from the end of the fly-in): easing towards half its turn while
+        // it can be hurt; after a hit spinning 0x40 a tick, and once beaten tumbling too.
+        let c = &mut cr.slots[BOSS];
+        if c.flags & 4 != 0 {
+            if self.hurt == 0 {
+                let mut d = (c.angles[1] - c.target_facing) & 0xFFF;
+                if d > 0x800 {
+                    d -= 0x1000;
+                }
+                let z = c.angles[2] as i16 as i32;
+                c.angles[2] = (z - (((z - d / 2) >> 5) as i16 as i32)) as i16 as i32;
+            } else {
+                c.angles[2] = (c.angles[2] + 0x40) & 0xFFF;
+                if self.phase == 3 {
+                    c.angles[0] = (c.angles[0] + 0x24) & 0xFFF;
+                }
             }
         }
         // Exhaust from its sides; fireballs once it's beaten.

@@ -177,12 +177,12 @@ impl Level15 {
                     && near(c.pos, player.pos_obj(), 300)
                 {
                     c.rec.speed = 0;
-                    cr.animate_slot(
-                        k,
-                        3,
-                        if k == 0 { 0x18 } else { 9 },
-                        if k == 0 { [-0x40; 2] } else { [-48; 2] },
-                    );
+                    // 0x42F7B0 sets the rates to 0xD0 first; 0x42F310 leaves them.
+                    if k == 0 {
+                        cr.set_slot_anim(k, 3, 0x18);
+                    } else {
+                        cr.animate_slot(k, 3, 9, [-48; 2]);
+                    }
                     self.shot[k] = if k == 0 { 63 } else { 44 };
                     if k == 2 {
                         self.voices.push(0xC2);
@@ -308,7 +308,8 @@ impl Script for Level15 {
                 self.wobble = 0x800;
                 self.wobble_kind = k;
                 if k == 3 {
-                    for (i, vy) in [-0x900, -0xA00, -0x800].into_iter().enumerate() {
+                    // 0x42FC50 at 0x1AF: +0x48 of slots 0, 1, 2 = −0x700, −0x600, −0x800.
+                    for (i, vy) in [-0x700, -0x600, -0x800].into_iter().enumerate() {
                         cr.slots[i].vel[1] = vy;
                         cr.slots[i].health = 29;
                     }
@@ -325,7 +326,8 @@ impl Script for Level15 {
                         cr.slots[3 + i].vel[1] = pair[i];
                         if k == 2 {
                             cr.slots[3 + i].vel[0] = -0x400;
-                            cr.slots[3 + i].home[1] = 0;
+                            // +0x60 (0x52CA74 / 0x52CB10): the height they ease to.
+                            cr.slots[3 + i].target[1] = 0;
                         }
                     }
                     self.sounds.push((0x2F, [0; 3]));
@@ -366,7 +368,7 @@ impl Script for Level15 {
                 let c = &mut cr.slots[3 + i];
                 c.pos = pos;
                 c.health = 1;
-                c.home[1] = pos[1];
+                c.target[1] = pos[1];
                 c.angles[1] = 0x400;
                 c.target_facing = 0x400;
             }

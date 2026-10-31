@@ -163,7 +163,8 @@ impl Script for Level3 {
                         self.phase = 1000;
                         self.look_at([s[0], s[1] - 11000, s[2]], buzz, 0x1A4, 0x10);
                         c.flags &= !0x180;
-                        self.drop = (s[1] - 1000, 0);
+                        // 0x52F6F4 is set while the slime's height is lifted by 11000.
+                        self.drop = (s[1] - 12000, 0);
                     } else {
                         c.rec.state = 4;
                         let ticks = self.regrow;
@@ -178,8 +179,10 @@ impl Script for Level3 {
             if self.phase == 999 {
                 if self.target < self.full {
                     if c.rec.state == 4 {
-                        if look < 0x78 {
-                            if crossed(0x78) {
+                        // The scene timer read now: a hit this tick has just set it.
+                        let now = self.common.look_ticks();
+                        if now < 0x78 {
+                            if last >= 0x78 {
                                 cr.boss.jingles.push((-4, s));
                             }
                             self.target += (self.full - self.target) / 32;
@@ -195,7 +198,9 @@ impl Script for Level3 {
                 // Its script's timer: 1 fires a blob, 3 shakes the camera.
                 let c = &mut cr.slots[SLIME];
                 if c.timer == 1 {
-                    cr.particles.push(ParticleRequest { pos: [c.pos[0], c.pos[1] - 10000, c.pos[2]], vel: [0, -2, 0], gravity: 0, angle: c.angles[1] << 2, spin: 0x80, typ: 0x3F });
+                    // 0x41AA10 passes facing << 2 as 0x40FAE0's seventh argument (the +0x18
+                    // word: the heading a flag-8 shot homes from, vy −2 meaning Buzz), angle 0.
+                    cr.particles.push(ParticleRequest { pos: [c.pos[0], c.pos[1] - 10000, c.pos[2]], vel: [0, -2, 0], gravity: c.angles[1] << 2, angle: 0, spin: 0x80, typ: 0x3F });
                     cr.sounds.push((0xD, c.pos));
                 }
                 c.timer = 0;
@@ -204,7 +209,10 @@ impl Script for Level3 {
             if look < 0xB4 {
                 self.phase = 0x3E9;
                 self.drop.1 = -0xC00;
+                // 0x41AA10 kills it 9000 lower than it stands (and puts it back after).
+                cr.slots[SLIME].pos[1] += 9000;
                 cr.kill_slot(SLIME);
+                cr.slots[SLIME].pos[1] -= 9000;
             }
         }
         if self.phase <= 1000 {
@@ -252,7 +260,7 @@ impl Script for Level3 {
         if self.phase > 0x3E6 {
             cr.boss.focus = Some([s[0], s[1] - 10000, s[2]]);
         }
-        self.last_look = look;
+        self.last_look = self.look_ticks();
         self.tick_look();
     }
 }

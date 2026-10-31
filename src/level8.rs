@@ -46,6 +46,8 @@ pub struct Level8 {
     speed: i32,
     bob: i32,
     claw: Option<Claw>,
+    /// 0x52FB7C: the boss's taunt timer (0x3C at the level's start, 0x4A1A50).
+    taunt: i32,
     common: Common,
 }
 
@@ -108,7 +110,7 @@ fn in_box(p: [i32; 3], x: (i32, i32), z: (i32, i32)) -> bool {
 
 impl Level8 {
     pub fn new() -> Level8 {
-        Level8 { spin: [(0, 0); 8], t: 0, speed: 0, bob: 0, claw: None, common: Common { given: [false, false, false, true, false], ..Default::default() } }
+        Level8 { spin: [(0, 0); 8], t: 0, speed: 0, bob: 0, claw: None, taunt: 0x3C, common: Common { given: [false, false, false, true, false], ..Default::default() } }
     }
 
     /// See [`Claw`].
@@ -364,6 +366,15 @@ impl Level8 {
             2 => {
                 self.boss_bar = Some(((cr.slots[BOSS.0].health - 9) * 0x36 / 0x14).max(0));
                 self.boss_hud = room == Some(5);
+                // 0x422660 in its room: the camera turns to it; a taunt (0xD4) every r + 0x708.
+                if room == Some(5) {
+                    cr.boss.focus = Some(cr.slots[BOSS.0].pos);
+                    self.taunt -= 1;
+                    if self.taunt < 1 {
+                        self.taunt = self.common.rand() + 0x708;
+                        self.voices.push(0xD4);
+                    }
+                }
             }
             3..0x78 => {
                 b.state += 1;

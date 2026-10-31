@@ -203,12 +203,14 @@ impl Script for Level12 {
                     let yaw = c.angles[1];
                     let pos = cr.node_point(0, 1, [-250.0, -250.0, 0.0]).unwrap_or(c.pos);
                     let lob = !self.retaliating && (c.health > 19 || shot != 2);
+                    // 0x42B3A0 reads z from 0x4FEE88 (the table + 0x380): both components
+                    // aim at facing − 0x80, not just x.
                     let (vel, gravity, typ) = if lob {
                         (
                             [
                                 sin_table(yaw - 0x80) >> 2,
                                 0x400,
-                                sin_table(yaw + 0x400) >> 2,
+                                sin_table(yaw + 0x380) >> 2,
                             ],
                             0x100,
                             0x6c,

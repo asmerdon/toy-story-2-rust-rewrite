@@ -32,7 +32,26 @@ The user retested. Everything reported before is fixed, except what's listed bel
 | 8 | Hide the cursor in play | Done: `sync_cursor` (hidden and confined while playing, released on focus loss) |
 | 9 | First-person model visible in cut-scenes | Done: 0x4020F0 ends first person; `Look::cancel` called when a script look-at begins |
 | 10 | L12 Zurg intro sinks into the floor | Fixed: the height goes to slot +0x60 (target), not home; `zurg_entrance_stays_above_the_floor` |
-| — | All bosses: attacks exactly as the original | Not started; helper after rendering |
+| — | All bosses: attacks exactly as the original | Audited (Opus helper); 15 regressions in `tests/boss_attacks.rs`.
+- **Fixed:**
+  - The stale cut-scene tick count (0x50A1F4) in level6/9/3. It skipped the campaign-3 fly-in and death scene, the level-9 rise and its rounds, and the slime's regrow.
+  - Campaign 3: hit flash and lean.
+  - Slime: blob heading, lid drop height, wait while regrowing.
+  - Level 9: minions kept near the middle; beam wrap.
+  - Zurg: lob z uses facing − 0x80.
+  - Final arena: swing rates; wave-4 speeds; suitcases' target height.
+  - Dino: fire only in room 4.
+  - Car boss: missile pitch 0x400, taunt.
+  - Prospector and blacksmith: zone checks.
+  - Blacksmith shockwave: vy −2 (it never homed).
+- **Matching:** Tin Man, kite, clown, spider, gunslingers.
+- **Open:**
+  - Shared kill (0x405D20) plays sound 10 for all types; the original plays it only for death-burst types, and type 0x30 plays −2 plus 0x410540.
+  - Drill's state 5 and weapon check.
+  - Level 9 flail animation phase, lights, sparks; camera picks every 0x1E ticks.
+  - Level 15 swing outside phase 2; boss 3 hurt voice (r − 0x3C).
+  - Dino fire from node 1; campaign 3 dust uses floor height.
+- The lid test's y tolerance was loosened to 0x600: the original places the lid before rescaling. |
 
 Open collision details:
 - The edge-cylinder slip: a body starting slightly inside an edge ignores it, and a naive fix broke the boundaries.
@@ -40,7 +59,7 @@ Open collision details:
 - Creature rays against boundaries are not done.
 - The mover carry is still added to position unswept.
 
-Pushed as `6653ae3` to dev, then the draw-order fix (169 tests).
+Pushed `6653ae3` and `0e879a2` to dev. The boss audit (184 tests in 37 suites) is committed locally, not yet pushed.
 
 ## 2026-10-31 (later): verification and the user's playtest reports
 
