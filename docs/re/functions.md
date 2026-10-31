@@ -391,7 +391,7 @@ Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid
 | 0x49F460 | `InBoxXZ(p, x0, x1, z0, z1)` | Strict x / z bounds, any height |
 
 
-## Recovered campaign and Zurg (2026-10-19)
+## Campaign loading and level scripts (levels 4, 8, 11–15)
 
 | Address | Status | Findings |
 |---|---|---|
@@ -419,14 +419,11 @@ Buzz's sounds: 0x19 jump (voice, BUZJMP1), 0x10 double jump (BUZWING), 0x12 skid
 | 0x49F460 | confirmed | Strict x/z rectangle membership test, used for arena/death boundaries. |
 
 
-### 2026-10-19 neighbourhood/music continuation
+## Level 2 and music
 
-- 0x418E50 passes box list 0x4F1518 to 0x4335D0 (two objects).
-- 0x4190C0: pump surface 11 uses Buzz's +0x9C coyote/contact counter. The pad
-  compresses toward 0xC00, inflating ball special 6 up to 0x1000; launch speeds
-  are 0x352/-0x712. Mover 7 follows the ball with a -0x1000 object-unit Y offset.
-  Bridge specials 5/0xB swap movers 2/3 to 4 below angle 0x299. Tree specials
-  0x1E/0x1F swap 0xB to 0xC when box 1 progress is nonzero above Y -0x102F9.
-- 0x413150: audio filename pointers at 0x4ECCD8, indexes 0..21; joins CD root,
-  audio/, name and .wav. 0x4986D0 campaign order table 0x50268C maps the first
-  15 tracks to internal levels. Runtime reader avoids filename guesses.
+| Address | Status | Findings |
+|---|---|---|
+| 0x418E50 | ported, `level2.rs` | Passes box list 0x4F1518 to 0x4335D0 (two objects) |
+| 0x4190C0 | ported, `level2.rs` | Pump surface 11 uses Buzz's +0x9C coyote/contact counter. The pad compresses toward 0xC00, inflating ball special 6 up to 0x1000; launch speeds 0x352 / −0x712. Mover 7 follows the ball with a −0x1000 object-unit Y offset. Bridge specials 5/0xB swap movers 2/3 to 4 below angle 0x299. Tree specials 0x1E/0x1F swap 0xB to 0xC when box 1 progress is nonzero above y −0x102F9 |
+| 0x413150 | ported, `music.rs` | Audio filename pointers at 0x4ECCD8, indexes 0..21; joins the CD root, `audio\`, the name and `.wav` |
+| 0x4986D0 | ported, `music.rs` | Campaign order table 0x50268C maps the first 15 tracks to internal levels |

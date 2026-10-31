@@ -1,0 +1,24 @@
+[package]
+name = "opents2-launcher"
+version = "0.1.0"
+edition = "2024"
+description = "OpenTS2 launcher: finds the player's Toy Story 2 install and starts the engine"
+publish = false
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "opents2"
+path = "src/main.rs"
+
+[dependencies]
+ts2 = { path = "../.." }
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"

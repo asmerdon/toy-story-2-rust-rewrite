@@ -35,7 +35,9 @@ This establishes core asset availability, not complete gameplay or every auxilia
   it does not prove the same cause for every clip or pristine source integrity.
 - `tracks.txt` is a dated directory listing (some file sizes differ from the actual
   WAVs). Do not use it as a proven per-level track mapping.
-- Playback integration is still pending. Original media stays outside Git.
+- Both are played now: the music by `src/music.rs` (names from the exe's table 0x4ECCD8),
+  the movies by `src/fmv.rs`. Original media stays outside Git. The OpenTS2 launcher can copy
+  both folders out of the ISO (`crates/launcher/src/iso.rs`).
 
 ## Verification
 

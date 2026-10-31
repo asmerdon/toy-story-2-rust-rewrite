@@ -46,4 +46,4 @@ Unpacked data starts with a little-endian u32 **packet type**:
 
 Level 1 has 36 records. Their ids match the level's cast (many Zurg robots, 5 sheep, one each of Tin Man, Bo Peep, RC, Mr. Potato Head, Hamm and Rex), and every position falls inside the level geometry's bounds.
 
-**The player (Buzz, id 0) is not in this list.** The player start is somewhere else, probably type 36/37 or one of the small tables.
+**The player (Buzz, id 0) is not in this list.** His start is a table in the exe (0x4F59A4, 16 bytes a level, read by `ResetPlayer` 0x433D50, then snapped to the floor by 0x4863A0); see `exe::player_start`.

@@ -49,7 +49,7 @@ Object position is an int × 1/32. Rotation applies X, then Y + 0x800 (a half-tu
 ## Evidence it's right
 - The record sizes implied by the node table plus scale mask exactly match the stride in every animation (e.g. last offset + 5 or + 8 = stride).
 - Decoded Hamm idle frames: the body node stays at 0°. The four legs move in mirrored pairs within about ±25° and change smoothly frame to frame. The head turns +15° → −12°. Translations are tens of units against mesh offsets of hundreds, consistent with rest-pose deltas.
-- **Not yet confirmed visually.** `ts2-tool export-pose` writes posed OBJs for checking in Blender.
+- Every creature animates correctly in `ts2-viewer`, checked by the user in play. `ts2-tool export-pose` writes posed OBJs for checking in Blender.
 
 ## Playback sequences (why speed varies per character)
 Game code doesn't advance animation time at a fixed rate. It plays a **frame sequence**: a byte list of frame numbers, one entry per game tick. The object's time word (`+0x18`, 16.16) takes its integer part from the current byte, and the sequence pointer lives at object `+0x74`.
@@ -60,6 +60,6 @@ Game code doesn't advance animation time at a fixed rate. It plays a **frame seq
   - `0xFF` followed by `0`: stop on the current frame
 - One shared table of 25 sequences lives at `0x4E0588` (entries 1–25, mostly 0..N−1 frame by frame, some partial ranges or holds). Creature-specific code presumably has its own tables, which is why Hamm plays slowly and the robots fast. Find them per creature when porting its behaviour.
 
-## Open
-- How the smooth-joint shared vertices (creature tags 0x207/0x208) follow the nodes.
-- Which animation number is which move (idle, walk, jump…). That lives in the game code that selects slot `+0x12`.
+## Related
+- Smooth joints: the shared vertices (0x207) follow the nodes through patches (0x208); see ngn.md.
+- Which animation is which move: Buzz's come from the exe's move table (0x401000, `src/buzz.rs`); creatures' from their behaviour scripts and per-type routines (`src/creatures.rs`).

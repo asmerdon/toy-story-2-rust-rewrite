@@ -1,4 +1,8 @@
-# Continuation log — 2026-10-19
+# Change log
+
+Dated history of the work, newest at the bottom. Current state is in HANDOFF.md; per-commit detail is in `git log`.
+
+## 2026-10-19: recovered levels 11–15, campaign order, Zurg
 
 - Read README, HANDOFF and PROJECT; retained existing implementation and untracked screenshots.
 - Route: continue the existing original Rust reimplementation, reading user-owned data.
@@ -71,3 +75,29 @@
 - HUD element 6 from 100 up draws the challenge countdown (two digits) and the collected count with icon 0x33 (0x49FD40). Before this, timed challenges and races showed no timer. The tick sound 0x5E is not ported.
 - Confirmed the slime level's laser power-up (19-polygon `Kind::Timer`, 0x53C824 = 1200) appears from the slime's third round; renamed its doc comment.
 - HANDOFF consolidated into one current-state section with open issues and next direction; dated history is now here and in git. README status refreshed. Added docs/opents2-brief.md (launcher/installer brief).
+
+## 2026-10-31 (fifth pass): OpenTS2 phase 1, launcher and installer
+
+- Researched OpenMW (config layering, data=/content=, wizard, launcher Data Files tab, packaging); summary and the phase 2–3 data model (layered VFS, `mod.toml`, editor scene files) in docs/opents2-design.md.
+- Workspace: root `Cargo.toml` gains `[workspace]` with `crates/launcher`. Engine crate untouched apart from the viewer's window title ("OpenTS2") and window icon, and a `build.rs` that embeds the icon. No gameplay change.
+- `crates/launcher` (`opents2`, egui/eframe 0.31 sharing the engine's wgpu/winit): game-folder detection and validation, optional disc folder (accepts the ISO's `Setup\Toy2\CD` layout), Play original / Play modded / Level tester, a Mods tab (scan, enable, order, dependency warnings; not loaded by the engine yet), About with disclaimer and credits. Settings in `%APPDATA%\OpenTS2\opents2.toml`.
+- Icon: original Pizza Planet-style token drawn by `tools/icon/make_icon.py`; embedded in all executables and used as the window icon.
+- `.cargo/config.toml`: static C runtime on MSVC.
+- Installer: Inno Setup 6 script and `tools/installer/build.ps1` (per-user, licence/disclaimer page, shortcuts, uninstaller, no game files).
+- Checks: `cargo build --release` clean; `cargo test --release` 194 pass with TS2_GAME_DIR (3 new end-to-end tests start the engine via the launcher's command lines with `--shot`; shots of the startup screen and level 4 inspected). Installer built (7.4 MB); silent per-user install to a temp folder contained only opents2.exe, ts2-viewer.exe, README.txt and the uninstaller; Start-menu and desktop shortcuts created; silent uninstall removed the folder, shortcuts and registry entry and kept %APPDATA%\OpenTS2 and saves. Shipped exes import no vcruntime. Launcher window not run by the agent (the user tests windows). Nothing committed.
+
+## 2026-10-31 (sixth pass): launcher feedback
+
+- Disc images: `crates/launcher/src/iso.rs` reads ISO 9660/Joliet; the Game Files tab finds a `.iso` in the disc folder (or via "Disc image…") and copies its music and movies to `%APPDATA%\OpenTS2\disc` with a progress bar. Tests: a synthetic Joliet image; the user's image (`TS2_DISC_IMAGE`, list + an `--ignored` full copy, 48 files byte-identical to 7-Zip's).
+- Title-case buttons and tabs (Play Original, Play Modded, Level Tester, Game Files); green Play buttons, including a "▶ Play N. Level" button at the top of the Level Tester.
+- Credits name the user as lewiloon2k (About, installer publisher).
+- `examples/token_model.rs`: exports the Pizza Planet token (Level 1 special 0x39, `Shape395`, tex16) to out/ for the user's icon work. Not used in the build.
+- Checks: release build clean (old `zurgintro` example warning only); launcher tests 9 + 3 end-to-end pass; installer rebuilt.
+
+## 2026-10-31 (seventh pass): token icon, docs clean-up
+
+- Icon: by the owner's decision, the app icon is now the game's Pizza Planet token, rendered tilted as in game by `tools/icon/make_icon.py` from the `token_model` export (replacing the drawn placeholder). Used for every exe, the window icons, the launcher header and Play tab, shortcuts, and the installer (setup icon plus wizard pictures `wizard-*.bmp`). PROJECT.md records this as the one exception to the no-game-data rule.
+- Docs: PROJECT.md rewritten as the stable overview (ground rules, source material, architecture, history, roadmap, machine setup); HANDOFF gains a doc map, drops setup duplicated in PROJECT, and its stale level-2–10 plan; README gains a doc table; format docs corrected where later work resolved their open questions (animations, patches 0x208, vertex colour order, player start, mover carry); functions.md's dated sections turned into tables; asset audit notes music and movies are played.
+- Removed `MODDING_PLAN.md` (stale) and `docs/opents2-brief.md` (done; superseded by the design doc; in git history). The owner's recordings, screenshots and the old ChatGPT log moved to `local/` (git-ignored).
+- Checks: release build clean; 196 tests pass with TS2_GAME_DIR and TS2_DISC_IMAGE; installer rebuilt with the token icon and wizard pictures. The launcher window and installer pages were not opened by the agent.
+- Icon redone at the owner's request: the flat face-on picture of the token rotated 48° in 2D (`make_icon.py` `TILT`), instead of a 3D view.

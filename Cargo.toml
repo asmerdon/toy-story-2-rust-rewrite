@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2024"
 description = "Clean-room Rust reimplementation of Toy Story 2 (PC, 1999) that loads assets from a user's own install"
 publish = false
+build = "build.rs"
+
+# OpenTS2: the engine stays this root crate for now; the launcher (and later the editor
+# and modding crates) live under crates/. See docs/opents2-design.md.
+[workspace]
+members = [".", "crates/launcher"]
+default-members = [".", "crates/launcher"]
 
 [lib]
 path = "src/lib.rs"
@@ -25,3 +32,6 @@ rodio = { version = "0.19", default-features = false }
 symphonia = { version = "0.6.1", default-features = false, features = ["mp2"] }
 wgpu = "24.0"
 winit = "0.30"
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"

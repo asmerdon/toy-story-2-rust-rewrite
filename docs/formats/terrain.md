@@ -56,7 +56,8 @@ Triangle: (v0, v0+e1, v0+e2). Quad: (v0, v0+e1, v0+e2) with `normal` and (v0+e3,
 - 0x481FB0 per polygon: the face (only when the centre crosses the plane offset by the radius from the front: start ≥ 0, end < 0; hit point inside the triangle via 0x481140), then, when the motion passes near the plane, the edges as cylinders (radius + 0x20, 0x4813B0) and corners as spheres (radius + 0x40, 0x481D00). Quads are split along e1–e2: (v0, v0+e1, v0+e2) and (v0+e3, v0+e2, v0+e1), each with its own normal.
 - 0x482A00 keeps the earliest hit, moves there minus a small skin and responds: normal y < −0x2000 (slopes up to 60°) is a floor (slide, floor contact); anything else is a wall (slide, push out 3 level units, horizontal speed × 15/16). 0x484380 runs this 3–4 times per tick.
 - 0x483EF0 keeps Buzz on the floor he was standing on. We use a short downward sweep (64 units) instead.
-- Not ported: the slope push in 0x484380 when standing (`local_26 < −0x1000`), riding movers (0x488E10 carries Buzz with a mover's velocity and spin), the 20-tick "stuck" counter.
+- Riding movers: 0x488E10 carries Buzz with a mover's velocity and spin (ported; the carry itself is not swept yet).
+- Not ported: the slope push in 0x484380 when standing (`local_26 < −0x1000`), the 20-tick "stuck" counter.
 
 ## Movers (type 8)
 Scripts address movers by link id − 1 (0x4878A0(n) reads entry n + 1). Level object table 0x7286EC (0x34 bytes per link id): position (×32), angles at +0x40 (0x72872C, 16-bit ×4), velocity at +0x48 (0x728734, set by 0x487900), spin at +0x54 (0x728740, set by 0x487970), flags at +0x66 (0x728752: 0x80 moving, 0x08 spinning/rotated, 0x100 carries Buzz), collision object index at +0x64. 0x488E10 applies velocity and spin every frame. 0x4878A0 / 0x4878D0 switch a mover's collision on/off (type 8 / 0). Movers are driven by per-level scripts (e.g. 0x42DCB0 a carousel, 0x49EC00 a platform that tilts under Buzz, 0x417380 a popping object), not by data.
@@ -82,5 +83,5 @@ Belt and wind pushes (0x48B660) add to the collider's motion (0x729196 → 0x729
 Ported: `terrain::Terrain::boundaries`, `World::sweep` (`sweep_boundary`), `Player::move_and_collide`.
 
 ## Open
-- The per-level scripts that open doors and move platforms (level 1's is around 0x417680).
 - `level05/terrain.flr/.grd/.scn/.wal/.wuv` look like pipeline leftovers.
+- Kind 0x104 blocks have no known reader.

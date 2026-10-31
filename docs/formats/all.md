@@ -1,6 +1,8 @@
 # `.all` — character models
 
 Files: `data/chars*/<name>.all` (68 files, 0.6–19 KB). Paired with `<name>.anm`. Listed by id in `data/creatures.cfg`.
+
+**Reference only:** the PC game draws creatures from the `.ngn` (see ngn.md). The engine reads `.all` files only for the creatures' hit shapes (last section).
 Parser: `src/formats/all.rs`. Test: `tests/all_models.rs`.
 
 ## Summary

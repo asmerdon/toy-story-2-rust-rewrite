@@ -1,0 +1,3 @@
+// Windows resources for the OpenTS2 executables: the Pizza Planet token icon (resource 1,
+// which Explorer, shortcuts and the taskbar use, and which the windows load at start-up).
+1 ICON "opents2.ico"

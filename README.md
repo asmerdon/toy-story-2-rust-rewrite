@@ -2,11 +2,19 @@
 
 A clean-room reimplementation of the 1999 PC game *Toy Story 2: Buzz Lightyear to the Rescue*, written in Rust.
 
-The original game's behaviour was worked out by reverse-engineering the exe with Ghidra and a disassembler, then rewritten from that understanding. **This repository contains no game data or original code.** Everything is loaded at runtime from your own copy of the game.
+The original game's behaviour was worked out by reverse-engineering the exe with Ghidra and a disassembler, then rewritten from that understanding. **This repository contains no game data or original code**, apart from the app icon (a picture of the game's Pizza Planet token). Everything else is loaded at runtime from your own copy of the game.
 
-- Ported functions are documented in [`docs/re/functions.md`](docs/re/functions.md).
-- File formats are documented in [`docs/formats/`](docs/formats/).
-- Where work stopped and what comes next is in [`HANDOFF.md`](HANDOFF.md).
+It is packaged for players as **OpenTS2**, an open engine in the spirit of OpenMW: an installer, a launcher and the game.
+
+| Document | What's in it |
+|---|---|
+| This README | Installing OpenTS2, playing, controls, what's in, building |
+| [PROJECT.md](PROJECT.md) | Ground rules, architecture, roadmap |
+| [HANDOFF.md](HANDOFF.md) | Current state, open issues, working notes for contributors and agents |
+| [MODLOG.md](MODLOG.md) | Change history |
+| [docs/coverage.md](docs/coverage.md) | What has been checked, level by level |
+| [docs/opents2-design.md](docs/opents2-design.md) | OpenTS2's design: launcher, installer, planned mods and editor |
+| [docs/formats/](docs/formats/), [docs/re/](docs/re/) | File formats; the original exe's functions; the asset audit |
 
 ## Status — 2026-10-31
 
@@ -20,10 +28,45 @@ All 15 campaign levels, the front end, saves, music and movies are in.
   - the Etch A Sketch level select;
   - level-specific scripts.
 - **Not yet:** a full sign-off of levels 2–15.
+- **OpenTS2:** the launcher and installer are done (below).
 
-[HANDOFF.md](HANDOFF.md) has the current state and open issues; [docs/coverage.md](docs/coverage.md) has what has been checked, level by level. Agents follow [AGENTS.md](AGENTS.md).
+**Next:** finishing levels 2–15, then an OpenTS2 0.1 release; after that, modding support and a level editor ([docs/opents2-design.md](docs/opents2-design.md)).
 
-**Next:** OpenTS2, an installer and launcher (play the original or a modded game, or open the level tester), then a level editor and modding support. See [docs/opents2-brief.md](docs/opents2-brief.md).
+## OpenTS2: installing and playing
+
+OpenTS2 is the project packaged for players, in the spirit of OpenMW: an installer, a launcher and the engine, which plays from your own copy of the game.
+
+1. Install the original PC game from its disc as usual.
+2. Run `OpenTS2-<version>-setup.exe`. It installs for your user only (no admin rights) into `%LOCALAPPDATA%\Programs\OpenTS2`, and adds a Start-menu shortcut and, if you tick it, a desktop shortcut. It contains no game files (only the token icon).
+3. Start **OpenTS2**. The launcher finds the game in its default folder; otherwise open **Game Files** and browse to the folder with `toy2.exe`. For music and movies, also pick the game disc, a copy of it, or a disc image (`.iso`) under **Disc folder**. From a disc image, the launcher copies the music and movies (about 370 MB) into `%APPDATA%\OpenTS2\disc` once.
+4. Then:
+   - **Play Original:** the full game, from the startup screens.
+   - **Play Modded:** the same game with the mods enabled on the **Mods** tab. Mods go in `%APPDATA%\OpenTS2\mods`, one folder each with a `mod.toml`; the launcher lists and orders them, but the engine doesn't load them yet.
+   - **Level Tester:** pick a level (1–15) and press Play to open it in a free camera; F plays as Buzz and back, Escape closes.
+
+Settings are in `%APPDATA%\OpenTS2\opents2.toml`, the engine's output from the last run is in `last-run.log` beside it, and saves stay in `%APPDATA%\ts2-rust`. Uninstalling (Settings → Apps) removes the program and shortcuts but keeps settings, mods and saves.
+
+OpenTS2 is an unofficial fan project, not affiliated with Disney, Pixar, Traveller's Tales or Activision. The original game is required.
+
+### Building the installer
+
+Needs Rust (MSVC) and [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`). From the repository folder:
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\installer\build.ps1
+```
+
+It builds the release `opents2` and `ts2-viewer` and writes `target\installer\OpenTS2-<version>-setup.exe`. The version comes from `crates/launcher/Cargo.toml`. To run the launcher from a checkout: `cargo run --release --bin opents2`.
+
+The icon is the game's own Pizza Planet token: its flat, face-on picture, rotated to the tilt it has in game. It is already in `assets/icon/`; to regenerate it from your install (needs Pillow):
+
+```bash
+cargo run --release --example token_model -- "C:\Program Files\Disney Interactive\Toy Story 2" out\token
+```
+
+```bash
+python tools/icon/make_icon.py out/token
+```
 
 ## Requirements
 
@@ -139,4 +182,4 @@ The suite (185 tests) covers movement, combat, bosses, races, gadgets, the front
 
 ## Third-party crates
 
-Rendering uses wgpu and winit, sound uses rodio, the movies' video is decoded by `oxideav-mpeg12video` and their sound by Symphonia.
+Rendering uses wgpu and winit, sound uses rodio, the movies' video is decoded by `oxideav-mpeg12video` and their sound by Symphonia. The launcher uses egui (eframe), rfd for folder pickers, and serde with toml for its settings.

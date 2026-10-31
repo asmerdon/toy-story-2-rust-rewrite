@@ -13,3 +13,6 @@
 ts2-media.txt
 *.wav
 *.mpg
+
+# The owner's recordings, screenshots and notes
+/local

@@ -1,0 +1,4 @@
+# Link the C runtime statically on Windows, so OpenTS2's executables run without the
+# Visual C++ redistributable on the player's machine (the installer ships only our exes).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

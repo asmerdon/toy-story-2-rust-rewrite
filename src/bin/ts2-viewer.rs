@@ -2245,10 +2245,15 @@ impl ApplicationHandler for Viewer {
         if self.gfx.is_some() {
             return;
         }
-        let window = Arc::new(
-            el.create_window(Window::default_attributes().with_title("Toy Story 2 (Rust) - viewer").with_inner_size(winit::dpi::LogicalSize::new(1280, 720)))
-                .expect("create window"),
-        );
+        #[allow(unused_mut)]
+        let mut attrs = Window::default_attributes().with_title("OpenTS2").with_inner_size(winit::dpi::LogicalSize::new(1280, 720));
+        // The Pizza Planet token embedded by build.rs (resource 1).
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::IconExtWindows;
+            attrs = attrs.with_window_icon(winit::window::Icon::from_resource(1, None).ok());
+        }
+        let window = Arc::new(el.create_window(attrs).expect("create window"));
         self.attach(Some(window));
     }
 

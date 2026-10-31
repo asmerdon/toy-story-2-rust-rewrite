@@ -1,0 +1,36 @@
+OpenTS2 - an open engine for Toy Story 2
+========================================
+
+Please read before installing.
+
+UNOFFICIAL FAN PROJECT
+
+OpenTS2 is an unofficial fan project. It is not affiliated with, endorsed by or
+connected to Disney, Pixar, Traveller's Tales or Activision. Toy Story 2 and its
+characters are their property.
+
+YOU NEED THE ORIGINAL GAME
+
+OpenTS2 contains no game data: no levels, models, textures, sounds, music, movies
+or code from the original game (its icon, a picture of the game's Pizza Planet
+token, is the one exception). It plays from your own installed copy of the PC
+game "Toy Story 2: Buzz Lightyear to the Rescue" (1999), which it reads but never
+changes. For music and movies it can also use the game disc.
+
+WHAT IS INSTALLED
+
+- OpenTS2 (the launcher) and ts2-viewer (the engine), with Start menu and optional
+  desktop shortcuts.
+- Your settings and mods are kept in %APPDATA%\OpenTS2, and saves in
+  %APPDATA%\ts2-rust. Uninstalling OpenTS2 leaves both in place.
+
+LICENCE
+
+OpenTS2's own source code: https://github.com/asmerdon/toy-story-2-rust-rewrite
+The software is provided "as is", without warranty of any kind. In no event shall
+the authors be liable for any claim, damages or other liability arising from its use.
+
+[Licence for OpenTS2's own code: to be chosen by the project owner.]
+
+OpenTS2 is built with open-source libraries including wgpu, winit, egui, rodio,
+Symphonia and oxideav, each under its own licence.

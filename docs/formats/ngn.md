@@ -12,7 +12,7 @@ repeat { u32 id, u32 len, u8[len] }     level files end with id 0, len 0
 | id | Contents | Status |
 |---|---|---|
 | `0x104` | Textures | ✅ |
-| `0x106` | Creatures: models, skeleton names, animations | ✅ structure; animations not decoded |
+| `0x106` | Creatures: models, skeleton names, animations, patches | ✅ (animations: [anim.md](anim.md)) |
 | `0x100` | Mesh set (level geometry); two per level: the first is detailed, the second a low-detail copy (positions rounded to 4, fewer triangles) for distant views | ✅ |
 | `0x101` | Instance set (placements for the preceding `0x100`) | ✅ |
 | `0x102`, `0x103` | Count 0x16 + floats/ints. Only in some levels. Paths, triggers or cameras? | ❌ |
@@ -43,7 +43,7 @@ The primitive codes are the engine's own:
 - `4`: quad list (perimeter order). Every count is divisible by 4 across all levels.
 - `5` and `6`: billboards (rails, spindles, cobwebs, plants), always 5 indices. Index 0 is the pivot (z = 1, colour black, uv (0, 0)) and indices 1–4 are corner offsets (z = 0; x right, y down) in strip order. The loader maps them to engine types 5 and 4 (table 0x508A6C) and the renderer 0x4B70E0 places the pivot with the instance matrix, then turns the corners to the camera: code 5 by the camera matrix (fully facing), code 6 by a Y rotation of the camera's heading (upright, e.g. banister spindles). Mode bit 0x8 turns culling off. Drawing the pivot as a vertex (the first decode) produced spikes; drawing the corners as fixed geometry left spindles edge-on. The "normal" floats hold other data.
 
-Level vertices have a placeholder normal of (1, 0, 0); their lighting is baked into `color`. Bytes 1–3 of `color` vary like an RGB light value and byte 0 is 0x80/0xFF. **The byte order is unconfirmed.**
+Level vertices have a placeholder normal of (1, 0, 0); their lighting is baked into `color`. Bytes 1–3 of `color` are the RGB light value (0x80 = 1.0) and byte 0 is 0x80/0xFF. The renderer reads RGB from bytes 1–3, and anything that tints vertex colours must offset by one. Culling follows the material: mode bit 8 means cull-none (0x4B6760).
 
 `0x100` body: `u32 mesh_count`, then the meshes.
 
@@ -76,17 +76,16 @@ then, per present creature (in slot order), tagged records until tag 0:
   0x205  texture list (0x41 format)        ┐ smooth-joint geometry shared between nodes
   0x206  materials    (0x42 format)        │ (Buzz, Bo Peep, …): present on most
   0x207  vertices     (0x43 format)        │ creatures
-  0x208  ?                                  ┘ starts u32 count; probably joint ↔ vertex map
-  0x204  animation (repeated; Buzz has 35). Same F0 FF 03 00 header as PS1 .anm. Not decoded.
+  0x208  patches                            ┘ u32 count, then `ngn::Patch` records (below)
+  0x204  animation (repeated; Buzz has 35). Same layout as PS1 .anm: see anim.md.
 ```
 - Node meshes are in model space and assembled in rest pose. Hamm's legs sit mirrored at x = ±0.46, like the PS1 `.all` parts.
 - Node counts match the PS1 `.all` part counts (Hamm 11, Woody 20, Buzz 23 with smooth joints).
 - Flag bit 2 appears only on smooth-jointed characters.
 - 146 creature records across all levels parse fully.
+- **Patches (0x208, `hobjload.c`):** the geometry joining nodes. Each patch copies shared vertices (0x207), each following one node's transform: count 0 is a single quad (corner k = shared vertex `verts[k]` on `nodes[k]`); count n > 0 is a strip of two rows of n vertices (`verts[0]..` on `nodes[0]`, `verts[1]..` on `nodes[1]`). Material from 0x206.
 
-## Open questions (best answered from `toy2.exe` in Ghidra)
-1. Vertex colour byte order and the meaning of byte 0.
-2. `0x41` 26-byte per-material tail, and `0x42` `mode` values (0x02, 0x06, 0x10, 0x18).
-3. Instance `rot`/`flags`; chunks `0x102`, `0x103`, `0x105`.
-4. `0x208` and how the shared vertices attach to nodes.
-5. **Animation encoding (`0x204` / `.anm`)**: needed for anything to move.
+## Open questions
+1. The meaning of vertex colour byte 0.
+2. `0x41` 26-byte per-material tail, and the remaining `0x42` `mode` values (0x02, 0x06, 0x10, 0x18).
+3. Instance `flags`; chunks `0x102`, `0x103`.

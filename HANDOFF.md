@@ -6,8 +6,22 @@ issues and next direction, then reference sections (§1–§10). Dated history l
 [docs/coverage.md](docs/coverage.md); keep it there, not here.
 
 Read [AGENTS.md](AGENTS.md) (delegation and evidence rules) and [PROJECT.md](PROJECT.md)
-(ground rules). Then `docs/re/functions.md` (identified exe functions) and
-`docs/formats/*.md`.
+(ground rules, architecture, roadmap, machine setup). Then `docs/re/functions.md` (identified
+exe functions) and `docs/formats/*.md`.
+
+**Where things are documented** (one place each):
+
+| Doc | Holds |
+|---|---|
+| [README.md](README.md) | For players and newcomers: installing OpenTS2, playing, controls, what's in, deviations, building |
+| [PROJECT.md](PROJECT.md) | Ground rules, source material, architecture, roadmap, machine setup |
+| HANDOFF.md (this file) | Current state, open issues, working knowledge for agents |
+| [MODLOG.md](MODLOG.md) | Dated change history |
+| [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md) | Agent working rules |
+| [docs/coverage.md](docs/coverage.md) | Per-level interaction checklist (sim / shot / user) |
+| [docs/opents2-design.md](docs/opents2-design.md) | OpenTS2: OpenMW research, launcher, installer, mod and editor data model |
+| [docs/formats/](docs/formats/) | File formats |
+| [docs/re/functions.md](docs/re/functions.md), [docs/re/asset-audit.md](docs/re/asset-audit.md) | Identified exe functions; the install and disc audit |
 
 ---
 
@@ -17,7 +31,7 @@ Read [AGENTS.md](AGENTS.md) (delegation and evidence rules) and [PROJECT.md](PRO
 - **Level 1:** signed off by the user.
 - **Levels 2–15:** the user played through them in two rounds of reports; every reproduced report has been fixed (see the list below).
 - **Not done:** no level other than 1 has a full sign-off.
-- **Tests:** 185 pass in 37 suites with `TS2_GAME_DIR` set. The release viewer builds.
+- **Tests:** 196 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (185 engine + 11 launcher). `cargo build --release` builds the viewer, tool and launcher without warnings (the `zurgintro` example has an older unused-`mut` warning).
 - **Git:** work is on `dev` (local `master` tracks `origin/dev`). The user asks before each push.
 
 ### Fixed from the user's playtests
@@ -99,13 +113,22 @@ Every fix below comes from the original's code, has a regression test, and was m
 **Unconfirmed**
 - Level 14's "things not animated": the user didn't say which. Rain and lightning aren't ported.
 
-### Next direction: OpenTS2
-The user wants to distribute the project as **OpenTS2**:
-- an installer;
-- a launcher UI to play the original or a modded version, or open the level tester (free camera);
-- later, a free-camera level editor and modding (playing as other creatures, importing animations from other Rust rewrites).
+### OpenTS2 (phase 1 done: launcher and installer)
+The project is distributed as **OpenTS2**, modelled on OpenMW. Design, OpenMW research and the data model for phases 2–3: [docs/opents2-design.md](docs/opents2-design.md). (The original brief is in git history: `docs/opents2-brief.md` at commit 3d75407.) The owner is going back to polishing the port; OpenTS2's next phases wait until levels 2–15 settle.
 
-The app icon is a Pizza Planet token. OpenMW is the model to follow: an engine that uses the user's own data, a launcher, and a separate editor. The brief for that work is in [docs/opents2-brief.md](docs/opents2-brief.md).
+- **Workspace:** the root `Cargo.toml` is now a workspace (`.` + `crates/launcher`, both default members). The engine crate `ts2` is unchanged in place; the split into `crates/engine` etc. is planned, not done.
+- **Launcher:** `crates/launcher`, binary `opents2` (egui/eframe 0.31 on the engine's wgpu 24 / winit 0.30; rfd; serde + toml). Library modules `paths`, `install`, `iso`, `config`, `mods`, `launch` hold all logic and tests; `main.rs` is the window (tabs: Play, Game Files, Mods, Level Tester, About; green ▶ Play buttons; the token in the header and large on the Play tab).
+  - Settings: `%APPDATA%\OpenTS2\opents2.toml` (`OPENTS2_HOME` overrides). Mods: `%APPDATA%\OpenTS2\mods\<id>\mod.toml`. Engine output: `last-run.log`.
+  - Starts `ts2-viewer` from its own folder with `TS2_GAME_DIR`/`TS2_CD_DIR` and the game folder argument; modded adds `OPENTS2_MODS` (ignored by the engine for now). No console window.
+- **Engine changes (cosmetic only):** window title "OpenTS2" and the embedded icon as the window icon (`ts2-viewer.rs`, `IconExtWindows::from_resource(1)`); `build.rs` embeds `assets/icon/opents2.rc`.
+- **Static CRT:** `.cargo/config.toml` adds `+crt-static` for MSVC, so no VC++ redistributable is needed. This forced one full rebuild.
+- **Disc images:** the launcher reads a `.iso` (ISO 9660 + Joliet, `crates/launcher/src/iso.rs`) and copies `audio\` + `rtlibs\` (48 files, 372 MB on the user's image) into `%APPDATA%\OpenTS2\disc` once, then uses that as the disc folder. Checked byte-identical to a 7-Zip extraction. The user's image is `C:\Users\alexs\Downloads\Disney-Pixar-Toy-Story-2-…\ToyStory2.iso` (`TS2_DISC_IMAGE` for the tests).
+- **Icon:** the game's own Pizza Planet token as a flat 2D picture (face-on, unshaded), rotated 48° anticlockwise so the ring runs lower-left to upper-right as in game. The owner wants the 2D picture, not a 3D view. Owner-approved exception to the no-game-data rule. The token is Level 1 special 0x39 (first id in the exe's token list 0x4F0EDC) = layer 0 mesh 395 `Shape395`, 140 vertices, texture `tex16`. To regenerate: `cargo run --release --example token_model -- <game> out/token`, then `python tools/icon/make_icon.py out/token` → `assets/icon/opents2.ico` (16–256), `opents2.png`, `opents2-1024.png`, and the installer's `wizard-*.bmp`. Used for all exes (`opents2.rc`), the window icons, the launcher UI, shortcuts and the installer.
+- **Credits:** the user is credited as **lewiloon2k** (About tab, installer publisher); repository URLs keep the GitHub path.
+- **Installer:** Inno Setup 6 (installed per-user on this machine via winget). `tools/installer/build.ps1` → `target/installer/OpenTS2-0.1.0-setup.exe`. Per-user, licence/disclaimer page (`tools/installer/disclaimer.txt`), Start menu + optional desktop shortcut, uninstaller. **Open decisions for the user:** the licence for OpenTS2's own code (placeholder in disclaimer.txt; the repo has no LICENSE), whether to sign the installer.
+- **Tests:** `crates/launcher` has 8 unit tests (+1 `--ignored` full ISO copy) and 3 end-to-end tests (`tests/launch.rs`) that start the built `ts2-viewer` through the launcher's command lines with `--shot` for each route (need `TS2_GAME_DIR` and a prior release build).
+- **Not verified by the agent:** the launcher window itself (the user tests interactive windows), and taskbar icon appearance.
+- **Next:** phase 2/3 per the design doc: the VFS (route engine file reads through layers), then the editor as `opents2-editor` saving `mods/<id>/scenes/levelNN.toml`.
 
 ### Facts and pitfalls worth knowing
 - **Offscreen screenshots:** `ts2-viewer [--level N] --shot out.png "<script>"`. Script words:
@@ -150,10 +173,11 @@ branch (local `master` tracks `origin/dev`). There is no `main` yet; the user ma
 
 ## 2. Ground rules (the user's and the project's)
 
-- **No game data, exe bytes or decompiled code in the repo.** `re/` (the Ghidra project and
-  output) is git-ignored and must never be committed. Game file types (`*.all`, `*.anm`,
-  `*.ngn`, `*.raw`, `*.obj`) are ignored. Screenshots in the project folder (`level1.png`,
-  `screenshot1.png`) are game imagery: leave them uncommitted.
+- **No game data, exe bytes or decompiled code in the repo** (PROJECT.md), except the token
+  icon in `assets/icon/`, which the owner approved. `re/` (the Ghidra project and output) is
+  git-ignored and must never be committed. Game file types (`*.all`, `*.anm`, `*.ngn`, `*.raw`,
+  `*.obj`, `*.wav`, `*.mpg`) are ignored. The owner's recordings, screenshots and old chat
+  logs live in `local/` (git-ignored); leave them there.
 - Write original Rust from understood behaviour; don't paste decompiler output. Name things by
   what they do and cite the exe address in comments (`0x417680`, `0x52F300`).
 - Record every identified function in `docs/re/functions.md`.
@@ -168,13 +192,12 @@ branch (local `master` tracks `origin/dev`). There is no `main` yet; the user ma
 
 ## 3. Setup on this machine
 
+Paths (install, disc image, Ghidra, Inno Setup) and the Ghidra re-run command are in
+PROJECT.md "Machine setup". In addition, for agents:
+
 | What | Where |
 |---|---|
-| Project | `C:\Users\alexs\Documents\Toy Story 2 - Rust Rewrite` |
-| Game install | `C:\Program Files\Disney Interactive\Toy Story 2` (all 15; see the correction above) |
-| CD image | `C:\Users\alexs\Downloads\Disney-Pixar-Toy-Story-2-…\ToyStory2.iso`: music as WAVs (`Setup\Toy2\CD\audio\*.wav`, `tracks.txt`) and FMVs (`Setup\Toy2\CD\rtlibs\*.dll`). Later levels use level1.* under folders 01–05; see correction above. 7-Zip (`C:\Program Files\7-Zip\7z.exe`) can list or extract it. |
-| Rust | stable via rustup, MSVC build tools; audio through `rodio` 0.19 |
-| Ghidra | 12.1.4 at `C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC`, JDK 21 at `C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot` |
+| Disc media | The disc image's `Setup\Toy2\CD\audio\*.wav` (music) and `rtlibs\*.dll` (MPEG-1 movies). The ignored `ts2-media.txt` in the project folder points the engine at an extracted copy; the launcher copies its own to `%APPDATA%\OpenTS2\disc`. |
 | Decompiled output | `re/out/c/<address>.c` (2,811 functions), `re/out/functions.tsv`, `re/out/strings.tsv` |
 | Disassembler | a Python venv with `capstone` + `pefile` in the session scratchpad (`dis.py`: `dis <va> <len>` / `hex <va> <len>`; `xref.py <hex>`: every instruction mentioning an address; `floats.py <va> <n>`). Recreate it in a new session if the scratchpad is gone. |
 
@@ -189,14 +212,9 @@ cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy
 set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
-(185 tests; those needing game data skip without `TS2_GAME_DIR`, which doesn't count as coverage)
+(196 tests; those needing game data skip without `TS2_GAME_DIR`, which doesn't count as coverage. `TS2_DISC_IMAGE` enables the launcher's disc-image tests.)
 
-To re-run the Ghidra dump on the existing project (about 10 minutes):
-```bash
-set JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot
-C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC\support\analyzeHeadless.bat re\proj TS2 -process toy2.exe -noanalysis -scriptPath tools\ghidra -postScript DumpAround.java re\out
-```
-Some functions aren't in the dump (level 10's start-up 0x425B60 wasn't): disassemble those.
+Some functions aren't in the Ghidra dump (level 10's start-up 0x425B60 wasn't): disassemble those.
 
 ### Viewer keys
 WASD move, Space jump (×2 double jump), E stomp (Circle), mouse 1 / Square laser (hold to
@@ -214,8 +232,11 @@ places a creature.
 | `src/camera.rs` | The follow camera (0x4045E0) |
 | `src/look.rs` | First person (0x4038E0): targets, aim dot, helmet and arms (specials 0x2D–0x2F) |
 | `src/creatures.rs` | Creature slots (0x52C840 + 0x9C × slot), the behaviour-script interpreter (0x4076F0), movement, animation, contacts, hits (0x408A60), death, and per-type routines (the jump table at 0x407058) |
-| `src/script.rs` | `Script` trait and `Common` (shared level state: conversations, info scenes, look-at scenes, HUD bits, token reveals, sounds, particles). Shared routines: `hamm`, `hint_character`, `call`, `finder`, `potato`, `Tilt` (0x49EC00), `PathRunner` (0x48ACC0). `for_level` builds the script for levels 1–10. |
-| `src/level1.rs` … `src/level10.rs` | Each level's start-up and frame script, with a module doc listing what's ported and what isn't |
+| `src/script.rs` | `Script` trait and `Common` (shared level state: conversations, info scenes, look-at scenes, HUD bits, token reveals, sounds, particles). Shared routines: `hamm`, `hint_character`, `call`, `finder`, `potato`, `Tilt` (0x49EC00), `PathRunner` (0x48ACC0). `for_level` builds the script for a level by internal id (1–15). |
+| `src/level1.rs` … `src/level15.rs` | Each level's start-up and frame script (by internal id; campaign 3 is `level6.rs`, 6 is `level3.rs`), with a module doc listing what's ported and what isn't |
+| `src/campaign.rs` | Campaign order vs internal ids, scene paths (0x452FC0) |
+| `src/frontend.rs`, `src/save.rs` | Title, menus, level select, results and boss-defeated screens; `Toy2NN.sav` saves |
+| `src/music.rs`, `src/fmv.rs` | Disc music (0x413150) and MPEG-1 movies |
 | `src/pickups.rs` | Coins, batteries, tokens (with the appear animation), lives, shield, power-ups, info signposts, ability cages, dropped coins |
 | `src/boxes.rs` | Push boxes along `level.dat` paths (0x433700 / 0x4346C0) |
 | `src/rewards.rs` | Reward sparkles (list 58, 0x49FB40) |
@@ -226,7 +247,9 @@ places a creature.
 | `src/scene.rs`, `src/specials.rs` | Draw batches (levels, creatures, billboards, sprites, specials); run-time special-object transforms (0x4CCxxx) |
 | `src/formats/` | `ngn`, `terrain`, `leveldat`, `packets` (incl. the backdrop picture), `anim`, `exe`, `all`, `bmp` |
 | `src/bin/ts2-viewer.rs` | The viewer: rendering (sky pass, low-detail pass, detailed pass, HUD), input, audio output, token sequence and menu, glue between everything |
-| `examples/` | About 45 diagnostics (§9) |
+| `crates/launcher/` | The OpenTS2 launcher (`opents2`); see "OpenTS2" above and docs/opents2-design.md |
+| `assets/icon/`, `tools/icon/`, `tools/installer/` | The icon and its generator; the Inno Setup installer and its build script |
+| `examples/` | About 50 diagnostics (§9) |
 | `tests/` | Integration tests, one file per level plus systems |
 
 ### Units and conventions
@@ -359,16 +382,16 @@ These cost real time. Most are worth checking first when something similar turns
   original).
 - The pickup jingle plays its first note only (the user hears it once in the original).
 
-## 8. How to port and finish a level (the plan for levels 2–10)
+## 8. How to finish a level (the method for levels 2–15)
 
-Every level's script is already ported, so what's left is mostly playtesting with the user and
-fixing what they find, plus porting the gadgets listed as "not ported". The method that worked
-for level 1:
+Every level's script is ported, so what's left is playtesting with the user, fixing what they
+find, and porting the gadgets each module doc lists as "not ported". The method that worked for
+level 1:
 
 1. **Read the level's module doc** (`src/levelN.rs`) and its frame script in
    `re/out/c/<frame address>.c`. Start-ups and frames are at tables 0x4A1AB8 / 0x4A1B68 by
-   level − 1. Frames: 0x417680, 0x4190C0, 0x41AA10, 0x41C640, 0x41E880, 0x420060, 0x421340,
-   0x423200, 0x424490, 0x425F60.
+   internal id − 1. Frames for ids 1–10: 0x417680, 0x4190C0, 0x41AA10, 0x41C640, 0x41E880,
+   0x420060, 0x421340, 0x423200, 0x424490, 0x425F60; for 11–15 see `docs/re/functions.md`.
 2. **Map the level's objects** before touching behaviour:
    - `examples/creatures levelNN` (slots, types, records, behaviour scripts; `WORDS=140` for
      long scripts);
@@ -390,18 +413,13 @@ for level 1:
 5. **Write a diagnostic before a fix** when the cause isn't obvious: a small `examples/` that
    loads the level and simulates the case (`pushsim`, `bars`, `rope`, `seesaw`, `tinman`,
    `potato`, `dialog`). These found most of the subtle issues without the viewer.
-6. **Fix, add or extend a test** in `tests/levelN.rs`, run the full suite, commit, push.
+6. **Fix, add or extend a test** in `tests/levelN.rs`, update docs/coverage.md, run the full
+   suite. Commit and push only when the user asks.
 7. **Report** to the user: what was wrong, what changed, what to try, and which parts are
    guesses or deviations.
 
-Suggested order: **level 2** (the next in play order, with lots of gadgets still to port:
-drawbridge, tree, ball, squash pad, boxes), then levels 3–5, the level 4 crane puzzle, level 6,
-then 7–10. Bigger items after that:
-- a front end and level select (load the next level after "exit level";
-  `exe::level_number`, `data\levelNN`);
-- the rocket boots and grappling hook (abilities from Mr Potato Head in later levels);
-- music from the CD WAVs (`tracks.txt` is not a reliable mapping; verify against executable tables);
-- lights (0x44F200) and floor shadows.
+What's left across levels is the "Open issues" list at the top; lights (0x44F200) and floor
+shadows are the biggest unported systems.
 
 ### Facts worth knowing for the next levels
 - Mr Potato Head's item and gift per level: table 0x503A22 + 2 × level (level 1: 8 / cosmic
@@ -433,6 +451,7 @@ then 7–10. Bigger items after that:
 | `poles`, `rope`, `bars`, `seesaw`, `tinman <dist>`, `arena` | Simulations of poles, rope exits, ledge bars, the see-saw, the Tin Man fight, a creature's zone |
 | `potato`, `dialog` | Conversations through the level script; speech-box typing |
 | `shared_specials`, `floorline`, `room`, `wander`, `stress`, `gaps` | Misc: shared specials, floor heights, room lookups, fall-through stress tests |
+| `token_model <game> <out>` | Exports the Pizza Planet token (level 1 special 0x39) for the icon generator |
 
 ## 10. Where to find more
 - `docs/re/functions.md`: every exe function and global identified, with behaviour notes.

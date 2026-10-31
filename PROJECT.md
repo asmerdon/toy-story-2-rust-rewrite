@@ -1,123 +1,83 @@
-# Toy Story 2 — Rust Rewrite
+# Toy Story 2 — Rust Rewrite / OpenTS2
 
-A clean-room reimplementation of *Toy Story 2: Buzz Lightyear to the Rescue!* (PC, Traveller's Tales / Activision, 1999) in Rust. It runs natively on modern Windows and other platforms, and **loads all assets from the player's own install**.
+A clean-room reimplementation of *Toy Story 2: Buzz Lightyear to the Rescue!* (PC, Traveller's Tales / Activision, 1999) in Rust, distributed to players as **OpenTS2**: an engine, launcher and installer that run on the player's own copy of the game, in the manner of OpenMW (Open Morrowind).
 
-> **Status note (2026-10-31):** This document retains the original plan and historical milestones. For current implementation status, verification gaps and next actions, read the newest [HANDOFF.md](HANDOFF.md) entry and [README.md](README.md). Agent workflow is defined in [AGENTS.md](AGENTS.md). The ground rules below remain applicable.
+This file holds what doesn't change much: the ground rules, the architecture and the roadmap. Current status and next steps are in [HANDOFF.md](HANDOFF.md); players' instructions are in [README.md](README.md); agent rules are in [AGENTS.md](AGENTS.md).
 
 ## Ground rules
 
-- **No original data in the repo.** No `.all`/`.ngn`/`.wav`/exe bytes and no decompiled C. The engine reads the user's install at runtime (the same model as OpenMW and OpenRCT2). The game is still Disney/Activision copyright; "abandonware" is not a legal status.
-- **Behaviour comes from reading the original code in Ghidra, then rewriting it in idiomatic Rust**, not from a line-by-line translation of decompiler output.
-- **Every format is documented** in `docs/formats/` with evidence, and every parser has a test against a real install (`TS2_GAME_DIR`).
+- **No original data in the repository.** No `.all`/`.ngn`/`.raw`/`.wav`/`.mpg`, no exe bytes and no decompiled C. The engine reads the player's install at runtime (the OpenMW / OpenRCT2 model). The game is still Disney/Activision copyright.
+  - **One exception, by the owner's decision (2026-10-31):** the app icon is a render of the game's Pizza Planet token (`assets/icon/`, made by `tools/icon/make_icon.py` from the player's own install). It ships in the executables and the installer. Nothing else from the game does.
+- **Behaviour comes from reading the original code** (Ghidra, a disassembler), then rewriting it as idiomatic Rust. No line-by-line translation of decompiler output. Name things by what they do and cite the exe address in comments (`0x417680`).
+- **Every format is documented** in `docs/formats/` with evidence, every identified exe function in `docs/re/functions.md`, and every parser has a test against a real install (`TS2_GAME_DIR`).
+- **Deviations from the original** only when the owner asks; each is marked "Deviation:" in the code and listed in the README.
+- `re/` (the Ghidra project and decompiler output) is git-ignored and private. `local/` holds the owner's recordings, screenshots and notes, also git-ignored.
 
-## What we have to work with
-
-Install: `C:\Program Files\Disney Interactive\Toy Story 2` (180 MB).
+## Source material
 
 | Source | Notes |
 |---|---|
-| `toy2.exe` | MSVC, 32-bit, **unpacked**, no copy protection seen. About 880 KB of `.text`. Built 1999-10-29. D3D6 / DirectDraw / DirectInput / DirectSound / DirectShow (`amstream`). |
-| Source-file names in strings | `toy2.cpp`, `Win95.cpp`, `direct6.cpp`, `modesel.cpp`, `nu3d\world.c`, `objload.c`, `hobjload.c`, `objcore.c`, `fmv.c` (TT's "nu3d" engine) |
-| **PS1 executables** in `data\` | `SLUS_008.93` (US), `SLES_020.67` (EU), `psx.exe` (dev build): the same game logic in MIPS. Cross-reference for decompilation. |
-| Asset pipeline leftovers | `mkdat.btm`, `mkgfx.btm`, `Pconv.cfg`: PC `.ngn` files were generated from PS1 `.dat` + `.raw` by TT's `pconv.exe`. Both forms ship. |
-| `creatures.cfg` | Creature ID → name → folder table (ids 0–37+) |
-| `toy2.ini` | Debug key bindings, PS1 pad mapping |
-| `sfx\*.wav` | ~250 standard WAVs (SFX + voice) |
-| **Not in the install (on CD)** | Music (CD audio tracks; exe logs "Base CD track is %d"), FMV cutscenes, `validate.tta` (CD check) |
+| `toy2.exe` | MSVC, 32-bit, unpacked, no copy protection. Built 1999-10-29. D3D6 / DirectDraw / DirectInput / DirectSound / DirectShow. Source-file names in its strings (`toy2.cpp`, `nu3d\world.c`, `objload.c`, `hobjload.c`, `fmv.c`) are TT's "nu3d" engine. The source of truth for behaviour. |
+| `data\` | Levels as `.ngn` (the PC runtime format, written by TT's `pconv.exe` from the PS1 data), `.raw` packets, `.dat` point lists, `TERRAIN.ALL` collision, `sfx\*.wav`, `creatures.cfg`. Levels 11–15 are `level1.*` in folders 01–05 (`campaign.rs`). |
+| PS1 executables in `data\` | `SLUS_008.93`, `SLES_020.67`, `psx.exe`: the same logic in MIPS, for cross-reference. |
+| The game disc | Music (23 WAVs in `audio\`) and movies (22 MPEG-1 files named `.dll` in `rtlibs\`). See `docs/re/asset-audit.md`. |
 
-**2026-10-19 update:** the supplied ISO contains all 23 music WAVs and 22 MPEG videos. Level music now plays from extracted disc files; no alternate source is needed for music. FMV playback remains unimplemented. See `docs/re/asset-audit.md`.
-
-## Architecture (target)
+## Architecture
 
 ```
-ts2/                    one crate for now; split into a workspace once it grows
-  src/formats/          pure parsers: .all .anm .ngn .raw .bin(PAD) .dat ...
-  src/export.rs         debug exporters (OBJ/glTF) for checking formats in Blender
-  src/bin/ts2-tool.rs   asset CLI: scan, export
-  (later)
-  src/render/           wgpu renderer: PS1-style vertex colour + textured polys
-  src/game/             entities, player controller, creature AI, levels, menus
-  src/audio/            kira/rodio: SFX, voice, CD-track music from user's CD image
-  src/platform/         winit window, gilrs gamepad, config, save files (Toy2xx.sav)
+Cargo.toml            workspace; also the engine crate `ts2`
+src/                  the engine
+  formats/            pure parsers: ngn, anim, terrain, leveldat, packets, exe, all, bmp
+  game.rs, buzz.rs …  simulation at the original's 60 Hz with its integer maths
+  level1.rs …15.rs    each level's start-up and frame script
+  frontend.rs, save.rs, music.rs, fmv.rs, audio.rs, scene.rs …
+  bin/ts2-viewer.rs   the game: wgpu renderer, winit window, rodio audio, input
+  bin/ts2-tool.rs     asset audit and exporters
+examples/             diagnostics (HANDOFF §9)
+tests/                integration tests against the real install
+crates/launcher/      OpenTS2 launcher (`opents2`, egui)
+assets/icon/          the Pizza Planet token icon
+tools/icon/           icon generator; tools/installer/: Inno Setup installer
+tools/ghidra/         the headless Ghidra dump script
+docs/                 formats, exe functions, coverage, OpenTS2 design
 ```
 
-## Phases
+Rendering is wgpu + winit, sound rodio, movies `oxideav-mpeg12video` + Symphonia, the launcher egui (eframe on the same wgpu/winit).
 
-### Phase 0: Recon ✅ (done)
-- Inventoried the install, found the PS1 executables, the build scripts and the CD dependency.
+## How we got here
 
-### Phase 1: Asset formats (in progress)
-**Key finding:** the PC game doesn't need most of the PS1-era files. Each level's `.ngn` bundles that level's textures (BMP), geometry, mesh placements, and every creature it uses (meshes per skeleton node, smooth-joint vertices, animations). The `.ngn` format is the runtime target. `.all`/`.raw`/`.dat` are pipeline sources, useful for cross-checking.
+1. **Recon:** inventoried the install, found the PS1 executables, the pipeline leftovers and the disc dependency.
+2. **Formats:** `.ngn` (textures, geometry, instances, specials, creatures, animations, patches), `.raw` packets, `level.dat`, `TERRAIN.ALL`, `.all` hit shapes, saves.
+3. **Reverse engineering:** Ghidra 12 headless dump (`tools/ghidra/DumpAround.java`) of all functions to `re/out/`; findings in `docs/re/functions.md`.
+4. **Engine and gameplay:** the viewer grew into the game: Buzz's controller, collision, creatures, every level's script, bosses, HUD, front end, saves, music and movies.
+5. **Playtesting:** Level 1 signed off; levels 2–15 through two rounds of the owner's reports (`docs/coverage.md`).
+6. **OpenTS2 phase 1:** launcher and installer (`docs/opents2-design.md`).
 
-| Format | Status |
+## Roadmap
+
+1. **Finish the port:** sign off levels 2–15; the missing features in HANDOFF (pause menu, options, movie viewer, credits, loading pictures, attract demo, a few gadgets).
+2. **OpenTS2 0.1 release:** the installer as built now, once the port is signed off.
+3. **Modding (OpenTS2 phase 3, after the port settles):** a layered virtual file system (mods over the game's data), asset overrides, playing as other creatures, scripted behaviour. Design in `docs/opents2-design.md`.
+4. **Level editor (phase 2):** `opents2-editor`, a free camera for placing objects, creatures, pickups and paths, saved as mod files.
+5. **Other platforms:** Linux (Flatpak) and macOS packages; the engine's default game path must stop assuming `C:\`.
+
+## Machine setup (the owner's PC)
+
+| What | Where |
 |---|---|
-| `.ngn` textures (0x104) | ✅ Named BMP files; exported as-is. |
-| `.ngn` level geometry (0x100/0x101) | ✅ All 20 level files, ~400k triangles. Mesh tags, materials → textures, tri/quad/strip/fan groups, placements (translation only, verified by seam matching). Exports to OBJ+MTL+BMP. |
-| `.ngn` creatures (0x106) | ✅ structure for all 146 creature records: node names, per-node meshes with textures and normals, shared smooth-joint buffers. Exports to OBJ. ❌ Shared-joint attachment (0x208). |
-| Animations (`.ngn` 0x204 = `.anm`) | ✅ Decoded from the exe's sampler (Ghidra). All 845 animations parse. Model-space per-node poses, no hierarchy. `export-pose` writes posed OBJs. Visual check pending. See `docs/formats/anim.md`. |
-| `.ngn` 0x102/0x103/0x105 | ❌ Small tables (paths/triggers/visibility?). |
-| `.all` PS1 models | ✅ geometry for all 68 (9,556 polys), incl. smooth-shaded (per-vertex normal indices). Trailer not decoded. Now reference-only. |
-| `.raw` packet files | ✅ Container + LZ decompressor (all 827 packets exact). ✅ Creature spawn list (type 35): position + creature id. ❌ Spawn parameters, map (36), other tables, player start. See `docs/formats/packets.md`. |
-| `.bin` / `PAD\PATH*.BIN` | Not started. Level objects, AI paths. |
-| `TERRAIN.ALL` / `TERR1.ALL` | ✅ Collision polygons per object (docs/formats/terrain.md). Used by play mode. |
-| `fmv.bin`, `level.vis` | Not started. |
-| `.sav` | Not started. 407 bytes, easy win. |
+| Project | `C:\Users\alexs\Documents\Toy Story 2 - Rust Rewrite` |
+| Game install | `C:\Program Files\Disney Interactive\Toy Story 2` |
+| Disc image | `C:\Users\alexs\Downloads\Disney-Pixar-Toy-Story-2-Buzz-Lightyear-to-the-Rescue_Win_EN_ISO-Version\ToyStory2.iso` |
+| Rust | stable via rustup, MSVC build tools |
+| Ghidra | 12.1.4 at `C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC`, JDK 21 at `C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot` |
+| Inno Setup | 6, per-user (`winget install JRSoftware.InnoSetup`) |
+| 7-Zip | `C:\Program Files\7-Zip\7z.exe` (lists or extracts the ISO) |
 
-Details: `docs/formats/all.md`, `docs/formats/ngn.md`.
+Re-run the Ghidra dump on the existing project (about 10 minutes):
 
-Exit criterion: a viewer that renders any level with its characters standing in it. Everything except animation is now in place for this.
-
-### Phase 2: Code reverse-engineering (Ghidra), started
-Setup: Ghidra 12.1.4 at `C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC`, Temurin JDK 21. The headless script `tools/ghidra/DumpAround.java` writes a function list, strings with their users, and decompiled C for all 1,317 functions to `re/out/`, which is git-ignored and must never be committed. Re-run with:
+```bash
+set JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot
+C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC\support\analyzeHeadless.bat re\proj TS2 -process toy2.exe -noanalysis -scriptPath tools\ghidra -postScript DumpAround.java re\out
 ```
-set JAVA_HOME=C:\Program Files\Eclipse Adoptium\<jdk-21 folder>
-C:\Users\alexs\Tools\ghidra_12.1.4_PUBLIC\support\analyzeHeadless.bat re\proj TS2 -import re\toy2.exe -overwrite -scriptPath tools\ghidra -postScript DumpAround.java re\out
-```
-Known functions so far: creature loader 0x4CA420 (`hobjload.c`), animation store 0x4CA040, object draw/animate 0x4CD880, node sampler 0x4CD170/0x4CD1B0, rotate X/Y/Z 0x4A9AA0/0x4A9CB0/0x4A9EC0, mesh loaders 0x4CB320/0x4CB4E0/0x4CB970/0x4CC970 (`objload.c`), CD check 0x4A6390 (`validate.tta`), CD-audio config 0x412D70.
 
-Remaining steps:
-1. Import `toy2.exe`, apply MSVC6 runtime signatures, label functions via the source-file assert strings (`Win95.cpp Line 227` etc.).
-2. Find the loaders (`objload.c`, `hobjload.c`) first; they confirm the Phase 1 formats.
-3. Then: main loop and timing, player state machine, camera, collision, creature behaviours (by `creatures.cfg` id), level scripting, menus, save/load.
-4. Import `SLUS_008.93` into a second Ghidra project (MIPS R3000) for comparison where x86 is unclear.
-5. Write findings to `docs/re/` (function address → name → purpose).
-
-### Phase 3: Engine (prototype viewer started)
-`ts2-viewer` (src/bin/ts2-viewer.rs) uses winit 0.30 + wgpu 24. It renders a level `.ngn` with nearest-filtered textures, black-as-transparent and PS1-style vertex colour modulation (selectable byte order). It has a fly camera, and can spawn any creature from the level with interpolated animation playback, including patches. CPU-side scene building is in `src/scene.rs`, BMP decoding in `src/bmp.rs`.
-```
-cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy Story 2\data\level01\level.ngn" buzz
-```
-The viewer now loads `level*.raw` next to the `.ngn` and shows every creature at its spawn point (N toggles).
-Notes: `level*.bin` is PS1 MIPS code (per-level overlays), not data. `level.dat` is loaded by the PC game, and its first section holds typed point lists, probably collision/terrain (parser 0x43E6E0).
-**Play mode:** F starts Buzz at the level's original start. Buzz's controller is a port of the original's 60 Hz routines (run, gradual turning and skid, variable-height jump, double jump with wings, stomp on E, coyote time, long-fall panic), animated from the exe's move table. Collision uses the original `TERRAIN.ALL` polygons (K overlays them) with our own resolve (floor ray + chest-height wall sphere).
-
-`level.dat` section 1 (decoded): 53 typed point lists. Types 0–40 are paths (0–8 are challenge routes), type 58 holds challenge reward positions (250 units above the floor, matched against pickup objects by 0x49FAB0), type 63 has 4 values per point, and type 65 is 22 five-point zones. Sections 2–3 (128-byte cells, 20-byte object records) are not decoded. Per-level sound lists: tables at 0x4FD140 / 0x4FD5E0, used by 0x47EC20.
-
-Open: the player start (not in the creature list, paths or type 58), the original collision data, Buzz's real move set and speeds.
-
-Target for the full engine:
-- `winit` + `wgpu` renderer reproducing PS1 look (vertex colour × texture, optional affine warp/no-filter toggles), widescreen and high resolution.
-- Fixed-timestep simulation matching the original tick rate (the original's frame-timing bugs are what break it on modern PCs).
-- Input: keyboard (from `toy2.ini` defaults) + gamepad.
-
-### Phase 4: Gameplay
-Player controller (Buzz move set) → one level end-to-end (Level 1, "Andy's House") → creatures by id → bosses → remaining levels → menus, saves, cutscenes, music.
-
-### Phase 5: Polish
-Settings, rebinding, glTF/HD texture override hooks, Linux/macOS builds.
-
-## Rough effort
-Phase 1: weeks. Phase 2–4: the bulk, about 6–18 months part-time for one person. The PS1 build and the shipped asset pipeline make this one of the more tractable late-90s 3D games.
-
-## Running the tools
-
-```
-set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
-cargo test --release
-cargo run --release -- scan-models "%TS2_GAME_DIR%"
-cargo run --release -- export-all "%TS2_GAME_DIR%" out\models
-cargo run --release -- scan-ngn "%TS2_GAME_DIR%"
-cargo run --release -- export-level "%TS2_GAME_DIR%\data\level01\level.ngn" out\level01
-```
-`export-level` writes the level OBJ + MTL, every texture as BMP, and one `creature_<id>_<name>.obj` per creature in that level. All of it opens directly in Blender.
-OBJ output (`out/`, git-ignored) imports into Blender with vertex colours (Color Attributes).
+For a fresh import, replace `-process toy2.exe -noanalysis` with `-import re\toy2.exe -overwrite`.
