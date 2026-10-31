@@ -283,9 +283,13 @@ impl RoomCull {
 
 /// Layer-0 instances whose centre is further than this from the camera are skipped
 /// (0x4BC460 / 0x4BC720 against 0x5088B0, set by 0x4BC410 from detail level 2 of the table
-/// at 0x508D24: 12000). Applied to room-culled levels' special objects, which are otherwise
-/// drawn unclipped after the depth clear and would show through the low-detail set.
+/// at 0x508D24: 12000). Applied to special objects on every level (`special_in_view`); the
+/// static detailed set is clipped at `NEAR_TO` instead.
 const NEAR_CULL: f32 = 12000.0;
+
+/// Layer-1 (low-detail) instances whose centre is nearer than this are skipped (0x4BC460 /
+/// 0x4BC720 against 0x5088B4, the second argument of 0x4BC410).
+const FAR_SKIP: f32 = 1000.0;
 
 #[derive(Clone, Copy)]
 struct Camera {
@@ -330,6 +334,8 @@ struct Gfx {
     /// The rooms drawn this frame (bit per room): level batches of other rooms are skipped.
     rooms: u64,
     creature: Vec<GpuBatch>,
+    /// Special objects of layers 0 and 1, drawn with their layer's set (clipped as it is).
+    specials: [Vec<GpuBatch>; 2],
     /// The HUD, in screen space (0..1, y down), drawn last over everything.
     hud: Vec<GpuBatch>,
     /// The background (0x48FB70): cleared to the sky colour, the ground band over it.
@@ -612,20 +618,21 @@ fn update_rooms(cull: &mut Option<RoomCull>, world: &game::World, cam: &Camera, 
     c.mask
 }
 
-/// Whether a special object is drawn this frame: its room is in view and, in the
-/// detailed set, its centre is within `NEAR_CULL` of the eye (0x4BC460).
+/// Whether a special object is drawn this frame, by 0x4BC460 / 0x4BC720's per-instance tests:
+/// its room is in view (`rooms`, all bits set on levels not drawn by room), and its centre is
+/// within `NEAR_CULL` of the eye for the detailed set (layer 0, against 0x5088B0) or beyond
+/// `FAR_SKIP` for the low-detail set (layer 1, against 0x5088B4). The exe treats special
+/// objects as ordinary instances, so these hold on every level.
 fn special_in_view(ngn: &ngn::Ngn, s: &ts2::specials::Special, rooms: u64, eye: Vec3) -> bool {
     let Some(inst) = ngn.layers.get(s.layer).and_then(|l| l.instances.get(s.instance)) else { return true };
     let room = inst.flags & 0xFF;
     if room < 64 && rooms & (1 << room) == 0 {
         return false;
     }
-    if s.layer != 0 {
-        return true;
-    }
     let Some(mesh) = ngn.layers[s.layer].meshes.get(inst.mesh as usize) else { return true };
     let placed = ngn::Instance { pos: s.pos, rot: s.angles, scale: s.scale, ..*inst };
-    Vec3::from(scene::instance_centre(mesh, &placed)).distance_squared(eye) <= NEAR_CULL * NEAR_CULL
+    let d2 = Vec3::from(scene::instance_centre(mesh, &placed)).distance_squared(eye);
+    if s.layer == 0 { d2 < NEAR_CULL * NEAR_CULL } else { d2 > FAR_SKIP * FAR_SKIP }
 }
 
 fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatch> {
@@ -853,7 +860,7 @@ impl Gfx {
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
         let level_far = upload(&device, level_far, texture_bgs.len() - 1);
-        Gfx { window, surface, target, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1], texture_layout, sampler, movie: None, rooms: u64::MAX }
+        Gfx { window, surface, target, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), specials: [Vec::new(), Vec::new()], hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1], texture_layout, sampler, movie: None, rooms: u64::MAX }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -1022,8 +1029,8 @@ impl Gfx {
         // (uniforms, batches, level geometry: opaque drawn with back faces culled)
         let passes: [(&[(usize, &[GpuBatch], bool)], bool); 4] = [
             (&[(3, &self.sky, false)], true),
-            (&[(0, &self.level_far, true), (0, &self.level_far_two_sided, false), (0, &self.billboards[1], false)], false),
-            (&[(1, &self.level, true), (1, &self.level_two_sided, false), (4, &self.level_decal, true), (1, &self.billboards[0], false), (2, &self.creature, false)], false),
+            (&[(0, &self.level_far, true), (0, &self.level_far_two_sided, false), (0, &self.billboards[1], false), (0, &self.specials[1], false)], false),
+            (&[(1, &self.level, true), (1, &self.level_two_sided, false), (4, &self.level_decal, true), (1, &self.billboards[0], false), (1, &self.specials[0], false), (2, &self.creature, false)], false),
             (&[(3, &self.hud, false)], false),
         ];
         for (draws, first) in passes {
@@ -2000,17 +2007,23 @@ impl Viewer {
         }
         // Laser beams.
         scene::merge(&mut batches, self.lasers.beams_batches(Vec3::from(world_to_game(self.cam.pos)), self.beam_sprite));
-        // Special objects at their current transforms; their billboards join the near set's.
-        let mut special_bb = Vec::new();
+        // Special objects at their current transforms, drawn with their own layer as 0x4CDDD0
+        // draws every instance: layer 1 (low detail) before the depth clear, layer 0 after.
+        // Their billboards join that layer's.
+        let mut special_bb = [Vec::new(), Vec::new()];
+        let (mut special_near, mut special_far) = (Vec::new(), Vec::new());
         let rooms = update_rooms(&mut self.cull, &self.world, &self.cam, gfx.config.width as f32 / gfx.config.height as f32);
         gfx.rooms = rooms;
         let eye = Vec3::from(world_to_game(self.cam.pos));
         for s in self.specials.objects.values() {
-            if self.cull.is_some() && !special_in_view(&self.ngn, s, rooms, eye) {
+            if !special_in_view(&self.ngn, s, if self.cull.is_some() { rooms } else { u64::MAX }, eye) {
                 continue;
             }
-            scene::merge(&mut batches, scene::special_batches(&self.ngn, s, &mut special_bb));
+            let far = s.layer != 0;
+            let out = if far { &mut special_far } else { &mut special_near };
+            scene::merge(out, scene::special_batches(&self.ngn, s, &mut special_bb[far as usize]));
         }
+        gfx.specials = [upload(&gfx.device, &special_near, gfx.texture_bgs.len() - 1), upload(&gfx.device, &special_far, gfx.texture_bgs.len() - 1)];
         if self.show_collision
             && let Some(c) = &self.collision_batch
         {
@@ -2080,8 +2093,9 @@ impl Viewer {
                 }
             };
             let mut near = scene::billboard_batches(&seen(0), to_game(r), to_game(u));
-            scene::merge(&mut near, scene::billboard_batches(&special_bb, to_game(r), to_game(u)));
-            let far = scene::billboard_batches(&seen(1), to_game(r), to_game(u));
+            scene::merge(&mut near, scene::billboard_batches(&special_bb[0], to_game(r), to_game(u)));
+            let mut far = scene::billboard_batches(&seen(1), to_game(r), to_game(u));
+            scene::merge(&mut far, scene::billboard_batches(&special_bb[1], to_game(r), to_game(u)));
             gfx.billboards = [upload(&gfx.device, &near, white), upload(&gfx.device, &far, white)];
         }
     }
@@ -3504,5 +3518,25 @@ mod room_tests {
         assert!(!special_in_view(&n, inside, 0b011, near), "room 2 not in view");
         assert!(special_in_view(&n, inside, 0b111, near));
         assert!(!special_in_view(&n, outside, 0b111, near - Vec3::Z * 12000.0), "too far");
+    }
+
+    /// On every level, a special object of the detailed set is drawn only within 12000 of the
+    /// eye and one of the low-detail set only beyond 1000 (0x4BC460 / 0x4BC720 against
+    /// 0x5088B0 / 0x5088B4): level 14's helicopter (0x08 in layer 0, 0x17 its layer-1 copy),
+    /// seen from the start, is the low-detail copy, drawn with the low-detail set.
+    #[test]
+    fn specials_of_each_layer_have_their_own_distance() {
+        let Some(game) = std::env::var_os("TS2_GAME_DIR") else { return };
+        let path = ts2::campaign::level(14).unwrap().path(std::path::Path::new(&game));
+        let n = ngn::parse(&fs::read(path).unwrap()).unwrap();
+        let specials = ts2::specials::Specials::new(&n);
+        let (detailed, low) = (specials.get(0x08).unwrap(), specials.get(0x17).unwrap());
+        assert_eq!((detailed.layer, low.layer), (0, 1));
+        let start = Vec3::new(-10010.0, 0.0, 30728.0);
+        assert!(!special_in_view(&n, detailed, u64::MAX, start), "detailed copy beyond 12000");
+        assert!(special_in_view(&n, low, u64::MAX, start));
+        let under = Vec3::new(-10414.0, -3000.0, 1800.0);
+        assert!(special_in_view(&n, detailed, u64::MAX, under));
+        assert!(!special_in_view(&n, low, u64::MAX, under), "low-detail copy within 1000");
     }
 }

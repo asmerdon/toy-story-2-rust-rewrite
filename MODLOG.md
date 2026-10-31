@@ -63,3 +63,4 @@
 - Collision: boundary walls (TERRAIN kind 0x101) loaded and swept for Buzz, the camera and rays. Belt pushes are swept (0x48B660 / 0x488E10). This closes the final arena's back and the airport's conveyor ends. Zurg's entrance height goes to target y.
 - Level 14: removed the start-up write of 0x708 into every creature's flags (it belongs to the +0x42 draw distance). That stops Hamm and the race starting by themselves and every creature chasing Buzz.
 - Viewer: cursor hidden and confined while playing. A look-at scene ends first person (0x4020F0).
+- Rendering: specials drawn by their own layer's rules on every level (layer 1 beyond 1000 in the far pass; layer 0 within 12000 after the clear, 0x4CDDD0 / 0x4BC460). This fixes things showing through walls and z-fighting. Level 1 is identical indoors. 169 tests pass.

@@ -15,13 +15,20 @@ The user retested. Everything reported before is fixed, except what's listed bel
 
 | # | Report | Status |
 |---|---|---|
-| 1 | Level 5 bones challenge: one bone missing | Sonnet helper working (`level5.rs`) |
+| 1 | Level 5 bones challenge: one bone missing | **Not reproduced**: all five (0x61–0x65, y 827 over the water) exist, can be collected (`bones_all_collectable`) and show once the challenge starts (`l5-bones-0.png`). Ask the user which bone and when |
 | 2 | Clipping: L1 windowsill, L13 conveyor ends | Fixed L13 (Opus helper): the **boundary walls** (TERRAIN kind 0x101, read by 0x484380 / 0x48C860; see docs/formats/terrain.md) were never loaded, and belt pushes weren't swept. L1 windowsill **not reproduced**; ask the user for the spot. Sweep `examples/clipsweep.rs`: edge falls in L5/7/8/10 look like open pits, not verified against the original |
 | 3 | L14 enemies moving fast | Likely fixed with 4: the setup wrote 0x708 into every creature's flags (chase 8, harmful 0x100, touched 0x200); the original writes the draw distance at +0x42 |
 | 4 | L14 starts in a race and talking to Hamm | Fixed (same cause); `standing_at_the_start_starts_no_talk_or_race` |
 | 5 | Final level: should be walled at the back | Fixed: a 29-segment boundary loop closes it; `final_arena_back_is_closed_by_its_boundary_wall` (replaces the fall-plane test; 0x436220 still applies to real falls) |
-| 6 | Draw order: helicopter over the flagpole and plane, power-ups over walls | Not started; next helper (rendering). Specials of both layers draw in one late pass |
-| 7 | L7 skateboards (stomp to ride) | Sonnet helper working (`level7.rs`) |
+| 6 | Draw order: helicopter over the flagpole, power-ups over walls | Fixed (Opus helper):
+- Specials now follow 0x4CDDD0's per-layer rules on every level: layer 1 drawn beyond 1000 (0x5088B4) in the low-detail pass, before the depth clear; layer 0 within 12000 (0x5088B0), clipped like the detailed set.
+- Level 1 is pixel-identical indoors.
+- Test: `specials_of_each_layer_have_their_own_distance`. Shots: `out/rv/cmp/*`, sweep sheets `out/rv/sweep/sheet-lN.png`.
+- Open:
+  - L13 follow camera ends inside Buzz's head after 300 ticks.
+  - The far-set near clip of 10000 is not applied (it showed holes).
+  - Creatures draw within 10176 rather than the original's active list. |
+| 7 | L7 skateboards (stomp to ride) | Ported by a Sonnet helper (the user stopped it before it reported): `Level7::skateboards` from 0x421340; tests `skateboard_*`. No shot checked |
 | 8 | Hide the cursor in play | Done: `sync_cursor` (hidden and confined while playing, released on focus loss) |
 | 9 | First-person model visible in cut-scenes | Done: 0x4020F0 ends first person; `Look::cancel` called when a script look-at begins |
 | 10 | L12 Zurg intro sinks into the floor | Fixed: the height goes to slot +0x60 (target), not home; `zurg_entrance_stays_above_the_floor` |
@@ -33,7 +40,7 @@ Open collision details:
 - Creature rays against boundaries are not done.
 - The mover carry is still added to position unswept.
 
-Suite: 165 tests pass in 36 suites (before helpers 1 and 7 report).
+Pushed as `6653ae3` to dev, then the draw-order fix (169 tests).
 
 ## 2026-10-31 (later): verification and the user's playtest reports
 

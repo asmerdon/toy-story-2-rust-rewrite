@@ -55,7 +55,8 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Gliding platforms | `platforms_glide` | | |
 | See-saws (2), trampoline | `continuation_audit` example (see-saws) | | |
 | Clown boss (token 4) | `clown_challenge_in_room_2` | | |
-| Finder ducks (1), bones challenge (2), Hamm, hint | | | |
+| Bones challenge (2): all five exist, show and can be collected | `bones_all_collectable` | `l5-bones-0.png` (five visible after starting it) | reported one missing; not reproduced |
+| Finder ducks (1), Hamm, hint | | | |
 | Not ported: stomp machine and bubbles, falling gate, drips, underwater fog | | | |
 
 ## 6 Slime Time (`level3.rs`, boss)
@@ -71,6 +72,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 |---|---|---|---|
 | Path movers and locks shot | `paths_run` | | |
 | Spring, trampoline | | | |
+| Skateboards (movers 10 / 0xE): landing on one rolls it, throws Buzz at the end | `skateboard_one_rolls_when_landed_on`, `skateboard_two_rolls_and_returns` | | reported not working; ported, not yet reviewed in a shot |
 | Finder chicks (1), egg challenge (2), Potato Head boots, Hamm, hint | | | |
 | Dino boss (token 4) | `dino_fight` | | |
 | Not ported: bobbing platform race, rockets, chicks pushed by boxes, drips | | | |
@@ -153,4 +155,6 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## Cross-level
 | Item | Status |
 |---|---|
+| Specials by layer and distance (0x4CDDD0), all levels: no power-ups or helicopter through walls | `specials_of_each_layer_have_their_own_distance`; sweep `out/rv/sweep` |
+| Boundary walls (kind 0x101) in every level that has them | `final_arena_back_*`, `airport_conveyor_ends_*` |
 | Spawn snap (0x4863A0): only level 13 differed, now starts on the X-ray conveyor | `level_13_starts_on_the_conveyor_above_its_table_point`; `l13-start-orig.png` |
