@@ -90,14 +90,23 @@ fn zurg_projectiles_home_bounce_and_end_in_the_hole() {
     let origin = [0, -100000, 65536];
     let buzz = [50000, -80000, 65536];
     parts.camera = origin;
-    let homing = parts.create(origin, [0, -2, 0], 0, 0, 0, 0x6d).unwrap();
+    // Launched as 0x42B3A0 does, facing (roughly) the way he is: yaw 0x300 against 0x400 to him.
+    let homing = parts.create(origin, [0, -2, 0], 0x300 << 2, 0, 0, 0x6d).unwrap();
     assert_ne!(parts.slots[homing].flags & 8, 0);
-    let distance = |at: [i32; 3]| (0..3).map(|k| (at[k] as f64 - buzz[k] as f64).powi(2)).sum::<f64>();
+    let distance = |at: [i32; 3]| (0..3).map(|k| (at[k] as f64 - buzz[k] as f64).powi(2)).sum::<f64>().sqrt();
     let start = distance(origin);
-    for _ in 0..30 { parts.tick(&world, (buzz, 0)); }
-    assert!(parts.slots[homing].life > 0);
-    assert!(distance(parts.slots[homing].pos) < start, "shot approaches Buzz");
-    assert!(parts.slots[homing].pos[0] > origin[0], "shot turns towards Buzz");
+    // 0x410F40: type 0x6d has frame period byte 0xC4, so its yaw turns by error / ((life/16)^2
+    // + 4) at speed 1/8: weak steering at first, firmer as its life runs down.
+    let mut closest = f64::MAX;
+    for i in 0..150 {
+        parts.tick(&world, (buzz, 0));
+        if i == 29 {
+            assert!(parts.slots[homing].life > 0);
+            assert!(parts.slots[homing].pos[0] > origin[0], "shot turns towards Buzz");
+        }
+        closest = closest.min(distance(parts.slots[homing].pos));
+    }
+    assert!(closest < start * 0.5, "shot approaches Buzz: {closest} vs {start}");
     let ball = parts.create([0, -77000, 65536], [0, 1024, 0], 256, 0, 0, 0x6c).unwrap();
     let mut bounced = false;
     for _ in 0..10 {

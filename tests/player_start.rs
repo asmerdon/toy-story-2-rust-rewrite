@@ -82,3 +82,21 @@ fn buzz_animator_plays_every_state_within_its_animations() {
     assert!(ended >= 1);
     assert!(moves[4].list.ends_with(&[0xFE]), "{:?}", moves[4].list);
 }
+
+/// ResetPlayer's snap (0x4863A0 via 0x486520) prefers the nearest floor above the stored
+/// point: Airport Infiltration's start is under the X-ray conveyor, and Buzz starts on it.
+#[test]
+fn level_13_starts_on_the_conveyor_above_its_table_point() {
+    let Some(dir) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let exe = exe::Exe::parse(fs::read(dir.join("toy2.exe")).unwrap()).unwrap();
+    let t = ts2::formats::terrain::parse(&fs::read(dir.join("data/level03/TERR1.ALL")).unwrap()).unwrap();
+    let world = game::World::from_terrain(&t);
+    let start = exe.player_start(13).unwrap();
+    let feet = world.start_floor(glam::Vec3::from(start.pos));
+    assert!(feet.y < start.pos[1] - 1500.0, "start {:?} snapped to {feet:?}", start.pos);
+    // Elsewhere the floor is just under the table point (8 units over it).
+    let t = ts2::formats::terrain::parse(&fs::read(dir.join("data/level01/TERRAIN.ALL")).unwrap()).unwrap();
+    let start = exe.player_start(1).unwrap();
+    let feet = game::World::from_terrain(&t).start_floor(glam::Vec3::from(start.pos));
+    assert!((feet.y - start.pos[1]).abs() < 32.0, "level 1 start {:?} snapped to {feet:?}", start.pos);
+}

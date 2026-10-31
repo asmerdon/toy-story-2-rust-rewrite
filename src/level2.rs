@@ -12,7 +12,11 @@
 //! - A rope on pole 0 that lowers special 0x19 once climbed, stretching special 0x1B.
 //!
 //! Pushable drawbridge (5 / 0xB) and tree (0x1E / 0x1F) swap collision as they fall.
-//! Not ported: the kite's string and sky effects.
+//! - The fifth troop (slot 4) is in the lawn's holes (list 2, seven points): it pops up at one,
+//!   ducks when Buzz comes near and the hole's dirt shows for a while; stomping that hole while
+//!   it shows fills it in (a mound stays). With six filled the troop comes out and can be
+//!   collected (0x4190C0's mole game, see `Level2::troop_holes`).
+//! Not ported: the kite's string and sky effects, the dirt model over a hole (0x49E910).
 //! The pool ball (special 6, mover 7) inflates from the squash pad (surface 11).
 
 use crate::boxes::Boxes;
@@ -60,7 +64,22 @@ pub struct Level2 {
     bridge_speed: i32,
     tree_angle: i32,
     tree_speed: i32,
+    holes: Holes,
     common: Common,
+}
+
+/// The troop's holes (list 2, level units): 0x52F5DC where the troop is, 0x52F5E8 where it
+/// ducked from, 0x52F61C the ticks its dirt shows, 0x52F6D0 the holes filled (the original
+/// marks one with y 0x80000000) and 0x52F6D4 the scan for the mounds.
+#[derive(Default)]
+struct Holes {
+    points: Vec<[i32; 3]>,
+    filled: Vec<bool>,
+    at: usize,
+    last: usize,
+    timer: i32,
+    count: i32,
+    scan: usize,
 }
 
 impl Level2 {
@@ -95,6 +114,7 @@ impl Level2 {
             bridge_speed: 0,
             tree_angle: 0,
             tree_speed: 0,
+            holes: Holes::default(),
             common: Common { given: [false, false, false, true, false], ..Default::default() },
         };
         // 0x488AA0: the see-saws' turns.
@@ -104,11 +124,89 @@ impl Level2 {
     }
 
     pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
+        if let Some(l) = lists.iter().find(|l| l.kind == 2) {
+            self.holes.points = l.points.clone();
+            self.holes.filled = vec![false; l.points.len()];
+        }
         self.story.hints = (0..5).filter_map(|k| exe.at(HINTS + 4 * k, 4).ok().map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))).collect();
         let texts = [crate::script::HAMM_THANKS, crate::script::HAMM_ASK, crate::script::ALL_TOKENS, SARGE_ASK, SARGE_THANKS, KITE_TEXT];
         self.load_story(exe, lists, &texts, Some(INFO_TABLE));
     }
 
+
+    /// 0x4190C0's troop in the holes (slot 4, pinned to its target height while it has flag
+    /// 0x20). It ducks (target y 0x5000) when Buzz comes within 768 and then comes up at the
+    /// next unfilled hole; its dirt shows for 100 ticks and a stomp (recovery below -0x14)
+    /// within 48 of that hole fills it in. Six filled frees the troop (flags |= 0x84,
+    /// &= ~0x20). Mounds (0x3A) show at the filled holes near the camera (here: Buzz).
+    fn troop_holes(&mut self, player: &Player, cr: &mut Creatures) {
+        let Some(c) = cr.slots.get_mut(4) else { return };
+        let h = &mut self.holes;
+        let n = h.points.len();
+        if n == 0 || c.id == 0 {
+            return;
+        }
+        let buzz = player.pos_obj();
+        let near = |a: [i32; 3], b: [i32; 3]| (0..3).map(|k| { let d = ((a[k] - b[k]) >> 5) as i64; d * d }).sum::<i64>() < 0x90000;
+        if c.active && c.flags & 0x20 != 0 && near(buzz, c.pos) && c.target[1] != 0x5000 {
+            c.target[1] = 0x5000;
+            h.timer = 100;
+            h.last = h.at;
+            self.common.sounds.push((0x31, c.pos));
+        }
+        if c.pos[1] > 0x4800 {
+            let usable = |h: &Holes, k: usize| !h.filled[k] && k != h.last;
+            h.at += 1;
+            if h.at >= n {
+                h.at -= n;
+            }
+            if !usable(h, h.at) {
+                let mut tries = 0;
+                loop {
+                    h.at += 1;
+                    if h.at >= n {
+                        h.at = 0;
+                    }
+                    tries += 1;
+                    if usable(h, h.at) || tries >= n {
+                        break;
+                    }
+                }
+            }
+            let p = h.points[h.at].map(|v| v << 5);
+            c.pos = [p[0], 0x3800, p[2]];
+            c.home = p;
+            c.target = p;
+        }
+        // The mounds at filled holes (one hole scanned a tick).
+        let from_hole = |buzz: [i32; 3], p: [i32; 3]| [buzz[1] + 0xBB0, buzz[2] - p[2], buzz[0] - p[0]].map(|v| (v >> 8) as i64).iter().map(|v| v * v).sum::<i64>();
+        if h.filled[h.scan] {
+            let p = h.points[h.scan].map(|v| v << 5);
+            if from_hole(buzz, p) < 0x40000 {
+                self.common.spawns.push(([p[0], -0xBB0, p[2]], 0x3A, 3, 0, None));
+            }
+        }
+        h.scan = (h.scan + 1) % n;
+        if h.timer > 0 {
+            h.timer -= 1;
+            if h.timer == 79 {
+                let p = h.points[h.last].map(|v| v << 5);
+                self.common.spawns.push(([p[0], -0x23B0, p[2]], 0x3B, 2, 0, None));
+            }
+        }
+        if player.on_floor && player.stomp < -0x14 && h.at != h.last && h.timer != 0 {
+            let p = h.points[h.last].map(|v| v << 5);
+            if from_hole(buzz, p) < 0x900 {
+                h.filled[h.last] = true;
+                h.count += 1;
+                h.timer = 0;
+                if h.count > 5 {
+                    c.flags = (c.flags & !0x20) | 0x84;
+                }
+                self.common.pop.push(0x3B);
+            }
+        }
+    }
 
     /// The two pushed obstacles, after the pump/switch/rope updates in 0x4190C0.
     fn obstacles(&mut self, world: &World, specials: &mut Specials, player: &mut Player, boxes: &Boxes) {
@@ -415,5 +513,6 @@ impl Script for Level2 {
         self.call(cr, SARGE.0, 0xB2, cr.sheep >= 0);
         self.finder(cr, SARGE.0, SARGE.1, SARGE_ASK, SARGE_THANKS, Some([0x700, 0x200]), 1);
         self.kite(player, cr);
+        self.troop_holes(player, cr);
     }
 }

@@ -131,6 +131,23 @@ impl FirstPerson {
         }
     }
 
+    /// A scene taking the camera (0x4020F0) ends first person at once: the marker and dot go,
+    /// the look is off (0x50A13C = 0) and the helmet and arms are hidden.
+    pub fn cancel(&mut self, p: &mut Player, particles: &mut Particles, specials: &mut Specials) {
+        if p.first_person == 0 {
+            return;
+        }
+        for k in [self.marker.take(), self.dot.take()].into_iter().flatten() {
+            particles.slots[k].life = 1;
+        }
+        p.target = p.facing;
+        p.first_person = 0;
+        p.hook_target = None;
+        for id in MODEL {
+            specials.set_scale(id, [0; 3]);
+        }
+    }
+
     /// Where target `t` is (object units): a creature's middle or a hook point.
     fn target_at(&self, creatures: &Creatures, t: usize) -> [i32; 3] {
         match t.checked_sub(HOOK) {

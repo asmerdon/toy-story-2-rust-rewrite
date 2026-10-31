@@ -249,7 +249,43 @@ struct GpuBatch {
     blend: scene::Blend,
     buffer: wgpu::Buffer,
     count: u32,
+    /// The room (instance flags & 0xFF) this batch's instances belong to, or `ANY_ROOM`.
+    room: u32,
 }
+
+/// A batch drawn whatever rooms are in view.
+const ANY_ROOM: u32 = u32::MAX;
+
+/// Levels drawn by room: only the rooms seen from the camera's room through its portals
+/// (0x4BC460). Other levels draw every room until this is checked there.
+const ROOM_CULLED_LEVELS: [usize; 1] = [4];
+
+/// Room-by-room drawing (0x4CDDD0 → 0x4BC460) for a level in `ROOM_CULLED_LEVELS`.
+struct RoomCull {
+    level: usize,
+    portals: scene::Portals,
+    /// The last room the camera was in (0x5088AC), used while it's over no room map.
+    last: Option<u32>,
+    /// The rooms in view this frame (bit per room).
+    mask: u64,
+    /// Rooms of the near and far billboards, parallel to `Viewer::billboards`.
+    billboard_rooms: [Vec<u32>; 2],
+    /// Rooms of the five level batch lists, parallel to them (near, decal, two-sided,
+    /// far two-sided, far).
+    batch_rooms: [Vec<u32>; 5],
+}
+
+impl RoomCull {
+    fn sees(&self, room: u32) -> bool {
+        room == ANY_ROOM || (room < 64 && self.mask & (1 << room) != 0)
+    }
+}
+
+/// Layer-0 instances whose centre is further than this from the camera are skipped
+/// (0x4BC460 / 0x4BC720 against 0x5088B0, set by 0x4BC410 from detail level 2 of the table
+/// at 0x508D24: 12000). Applied to room-culled levels' special objects, which are otherwise
+/// drawn unclipped after the depth clear and would show through the low-detail set.
+const NEAR_CULL: f32 = 12000.0;
 
 #[derive(Clone, Copy)]
 struct Camera {
@@ -291,6 +327,8 @@ struct Gfx {
     level_far: Vec<GpuBatch>,
     /// Billboards of the near and far sets, this frame.
     billboards: [Vec<GpuBatch>; 2],
+    /// The rooms drawn this frame (bit per room): level batches of other rooms are skipped.
+    rooms: u64,
     creature: Vec<GpuBatch>,
     /// The HUD, in screen space (0..1, y down), drawn last over everything.
     hud: Vec<GpuBatch>,
@@ -321,6 +359,9 @@ struct Viewer {
     use_orig_cam: bool,
     keys: std::collections::HashSet<KeyCode>,
     looking: bool,
+    /// The cursor is hidden and held in the window (while playing as Buzz).
+    cursor_held: bool,
+    focused: bool,
     last: Instant,
     creature_idx: usize,
     creature_pos: Option<[f32; 3]>,
@@ -337,6 +378,8 @@ struct Viewer {
     level_far: Vec<Batch>,
     /// Camera-facing quads of the near and far sets, rebuilt each frame.
     billboards: [Vec<scene::Billboard>; 2],
+    /// Room-by-room drawing, for the levels in `ROOM_CULLED_LEVELS`.
+    cull: Option<RoomCull>,
     world: game::World,
     player: Option<game::Player>,
     /// Index of BUZZ (id 0) in `ngn.creatures`, if present.
@@ -419,6 +462,8 @@ struct Viewer {
     game_dir: Option<std::path::PathBuf>,
     level_track: Option<usize>,
     music_track: Option<usize>,
+    /// The level's script calls 0x49EAC0 (boss levels don't, keeping their own track).
+    theme_events: bool,
     /// The movie playing, those waiting, and a skip pressed.
     movie: Option<Movie>,
     movies: std::collections::VecDeque<usize>,
@@ -485,8 +530,34 @@ struct LevelSets {
 /// mesh sets. Of those, faces baked pure black stay culled: they're the data's back faces,
 /// which would fight a lit twin in the same plane.
 fn level_sets(ngn: &ngn::Ngn, specials: &ts2::specials::Specials) -> LevelSets {
+    level_sets_in(ngn, specials, None)
+}
+
+/// The level's batch lists room by room (instance flags & 0xFF, 0x4C3740's +0x84), each list
+/// with the room of every batch in it: (near, decal, two-sided, far two-sided, far) and the
+/// near and far billboards.
+fn level_sets_by_room(ngn: &ngn::Ngn, specials: &ts2::specials::Specials) -> (LevelSets, [Vec<u32>; 5], [Vec<u32>; 2]) {
+    let rooms: std::collections::BTreeSet<u32> = ngn.layers.iter().flat_map(|l| l.instances.iter().map(|i| i.flags & 0xFF)).collect();
+    let mut all = LevelSets { near: Vec::new(), two_sided: Vec::new(), decal: Vec::new(), far: Vec::new(), far_two_sided: Vec::new(), near_bb: Vec::new(), far_bb: Vec::new() };
+    let (mut tags, mut bb_tags): ([Vec<u32>; 5], [Vec<u32>; 2]) = Default::default();
+    for r in rooms {
+        let mut s = level_sets_in(ngn, specials, Some(r));
+        for (list, tag) in [(&mut all.near, &mut s.near), (&mut all.decal, &mut s.decal), (&mut all.two_sided, &mut s.two_sided), (&mut all.far_two_sided, &mut s.far_two_sided), (&mut all.far, &mut s.far)].into_iter().zip(tags.iter_mut()) {
+            tag.extend(std::iter::repeat_n(r, list.1.len()));
+            list.0.append(list.1);
+        }
+        bb_tags[0].extend(std::iter::repeat_n(r, s.near_bb.len()));
+        bb_tags[1].extend(std::iter::repeat_n(r, s.far_bb.len()));
+        all.near_bb.append(&mut s.near_bb);
+        all.far_bb.append(&mut s.far_bb);
+    }
+    (all, tags, bb_tags)
+}
+
+/// `level_sets` for the instances of one room only, or all of them.
+fn level_sets_in(ngn: &ngn::Ngn, specials: &ts2::specials::Specials, room: Option<u32>) -> LevelSets {
     let dynamic: std::collections::HashSet<(usize, usize)> = specials.instances().collect();
-    let keep = |l: usize, n: usize, _i: &ngn::Instance| !dynamic.contains(&(l, n));
+    let keep = |l: usize, n: usize, i: &ngn::Instance| !dynamic.contains(&(l, n)) && room.is_none_or(|r| i.flags & 0xFF == r);
     // (one-sided, two-sided, billboards) of the instances `pick` takes.
     let parts = |pick: &dyn Fn(usize, &ngn::Instance) -> bool| {
         let (mut one, _) = scene::level_parts_sided(ngn, |l, n, i| pick(l, i) && keep(l, n, i), Some(false));
@@ -515,11 +586,59 @@ const DECAL: u32 = 0x80000;
 /// The nudge: clip depth × (1 + this), with reversed depth (larger is nearer).
 const DECAL_BIAS: f32 = 0.0;
 
+/// The rooms in view this frame (0x440F70 → 0x4CDDD0 → 0x4BC460), as a bit mask; every
+/// room for levels not drawn by room. The camera's room is the room map's under it
+/// (0x4885C0), or the last one while it's over none.
+fn update_rooms(cull: &mut Option<RoomCull>, world: &game::World, cam: &Camera, aspect: f32) -> u64 {
+    let Some(c) = cull.as_mut() else { return u64::MAX };
+    let eye = Vec3::from(world_to_game(cam.pos));
+    let mut room = world.room_at(eye).map(u32::from).filter(|&r| r < 64);
+    // 0x440F70, level 4: in the paint room's map but higher than −7900 (over its roof),
+    // the camera counts as outside (room 1).
+    if c.level == 4 && room == Some(2) && eye.y < -7900.0 {
+        room = Some(1);
+    }
+    if room.is_some() {
+        c.last = room;
+    }
+    c.mask = match c.last {
+        // No room yet, or no portals: everything (0x4BC720's path).
+        Some(r) if !c.portals.links.is_empty() => {
+            let vp = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), aspect, 0.05) * cam.view();
+            c.portals.visible_rooms(r, |p| vp * game_to_world(p).extend(1.0), c.level == 10)
+        }
+        _ => u64::MAX,
+    };
+    c.mask
+}
+
+/// Whether a special object is drawn this frame: its room is in view and, in the
+/// detailed set, its centre is within `NEAR_CULL` of the eye (0x4BC460).
+fn special_in_view(ngn: &ngn::Ngn, s: &ts2::specials::Special, rooms: u64, eye: Vec3) -> bool {
+    let Some(inst) = ngn.layers.get(s.layer).and_then(|l| l.instances.get(s.instance)) else { return true };
+    let room = inst.flags & 0xFF;
+    if room < 64 && rooms & (1 << room) == 0 {
+        return false;
+    }
+    if s.layer != 0 {
+        return true;
+    }
+    let Some(mesh) = ngn.layers[s.layer].meshes.get(inst.mesh as usize) else { return true };
+    let placed = ngn::Instance { pos: s.pos, rot: s.angles, scale: s.scale, ..*inst };
+    Vec3::from(scene::instance_centre(mesh, &placed)).distance_squared(eye) <= NEAR_CULL * NEAR_CULL
+}
+
 fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatch> {
+    upload_rooms(device, batches, &[], white)
+}
+
+/// As `upload`, each batch tagged with its room from `rooms` (parallel; `ANY_ROOM` past its end).
+fn upload_rooms(device: &wgpu::Device, batches: &[Batch], rooms: &[u32], white: usize) -> Vec<GpuBatch> {
     batches
         .iter()
-        .filter(|b| !b.vertices.is_empty())
-        .map(|b| GpuBatch {
+        .enumerate()
+        .filter(|(_, b)| !b.vertices.is_empty())
+        .map(|(i, b)| GpuBatch {
             texture: b.texture.unwrap_or(white),
             blend: b.blend,
             buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -528,6 +647,7 @@ fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatc
                 usage: wgpu::BufferUsages::VERTEX,
             }),
             count: b.vertices.len() as u32,
+            room: rooms.get(i).copied().unwrap_or(ANY_ROOM),
         })
         .collect()
 }
@@ -733,7 +853,7 @@ impl Gfx {
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
         let level_far = upload(&device, level_far, texture_bgs.len() - 1);
-        Gfx { window, surface, target, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1], texture_layout, sampler, movie: None }
+        Gfx { window, surface, target, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1], texture_layout, sampler, movie: None, rooms: u64::MAX }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -930,7 +1050,7 @@ impl Gfx {
                 for &(u, batches, level) in draws {
                     pass.set_pipeline(&self.pipelines[if i == 0 && level { 4 } else { i }]);
                     pass.set_bind_group(0, &self.uniform_bgs[u], &[]);
-                    for b in batches.iter().filter(|b| b.blend == *mode) {
+                    for b in batches.iter().filter(|b| b.blend == *mode && (b.room == ANY_ROOM || (b.room < 64 && self.rooms & (1 << b.room) != 0))) {
                         pass.set_bind_group(1, &self.texture_bgs[b.texture], &[]);
                         pass.set_vertex_buffer(0, b.buffer.slice(..));
                         pass.draw(0..b.count, 0..1);
@@ -1077,6 +1197,10 @@ impl Viewer {
                         self.look.tick(player, cr, &mut self.particles, &mut self.specials, &self.world, pad);
                     }
                 }
+            }
+            // A script's look-at scene (0x4020F0) takes the camera and ends first person.
+            if player.first_person != 0 && self.script.as_ref().is_some_and(|l| l.look.is_some()) {
+                self.look.cancel(player, &mut self.particles, &mut self.specials);
             }
             if was_fp && player.first_person == 0 {
                 // Back behind him (state 5 resets the follow camera).
@@ -1259,7 +1383,7 @@ impl Viewer {
                 });
                 // 0x49EAC0: the miniboss theme while the boss bar shows, the race theme while
                 // the laps show with a race on (0x52F2F8 ≥ 2), else the level's own.
-                if let Some(level_track) = self.level_track {
+                if let Some(level_track) = self.level_track.filter(|_| self.theme_events) {
                     let race = self.script.as_ref().map_or(0, |l| l.race);
                     let want = ts2::music::theme(level_track, self.hud_state.showing(ts2::hud::BOSS), self.hud_state.showing(ts2::hud::LAPS), race);
                     if self.music_track != Some(want)
@@ -1463,7 +1587,7 @@ impl Viewer {
                 let (at, facing) = match self.start {
                     Some(s) => {
                         let g = Vec3::from(s.pos);
-                        (self.world.floor_below(g.x, g.z, g.y - 600.0).map_or(g, |y| Vec3::new(g.x, y, g.z)), s.angle as i32)
+                        (self.world.start_floor(g), s.angle as i32)
                     }
                     None => (player.spawn, 0),
                 };
@@ -1878,7 +2002,13 @@ impl Viewer {
         scene::merge(&mut batches, self.lasers.beams_batches(Vec3::from(world_to_game(self.cam.pos)), self.beam_sprite));
         // Special objects at their current transforms; their billboards join the near set's.
         let mut special_bb = Vec::new();
+        let rooms = update_rooms(&mut self.cull, &self.world, &self.cam, gfx.config.width as f32 / gfx.config.height as f32);
+        gfx.rooms = rooms;
+        let eye = Vec3::from(world_to_game(self.cam.pos));
         for s in self.specials.objects.values() {
+            if self.cull.is_some() && !special_in_view(&self.ngn, s, rooms, eye) {
+                continue;
+            }
             scene::merge(&mut batches, scene::special_batches(&self.ngn, s, &mut special_bb));
         }
         if self.show_collision
@@ -1943,9 +2073,15 @@ impl Viewer {
             let r = f.cross(Vec3::Y).normalize_or_zero();
             let u = r.cross(f).normalize_or_zero();
             let white = gfx.texture_bgs.len() - 1;
-            let mut near = scene::billboard_batches(&self.billboards[0], to_game(r), to_game(u));
+            let seen = |k: usize| -> std::borrow::Cow<'_, [scene::Billboard]> {
+                match &self.cull {
+                    Some(c) => self.billboards[k].iter().zip(&c.billboard_rooms[k]).filter(|(_, r)| c.sees(**r)).map(|(b, _)| b.clone()).collect::<Vec<_>>().into(),
+                    None => self.billboards[k].as_slice().into(),
+                }
+            };
+            let mut near = scene::billboard_batches(&seen(0), to_game(r), to_game(u));
             scene::merge(&mut near, scene::billboard_batches(&special_bb, to_game(r), to_game(u)));
-            let far = scene::billboard_batches(&self.billboards[1], to_game(r), to_game(u));
+            let far = scene::billboard_batches(&seen(1), to_game(r), to_game(u));
             gfx.billboards = [upload(&gfx.device, &near, white), upload(&gfx.device, &far, white)];
         }
     }
@@ -1971,8 +2107,10 @@ impl Viewer {
             Some(s) if !self.held(KeyCode::ShiftLeft) => (Vec3::from(s.pos), s.angle as i32),
             _ => (Vec3::from(world_to_game(self.cam.pos + self.cam.forward() * 3.0)), 0),
         };
-        // The game snaps the start height to the floor; search a little above the stored point.
-        let feet = self.world.floor_below(g.x, g.z, g.y - 600.0).map_or(g, |y| Vec3::new(g.x, y, g.z));
+        let feet = match self.start {
+            Some(_) if !self.held(KeyCode::ShiftLeft) => self.world.start_floor(g),
+            _ => self.world.floor_below(g.x, g.z, g.y - 600.0).map_or(g, |y| Vec3::new(g.x, y, g.z)),
+        };
         let mut player = game::Player::new(feet);
         player.set_facing(yaw);
         player.anim = self.buzz.clone();
@@ -2127,9 +2265,17 @@ impl Viewer {
         }
         self.gfx = Some(Gfx::new(window, &self.ngn, &level, &level_far, self.backdrop_image.as_ref()));
         if let Some(g) = self.gfx.as_mut() {
-            g.level_decal = upload(&g.device, &self.level_decal, g.texture_bgs.len() - 1);
-            g.level_two_sided = upload(&g.device, &self.level_two_sided, g.texture_bgs.len() - 1);
-            g.level_far_two_sided = upload(&g.device, &self.level_far_two_sided, g.texture_bgs.len() - 1);
+            let white = g.texture_bgs.len() - 1;
+            let none: [Vec<u32>; 5] = Default::default();
+            let tags = self.cull.as_ref().map_or(&none, |c| &c.batch_rooms);
+            g.level_decal = upload_rooms(&g.device, &self.level_decal, &tags[1], white);
+            g.level_two_sided = upload_rooms(&g.device, &self.level_two_sided, &tags[2], white);
+            g.level_far_two_sided = upload_rooms(&g.device, &self.level_far_two_sided, &tags[3], white);
+            if self.cull.is_some() {
+                // Gfx::new uploaded these untagged.
+                g.level = upload_rooms(&g.device, &level, &tags[0], white);
+                g.level_far = upload_rooms(&g.device, &level_far, &tags[4], white);
+            }
         }
         self.last = Instant::now();
     }
@@ -2163,17 +2309,53 @@ impl Viewer {
                     self.fire_pressed = true;
                 }
             }
+            // Focus back: the system dropped the grab, so take it again.
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                self.cursor_held = false;
+                if !focused {
+                    self.release_cursor();
+                }
+            }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let dt = (now - self.last).as_secs_f32().min(0.1);
                 self.last = now;
                 self.update(dt);
+                self.sync_cursor();
                 self.draw();
                 if let Some(w) = self.gfx.as_ref().and_then(|g| g.window.as_ref()) {
                     w.request_redraw();
                 }
             }
             _ => {}
+        }
+    }
+
+    /// While playing as Buzz the cursor is hidden and kept inside the window, so looking
+    /// round with the mouse can't click outside it (or on the close button). Mouse looking
+    /// uses raw device motion, which still arrives while the cursor is held.
+    fn sync_cursor(&mut self) {
+        let want = self.focused && self.player.is_some() && self.movie.is_none();
+        if want == self.cursor_held {
+            return;
+        }
+        let Some(w) = self.gfx.as_ref().and_then(|g| g.window.as_ref()) else { return };
+        if want {
+            use winit::window::CursorGrabMode;
+            let held = w.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| w.set_cursor_grab(CursorGrabMode::Confined)).is_ok();
+            w.set_cursor_visible(false);
+            self.cursor_held = held;
+        } else if self.focused {
+            self.release_cursor();
+            self.cursor_held = false;
+        }
+    }
+
+    fn release_cursor(&self) {
+        if let Some(w) = self.gfx.as_ref().and_then(|g| g.window.as_ref()) {
+            let _ = w.set_cursor_grab(winit::window::CursorGrabMode::None);
+            w.set_cursor_visible(true);
         }
     }
 
@@ -2221,7 +2403,21 @@ impl Viewer {
                     self.keys.remove(k);
                 }
                 ShotStep::Play => self.toggle_play(),
+                ShotStep::Teleport(at, facing) => {
+                    if let Some(p) = self.player.as_mut() {
+                        p.pos = Vec3::from(*at);
+                        p.vel = [0; 3];
+                        if let Some(f) = facing {
+                            p.facing = *f;
+                        }
+                    }
+                }
                 ShotStep::Movie(n) => self.movies.push_back(*n),
+                ShotStep::Report => {
+                    if let Some(p) = self.player.as_ref() {
+                        println!("buzz at {:.1?} facing {} health {} on floor {}", p.pos, p.facing, p.health, p.on_floor);
+                    }
+                }
                 ShotStep::Boss => {
                     if let Some(f) = self.front.as_mut() {
                         f.state.level_done(None);
@@ -2244,6 +2440,9 @@ impl Viewer {
         let Some(rgb) = self.gfx.as_ref().and_then(Gfx::capture) else { return };
         fs::write(&shot.out, ts2::png::encode_rgb(SHOT_SIZE[0], SHOT_SIZE[1], &rgb)).expect("write shot");
         println!("shot written to {} (camera {:.1?} yaw {:.3} pitch {:.3})", shot.out, self.cam.pos, self.cam.yaw, self.cam.pitch);
+        if let Some(p) = self.player.as_ref() {
+            println!("buzz at {:.1?} facing {} health {} on floor {}", p.pos, p.facing, p.health, p.on_floor);
+        }
     }
 
     fn device_event_inner(&mut self, event: DeviceEvent) {
@@ -2499,6 +2698,14 @@ fn front_batches(f: &Front, ngn: &ngn::Ngn) -> Vec<Batch> {
         let c = |x: f32, y: f32| GpuVertex { pos: [x, y, 0.0], uv: [x, y], color: [0xFF, 0x80, 0x80, 0x80] };
         out.push(Batch { texture: Some(i), blend: scene::Blend::Alpha, vertices: vec![c(0.0, 0.0), c(1.0, 0.0), c(1.0, 1.0), c(0.0, 0.0), c(1.0, 1.0), c(0.0, 1.0)] });
     }
+    // Screen-space pictures (0x4B8CC0), colour-keyed like the sprites.
+    for (p, r, uv) in &frame.panels {
+        if let Some(i) = named(&format!("tex{p:02}")).or_else(|| named(&format!("bgr{p:02}"))) {
+            let c = |x: f32, y: f32, u: f32, w: f32| GpuVertex { pos: [x, y, 0.0], uv: [u, w], color: [0xFF, 0x80, 0x80, 0x80] };
+            let v = vec![c(r[0], r[1], uv[0], uv[1]), c(r[2], r[1], uv[2], uv[1]), c(r[2], r[3], uv[2], uv[3]), c(r[0], r[1], uv[0], uv[1]), c(r[2], r[3], uv[2], uv[3]), c(r[0], r[3], uv[0], uv[3])];
+            out.push(Batch { texture: Some(i), blend: scene::Blend::Alpha, vertices: v });
+        }
+    }
     let texture = |slot: i16| {
         let i = named(&format!("tex{slot:02}"))?;
         let (w, h, _) = ngn.textures[i].dimensions()?;
@@ -2568,6 +2775,10 @@ enum ShotStep {
     Movie(usize),
     /// `boss`: the boss-defeated screen.
     Boss,
+    /// `tp:x,y,z[,facing]`: puts Buzz there (level units, 12-bit facing), at rest.
+    Teleport([f32; 3], Option<i32>),
+    /// `?`: prints Buzz's position, health and floor.
+    Report,
 }
 
 impl Shot {
@@ -2609,6 +2820,13 @@ impl Shot {
                 shot.script.push(ShotStep::Boss);
             } else if w == "play" {
                 shot.script.push(ShotStep::Play);
+            } else if w == "?" {
+                shot.script.push(ShotStep::Report);
+            } else if let Some(t) = w.strip_prefix("tp:") {
+                let v: Vec<f32> = t.split(',').filter_map(|x| x.parse().ok()).collect();
+                if v.len() >= 3 {
+                    shot.script.push(ShotStep::Teleport([v[0], v[1], v[2]], v.get(3).map(|&f| f as i32)));
+                }
             } else if let Some(c) = w.strip_prefix("cam:") {
                 let v: Vec<f32> = c.split(',').filter_map(|x| x.parse().ok()).collect();
                 if let [x, y, z, yaw, pitch] = v[..] {
@@ -2717,7 +2935,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
     println!("{} creatures: {:?}", ngn.creatures.len(), ngn.creatures.iter().map(|c| &c.name).collect::<Vec<_>>());
 
     // Spawns come from the packet file with the same stem (level.ngn -> level.raw).
-    let raw_path = std::path::Path::new(path).with_extension("raw");
+    let raw_path = scene_file(std::path::Path::new(path), "raw");
     let mut all_spawns = Vec::new();
     let mut backdrop = None;
     let mut backdrop_image = None;
@@ -2752,7 +2970,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
     // Pickups from the level's .dat file; their special objects are drawn per frame (they
     // tumble and disappear), so the static level leaves them out.
     let mut pickups = exe::level_number(level_path).and_then(|lv| {
-        let dat = fs::read(level_path.with_extension("dat")).ok()?;
+        let dat = fs::read(scene_file(level_path, "dat")).ok()?;
         match ts2::pickups::Pickups::new(lv, &dat, game_exe.as_ref()) {
             Ok(p) => Some(p),
             Err(e) => {
@@ -2764,7 +2982,16 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
     let specials = ts2::specials::Specials::new(&ngn);
     // Camera models are specials, excluded here and controlled by first-person mode.
     // Zone 0 also includes houses, fences and the tree in the neighbourhood.
-    let LevelSets { near: level, two_sided: level_two_sided, decal: level_decal, far: level_far, far_two_sided: level_far_two_sided, near_bb, far_bb } = level_sets(&ngn, &specials);
+    let room_level = exe::level_number(std::path::Path::new(path)).filter(|lv| ROOM_CULLED_LEVELS.contains(lv));
+    let (sets, cull) = match room_level {
+        Some(lv) => {
+            let (sets, batch_rooms, billboard_rooms) = level_sets_by_room(&ngn, &specials);
+            let portals = fs::read(path).map(|b| scene::Portals::parse(&b)).unwrap_or_default();
+            (sets, Some(RoomCull { level: lv, portals, last: None, mask: u64::MAX, billboard_rooms, batch_rooms }))
+        }
+        None => (level_sets(&ngn, &specials), None),
+    };
+    let LevelSets { near: level, two_sided: level_two_sided, decal: level_decal, far: level_far, far_two_sided: level_far_two_sided, near_bb, far_bb } = sets;
     // Collision: the original's TERRAIN.ALL / TERR1.ALL next to the level, else the render mesh.
     let terrain = ts2::formats::terrain::path_for(std::path::Path::new(path))
         .and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)))
@@ -2788,7 +3015,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
     // The game's random bytes (data/rand.dat, next to the levelNN folders): idle fidgets.
     let random_table = std::path::Path::new(path).parent().and_then(|d| d.parent()).and_then(|d| std::fs::read(d.join("rand.dat")).ok());
     // Poles and ropes from the level's .dat file (list 61).
-    let dat_lists = std::fs::read(std::path::Path::new(path).with_extension("dat")).ok().and_then(|b| ts2::formats::leveldat::parse(&b).ok()).unwrap_or_default();
+    let dat_lists = std::fs::read(scene_file(std::path::Path::new(path), "dat")).ok().and_then(|b| ts2::formats::leveldat::parse(&b).ok()).unwrap_or_default();
     let poles = ts2::formats::leveldat::poles(&dat_lists);
     // Ledges Buzz can grab (list 60) and zip lines (list 62).
     let ledges = (ts2::formats::leveldat::segments(&dat_lists, ts2::formats::leveldat::LEDGES), ts2::formats::leveldat::segments(&dat_lists, ts2::formats::leveldat::ZIP_LINES));
@@ -2814,7 +3041,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
 
     // Pushable boxes and the level script, selected by executable ID.
     let mut specials = specials;
-    let level_lists = fs::read(level_path.with_extension("dat")).ok().and_then(|b| ts2::formats::leveldat::parse(&b).ok()).unwrap_or_default();
+    let level_lists = fs::read(scene_file(level_path, "dat")).ok().and_then(|b| ts2::formats::leveldat::parse(&b).ok()).unwrap_or_default();
     let level_no = exe::level_number(level_path);
     let boxes = level_no.map(|lv| ts2::boxes::Boxes::new(lv, &level_lists, game_exe.as_ref(), &world, &mut specials));
     let script = level_no.and_then(|lv| ts2::script::for_level(lv, &world, &mut specials, game_exe.as_ref(), &level_lists, random_table.clone()));
@@ -2896,6 +3123,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         level_far_two_sided,
         level_far,
         billboards: [near_bb, far_bb],
+        cull,
         world,
         player: None,
         player_creature,
@@ -2921,6 +3149,8 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         use_orig_cam: true,
         keys: Default::default(),
         looking: false,
+        cursor_held: false,
+        focused: true,
         last: Instant::now(),
         creature_anim: vec![0; n_creatures],
         creature_idx,
@@ -2974,6 +3204,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         game_dir: level_path.ancestors().nth(3).map(std::path::Path::to_path_buf),
         level_track: level_no.and_then(|lv| ts2::campaign::LEVELS.iter().position(|l| l.internal_id == lv)),
         music_track: level_no.and_then(|lv| ts2::campaign::LEVELS.iter().position(|l| l.internal_id == lv)),
+        theme_events: level_no.is_some_and(ts2::music::level_switches_theme),
         movie: None,
         movies: std::collections::VecDeque::new(),
         movie_skip: false,
@@ -3011,13 +3242,22 @@ fn sky_batch(b: &packets::Backdrop, view_proj: Mat4, forward: Vec3, picture: Opt
     let mut out = Vec::new();
     let mut flat_v = Vec::new();
     let l = line.clamp(0.0, 1.0);
+    // The sky and ground colours are the picture's first and last pixels. Textures are decoded
+    // from sRGB but vertex colours are not, so with a picture the fills sample its corner texels
+    // (an exact match at the seam); without one the colours are converted to linear here.
+    let (w, h) = (b.width.max(1) as f32, b.height.max(1) as f32);
+    let (sky_uv, ground_uv) = ([0.5 / w, 0.5 / h], [1.0 - 0.5 / w, 1.0 - 0.5 / h]);
+    let fill = |y0: f32, y1: f32, uv: [f32; 2], c: [u8; 3]| match picture {
+        Some(_) => quad(0.0, y0, 1.0, y1, [uv[0], uv[1], uv[0], uv[1]], [0xFF; 3]),
+        None => quad(0.0, y0, 1.0, y1, [0.0; 4], c.map(srgb_to_linear)),
+    };
     if l > 0.0 {
-        flat_v.extend(quad(0.0, 0.0, 1.0, l, [0.0; 4], b.sky));
+        flat_v.extend(fill(0.0, l, sky_uv, b.sky));
     }
     if l < 1.0 {
-        flat_v.extend(quad(0.0, l, 1.0, 1.0, [0.0; 4], b.ground));
+        flat_v.extend(fill(l, 1.0, ground_uv, b.ground));
     }
-    out.push(Batch { texture: None, blend: scene::Blend::Opaque, vertices: flat_v });
+    out.push(Batch { texture: picture, blend: scene::Blend::Opaque, vertices: flat_v });
     if let Some(tex) = picture
         && let Some((x1, _)) = project(yaw + 0.01)
     {
@@ -3041,6 +3281,25 @@ fn sky_batch(b: &packets::Backdrop, view_proj: Mat4, forward: Vec3, picture: Opt
         out.insert(0, Batch { texture: Some(tex), blend: scene::Blend::Opaque, vertices: v });
     }
     out
+}
+
+/// A scene's `.dat` / `.raw` beside its `.ngn`. The texture variants (`levelt1.ngn`,
+/// `level1t3.ngn`, …) are built from their base scene's files (data\level16\levelt1.cfg:
+/// `level1.dat`, `level1.raw`), so they fall back to the stem without `tN`.
+fn scene_file(ngn: &std::path::Path, ext: &str) -> std::path::PathBuf {
+    let own = ngn.with_extension(ext);
+    let stem = ngn.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    match stem.char_indices().rev().nth(1) {
+        Some((i, 't')) if !own.exists() && stem[i + 1..].bytes().all(|b| b.is_ascii_digit()) => ngn.with_file_name(format!("{}.{ext}", &stem[..i])),
+        _ => own,
+    }
+}
+
+/// An sRGB byte as a linear byte, for flat colours drawn into the sRGB target.
+fn srgb_to_linear(c: u8) -> u8 {
+    let s = c as f32 / 255.0;
+    let l = if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) };
+    (l * 255.0).round() as u8
 }
 
 /// A screen-space rectangle (two triangles) with uv rectangle `uv` (u0, v0, u1, v1) and a
@@ -3205,3 +3464,45 @@ mod culling_tests {
     }
 }
 
+
+#[cfg(test)]
+mod room_tests {
+    use super::*;
+
+    /// Level 4 split room by room keeps every triangle and billboard of the whole-level lists,
+    /// each tagged with its instances' room; the paint room (2) has detailed geometry only.
+    #[test]
+    fn level_sets_by_room_keep_everything_tagged() {
+        let Some(game) = std::env::var_os("TS2_GAME_DIR") else { return };
+        let path = ts2::campaign::level(4).unwrap().path(std::path::Path::new(&game));
+        let n = ngn::parse(&fs::read(path).unwrap()).unwrap();
+        let specials = ts2::specials::Specials::new(&n);
+        let whole = level_sets(&n, &specials);
+        let (split, tags, bb) = level_sets_by_room(&n, &specials);
+        let count = |b: &[Batch]| b.iter().map(|b| b.vertices.len()).sum::<usize>();
+        for (a, b, t) in [(&whole.near, &split.near, &tags[0]), (&whole.decal, &split.decal, &tags[1]), (&whole.two_sided, &split.two_sided, &tags[2]), (&whole.far_two_sided, &split.far_two_sided, &tags[3]), (&whole.far, &split.far, &tags[4])] {
+            assert_eq!(count(a), count(b));
+            assert_eq!(b.len(), t.len());
+        }
+        assert_eq!((whole.near_bb.len(), whole.far_bb.len()), (split.near_bb.len(), split.far_bb.len()));
+        assert_eq!((bb[0].len(), bb[1].len()), (split.near_bb.len(), split.far_bb.len()));
+        assert!(tags[0].contains(&2) && !tags[4].contains(&2), "room 2 is in the detailed set only");
+    }
+
+    /// Special objects of rooms not in view, or (detailed set) over 12000 from the eye, are
+    /// left out (0x4BC460); others are kept.
+    #[test]
+    fn specials_culled_by_room_and_distance() {
+        let Some(game) = std::env::var_os("TS2_GAME_DIR") else { return };
+        let path = ts2::campaign::level(4).unwrap().path(std::path::Path::new(&game));
+        let n = ngn::parse(&fs::read(path).unwrap()).unwrap();
+        let specials = ts2::specials::Specials::new(&n);
+        // 0x3F: the hatch's inside face (room 2); 0x40: its outside face (room 1).
+        let (inside, outside) = (specials.get(0x3F).unwrap(), specials.get(0x40).unwrap());
+        let near = Vec3::new(10500.0, -2400.0, 9000.0);
+        assert!(special_in_view(&n, outside, 0b011, near));
+        assert!(!special_in_view(&n, inside, 0b011, near), "room 2 not in view");
+        assert!(special_in_view(&n, inside, 0b111, near));
+        assert!(!special_in_view(&n, outside, 0b111, near - Vec3::Z * 12000.0), "too far");
+    }
+}

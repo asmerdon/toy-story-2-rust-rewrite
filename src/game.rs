@@ -191,6 +191,13 @@ pub struct World {
     rooms: Vec<Tri>,
     /// Each object's stored position (where its triangles are), for placing movers.
     mover_home: Vec<Vec3>,
+    /// The lowest collision point (largest y, level units): 0x489C30 takes the maximum vertex
+    /// y of every type 6/7/8 object (whatever its flags) into 0x729124. Buzz more than 0x2000
+    /// object units (256 level units) below it is killed (0x436220).
+    pub lowest: f32,
+    /// Boundary walls (kind-0x101 lists, `formats::terrain::BOUNDARY_KIND`): segments a→b in
+    /// x/z, level units. Vertical walls of unlimited height, solid on one side only.
+    bounds: Vec<[[f32; 2]; 2]>,
 }
 
 fn cell(v: f32) -> i32 {
@@ -241,6 +248,20 @@ impl World {
         w.always = always;
         w.rooms = rooms;
         w.mover_home = t.objects.iter().map(|o| Vec3::from(o.pos.map(|v| v as f32))).collect();
+        w.bounds = t
+            .boundaries
+            .iter()
+            .flat_map(|l| l.windows(2).map(|s| [s[0], s[1]].map(|p| p.map(|v| v as f32))))
+            .collect();
+        // 0x489C30: v0, v0+e1, v0+e2 and v0+e3 of every polygon (triangles included).
+        w.lowest = t
+            .objects
+            .iter()
+            .filter(|o| matches!(o.kind, 6..=8))
+            .flat_map(|o| t.shapes[o.shape].iter().map(move |p| (o.pos[1], p)))
+            .flat_map(|(y, p)| [0, p.e1[1], p.e2[1], p.e3[1]].map(|e| y + p.v0[1] as i32 + e as i32))
+            .max()
+            .map_or(w.hi.y, |y| y as f32);
         w
     }
 
@@ -416,7 +437,7 @@ impl World {
                 }
             }
         }
-        World { tris, grid, lo, hi, objects: Vec::new(), always: Vec::new(), rooms: Vec::new(), mover_home: Vec::new() }
+        World { tris, grid, lo, hi, objects: Vec::new(), always: Vec::new(), rooms: Vec::new(), mover_home: Vec::new(), lowest: hi.y, bounds: Vec::new() }
     }
 
     /// Triangles whose grid cells overlap the box around `lo..hi` (x/z).
@@ -437,6 +458,14 @@ impl World {
     /// point floor query (0x486280 / 0x486520).
     pub fn floor_below(&self, x: f32, z: f32, from_y: f32) -> Option<f32> {
         self.floor_below_obj(x, z, from_y).map(|(y, _)| y)
+    }
+
+    /// Where ResetPlayer (0x433D50) puts Buzz from the start table: 0x4863A0 probes from 0x400
+    /// object units (32 level units) above the point with 0x486520, which prefers the nearest
+    /// floor above within 2048, then 0x100 object units (8) over it. Level 13's start is
+    /// under the X-ray conveyor, so he starts on the belt, not the floor below.
+    pub fn start_floor(&self, p: Vec3) -> Vec3 {
+        self.floor_near(p.x, p.z, p.y - 32.0).map_or(p, |(y, _)| Vec3::new(p.x, y - 8.0, p.z))
     }
 
     /// 0x486280 / 0x486520: the nearest floor above (x, y, z) within 2048 units, else the
@@ -530,7 +559,19 @@ impl World {
                 }
             }
         }
+        let (lo, hi) = (p0.min(p1) - reach, p0.max(p1) + reach);
+        for &[a, b] in &self.bounds {
+            if a[0].max(b[0]) < lo.x || a[0].min(b[0]) > hi.x || a[1].max(b[1]) < lo.z || a[1].min(b[1]) > hi.z {
+                continue;
+            }
+            keep(sweep_boundary(p0, d, a, b, r));
+        }
         best
+    }
+
+    /// The boundary wall segments (x/z pairs, level units), for diagnostics.
+    pub fn boundary_segments(&self) -> &[[[f32; 2]; 2]] {
+        &self.bounds
     }
 }
 
@@ -557,6 +598,48 @@ fn inside(q: Vec3, a: Vec3, b: Vec3, c: Vec3, n: Vec3) -> bool {
     let s1 = (c - b).cross(q - b).dot(n);
     let s2 = (a - c).cross(q - c).dot(n);
     (s0 >= -e && s1 >= -e && s2 >= -e) || (s0 <= e && s1 <= e && s2 <= e)
+}
+
+/// 0x480660 (Buzz) / 0x487B20 (rays): a circle of radius `r` moving p0 → p0+d in x/z against
+/// the boundary segment a→b, a vertical wall of unlimited height. Solid only on the side its
+/// normal (a.z − b.z, b.x − a.x) faces: the centre must start at least `r` in front of the line
+/// and end less than `r` in front of it, and the contact point must lie on the segment (the
+/// original allows 0x2000 object × level units past either end, a fraction of a unit). Then the
+/// segment's first point as a circle of radius r + 0x20 object units (1 level unit), from any
+/// side, entered no more than 0x20 object units early. The contact normal is horizontal.
+fn sweep_boundary(p0: Vec3, d: Vec3, a: [f32; 2], b: [f32; 2], r: f32) -> Option<Hit> {
+    let (p, v) = (glam::Vec2::new(p0.x, p0.z), glam::Vec2::new(d.x, d.z));
+    let (a, b) = (glam::Vec2::from(a), glam::Vec2::from(b));
+    let wall = |t: f32, n: glam::Vec2| Hit { t, normal: Vec3::new(n.x, 0.0, n.y), depth: 0.0, mover: None, surface: None };
+    let mut best: Option<Hit> = None;
+    let n = glam::Vec2::new(a.y - b.y, b.x - a.x).normalize_or_zero();
+    let d0 = n.dot(p - a) - r;
+    let d1 = n.dot(p + v - a) - r;
+    if n != glam::Vec2::ZERO && d0 >= 0.0 && d1 < 0.0 {
+        let s = d0 / (d0 - d1);
+        let q = p + v * s - n * r;
+        let (e, tol) = (b - a, 0x2000 as f32 / 32.0);
+        if (q - a).dot(e) > -tol && (b - q).dot(e) > -tol {
+            best = Some(wall(s, n));
+        }
+    }
+    let len = v.length();
+    if len > 1e-6 {
+        let u = v / len;
+        let along = (a - p).dot(u);
+        let rr = r + 1.0;
+        let perp2 = (a - p).length_squared() - along * along;
+        if along >= 0.0 && perp2 <= rr * rr {
+            let s = along - (rr * rr - perp2).max(0.0).sqrt();
+            if s > -0x21 as f32 / 32.0 && s <= len {
+                let t = s.max(0.0) / len;
+                if best.is_none_or(|h| t < h.t) {
+                    best = Some(wall(t, (p + u * s - a).normalize_or_zero()));
+                }
+            }
+        }
+    }
+    best
 }
 
 /// Sphere centre moving p0 → p0+d against a point: returns the entry time.
@@ -842,6 +925,9 @@ pub struct Player {
     /// (0x7295A0, up by 0x100 a push to 0x1000).
     pub push: Vec3,
     pub push_ramp: i32,
+    /// The collider's contact this tick (0x729186 set, normal at 0x729180): the normal of the
+    /// last surface the move hit, which 0x48B660 refuses to push into.
+    pub contact_normal: Option<Vec3>,
     /// Flag 0x40 of +0x40: thrown by something (room 3's spring). Until he lands, no friction
     /// and speeds up to 0xB80 each way (0x436220's profile).
     pub launched: bool,
@@ -984,6 +1070,7 @@ impl Player {
             last_y: 0,
             push: Vec3::ZERO,
             push_ramp: 0,
+            contact_normal: None,
         }
     }
 
@@ -1052,9 +1139,16 @@ impl Player {
         }
     }
 
-    /// 0x48B660 on Buzz: pushed by `d` (object units a tick), easing in.
+    /// 0x48B660 on Buzz: pushed by `d` (object units a tick), easing in. The push is added to
+    /// the collider's motion for this tick (0x729196, which 0x488E10 folds into the extra
+    /// motion 0x729190 that 0x482A00 sweeps with the velocity), so walls stop it. Refused,
+    /// with the ramp reset, while the collider touches a surface facing against it.
     pub fn push_by(&mut self, d: [i32; 3]) {
         if self.climb != 0 || self.zip != 0 {
+            return;
+        }
+        if self.contact_normal.is_some_and(|n| n.dot(Vec3::from(d.map(|v| v as f32))) < 0.0) {
+            self.push_ramp = 0;
             return;
         }
         self.push_ramp = (self.push_ramp + 0x100).min(0x1000);
@@ -1660,7 +1754,6 @@ impl Player {
         {
             self.pos += world.mover_motion(m);
         }
-        self.pos += std::mem::take(&mut self.push);
         if self.floating {
             if self.on_floor {
                 self.floating = false;
@@ -1705,11 +1798,12 @@ impl Player {
         }
         self.foot_effects();
 
-        if self.pos.y > world.hi.y + 4000.0 {
-            let (spawn, facing, anim) = (self.spawn, self.spawn_facing, self.anim.take());
-            *self = Player::new(spawn);
-            self.set_facing(facing);
-            self.anim = anim;
+        // 0x436220: more than 0x2000 object units below the lowest collision point, Buzz is
+        // killed (0x4071E0 mode 4; the life goes at the respawn). This is the original's only
+        // answer to falling off the collision; open sides are closed by boundary walls (kind
+        // 0x101 lists, see `sweep_boundary`).
+        if self.pos.y > world.lowest + 256.0 {
+            self.hurt(0, 4);
         }
     }
 
@@ -2049,8 +2143,10 @@ impl Player {
         let lift = Vec3::Y * (BODY_LIFT + BODY_RADIUS);
         let mut c = self.pos - lift;
         let mut v = Vec3::new(self.vel[0] as f32, self.vel[1] as f32, self.vel[2] as f32);
-        let mut d = v / 32.0;
+        // The velocity plus outside pushes (0x48B660), swept together as 0x482A00 does.
+        let mut d = v / 32.0 + std::mem::take(&mut self.push);
         let was = self.on_floor;
+        self.contact_normal = None;
         let mut floor = false;
         self.wall_mover = None;
         self.floor_mover = None;
@@ -2071,6 +2167,7 @@ impl Player {
             let s = (h.t - SKIN / len).max(0.0);
             c += d * s;
             let n = h.normal;
+            self.contact_normal = Some(n);
             // Started inside the surface: back out of it first.
             if h.depth > 0.0 {
                 c += n * (h.depth + SKIN);
@@ -2993,6 +3090,22 @@ mod tests {
             p.update(&w, Input { move_xz: [1.0, 0.0], ..Default::default() }, 1.0 / 60.0);
         }
         assert!(p.pos.x < 1000.0 - BODY_RADIUS + 5.0 && p.pos.x > 800.0, "{:?}", p.pos);
+    }
+
+    /// 0x48B660's push (conveyors, wind) is part of the swept motion, not a teleport: a belt
+    /// pushing Buzz at a wall leaves him against it.
+    #[test]
+    fn pushes_are_stopped_by_walls() {
+        let w = room();
+        let mut p = landed(&w);
+        p.pos.x = 700.0;
+        for _ in 0..120 {
+            p.push_by([0x400, 0, 0]);
+            p.tick(&w, [0.0; 2], false, false);
+            assert!(p.pos.x < 1000.0 - BODY_RADIUS + 5.0, "pushed into the wall: {:?}", p.pos);
+        }
+        assert!(p.pos.x > 1000.0 - BODY_RADIUS - 10.0, "never reached the wall: {:?}", p.pos);
+        assert!(p.on_floor);
     }
 
     #[test]

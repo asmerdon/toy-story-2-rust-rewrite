@@ -18,7 +18,7 @@
 use crate::boxes::Boxes;
 use crate::creatures::{Creatures, ParticleRequest};
 use crate::game::{Player, World};
-use crate::script::{Common, Script};
+use crate::script::{sin_table, Common, Script};
 use crate::specials::Specials;
 
 const SLIME: usize = 0;
@@ -40,6 +40,8 @@ pub struct Level3 {
     last_look: i32,
     /// Special 0's drop after death: height and speed (0x52F6F4 / 0x52F6FC).
     drop: (i32, i32),
+    /// The lid's wobble phase (0x52F6F8, 13 bits).
+    wobble: i32,
     /// Set the slime up on the first frame (0x41A8A0 changes its slot).
     started: bool,
     common: Common,
@@ -60,6 +62,7 @@ impl Level3 {
             flash: 0,
             last_look: 0,
             drop: (0, 0),
+            wobble: 0,
             started: false,
             common: Common::default(),
         }
@@ -204,7 +207,18 @@ impl Script for Level3 {
                 cr.kill_slot(SLIME);
             }
         }
-        if self.phase >= 1000 {
+        if self.phase <= 1000 {
+            // Special 0, the lid, rides on the slime's head: node 10 of its animated model,
+            // 700 above, wobbling while it is big enough (0x4CCC70 / 0x43C1C0 / 0x4CCE30).
+            self.wobble = (self.wobble + 0x80) & 0x1FFF;
+            if self.size < 0x400 {
+                self.wobble = 0;
+            }
+            let facing = cr.slots.get(SLIME).map_or(0, |c| c.angles[1]);
+            specials.turn_from_own(0, [sin_table(self.wobble) >> 8, facing, sin_table(self.wobble >> 1) >> 8]);
+            let head = cr.node_point(SLIME, 10, [0.0, -700.0, 0.0]).unwrap_or([s[0], s[1] - 0x2AF8, s[2]]);
+            specials.set_pos(0, [head[0] >> 5, (head[1] >> 5) - 0x20, head[2] >> 5]);
+        } else {
             // Special 0 drops and bounces.
             self.drop.1 += 0x60;
             self.drop.0 += self.drop.1;

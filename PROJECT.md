@@ -2,6 +2,8 @@
 
 A clean-room reimplementation of *Toy Story 2: Buzz Lightyear to the Rescue!* (PC, Traveller's Tales / Activision, 1999) in Rust. It runs natively on modern Windows and other platforms, and **loads all assets from the player's own install**.
 
+> **Status note (2026-10-31):** This document retains the original plan and historical milestones. For current implementation status, verification gaps and next actions, read the newest [HANDOFF.md](HANDOFF.md) entry and [README.md](README.md). Agent workflow is defined in [AGENTS.md](AGENTS.md). The ground rules below remain applicable.
+
 ## Ground rules
 
 - **No original data in the repo.** No `.all`/`.ngn`/`.wav`/exe bytes and no decompiled C. The engine reads the user's install at runtime (the same model as OpenMW and OpenRCT2). The game is still Disney/Activision copyright; "abandonware" is not a legal status.

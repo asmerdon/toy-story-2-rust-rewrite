@@ -75,3 +75,35 @@ fn clown_challenge_in_room_2() {
     assert_eq!(l.cr.boss.state, 2);
     assert!(l.script.boss_hud);
 }
+
+/// The five bones (specials 0x61..0x65) can each be collected once the challenge starts.
+#[test]
+fn bones_all_collectable() {
+    let Some(mut l) = load() else { return };
+    let game = env::var_os("TS2_GAME_DIR").map(PathBuf::from).unwrap();
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let dat = fs::read(game.join("data/level05/level.dat")).unwrap();
+    let mut pk = ts2::pickups::Pickups::new(5, &dat, Some(&e)).unwrap();
+    let mut p = Player::new(Vec3::new(0.0, -100000.0, 0.0));
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    eprintln!("challenge char {:?} id {:#x}", l.cr.slots[0x12].pos, l.cr.slots[0x12].id);
+    l.cr.slots[0x12].flags |= 0x200;
+    l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+    l.script.cutscene = None;
+    if std::mem::take(&mut l.script.collect_reset) {
+        pk.collectables = 0;
+    }
+    if let Some(s) = l.script.show_collectables.take() {
+        pk.show_collectables(s);
+    }
+    let bones: Vec<_> = pk.items.iter().filter(|i| (0x61..=0x65).contains(&i.id)).map(|i| (i.id, i.pos, i.kind, i.removed, i.scale)).collect();
+    eprintln!("{bones:?}");
+    for (id, pos, ..) in bones {
+        let at = [pos[0] as f32, pos[1] as f32 + 230.0, pos[2] as f32];
+        for _ in 0..3 {
+            pk.tick(at, at);
+        }
+        eprintln!("bone {id:#x}: collected so far {}", pk.collectables);
+    }
+    assert_eq!(pk.collectables, 5);
+}

@@ -81,7 +81,10 @@ impl Script for Level12 {
             c.flags |= 0x800;
             c.pos[1] -= 0x28000;
             c.pos[2] += 0x10000;
-            c.home[1] = c.pos[1];
+            // 0x42B300 writes the new height to slot +0x60 (0x52C8A0), the target height the
+            // hover code eases towards, not the home: otherwise he is pulled down to his spawn
+            // height on the floor and sinks into it during the entrance.
+            c.target[1] = c.pos[1];
             c.angles[1] = 0xc00;
             c.rec.turn = 0;
         }
@@ -124,7 +127,9 @@ impl Script for Level12 {
                 self.phase = 2;
             } else {
                 c.pos[1] += 0x200;
-                c.home[1] = c.pos[1];
+                // 0x42B3A0: +0x60 (0x52C8A0) follows the descent, so only the 0x200 a tick moves
+                // him: 300 ticks end 0x2800 above his spawn, clear of the floor.
+                c.target[1] = c.pos[1];
                 if let Some(l) = self.look.as_mut() {
                     l.from[1] += 0x220;
                     l.from[0] -= 0x20 + if ticks < 0xb4 { 0x150 } else { 0 };
@@ -247,7 +252,7 @@ impl Script for Level12 {
                         self.sounds.push((0x9f, [0; 3]));
                     }
                     self.fall_speed += 0x40;
-                    c.home[1] = c.pos[1];
+                    c.target[1] = c.pos[1];
                 }
                 if c.pos[1] > 70000 {
                     self.sounds.push((0x9e, [0; 3]));

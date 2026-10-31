@@ -36,8 +36,22 @@ pub fn theme(level_track: usize, boss_shown: bool, laps_shown: bool, race: i32) 
     }
 }
 
+/// Whether a level's frame script calls 0x49EAC0. The boss levels' scripts (internal ids 3,
+/// 6, 9, 12 and 15: 0x41AA10, 0x420060, 0x424490, 0x42B3A0, 0x42FC50) never do, so their own
+/// track plays throughout the fight; only the normal levels switch to the miniboss theme.
+pub fn level_switches_theme(internal_id: usize) -> bool {
+    internal_id % 3 != 0
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn boss_levels_keep_their_own_track() {
+        use super::*;
+        assert!(level_switches_theme(1) && level_switches_theme(14));
+        assert!([3, 6, 9, 12, 15].iter().all(|&l| !level_switches_theme(l)));
+    }
+
     #[test]
     fn theme_follows_the_boss_bar_and_the_race() {
         use super::*;

@@ -205,3 +205,81 @@ fn tree_only_tips_when_pushed_from_its_upper_platform() {
     assert_eq!(l.specials.angles(0x1E).unwrap()[2], (home + 0xFFF - 0x245) & 0xFFF);
     assert!(l.script.sounds.iter().any(|(id,_)| *id == 0x34));
 }
+
+/// 0x4190C0: the fifth troop (slot 4) hides in the lawn's holes (list 2). Buzz coming near
+/// makes it duck and come up at another hole; stomping the hole it ducked from while its dirt
+/// shows fills it in, and with six filled the troop is freed (touchable, no longer pinned).
+#[test]
+fn troop_in_the_holes_is_freed_by_stomping_six() {
+    let Some(mut l) = load() else { return };
+    let game = env::var_os("TS2_GAME_DIR").map(PathBuf::from).unwrap();
+    let lists = leveldat::parse(&fs::read(game.join("data/level02/level.dat")).unwrap()).unwrap();
+    let holes = &lists.iter().find(|x| x.kind == 2).unwrap().points;
+    assert_eq!(holes.len(), 7);
+    assert_ne!(l.cr.slots[4].flags & 0x20, 0, "the troop starts held in its hole");
+    assert_eq!(l.cr.slots[4].flags & 0x80, 0);
+    let ground = |h: [i32; 3]| l.world.floor_below(h[0] as f32 / 1.0, h[2] as f32 / 1.0, -4000.0).unwrap_or(-0xBB0 as f32 / 32.0);
+    let stand = |_l: &L2, h: [i32; 3], stomp: i32| {
+        let mut p = Player::new(Vec3::new(h[0] as f32, ground(h), h[2] as f32));
+        p.on_floor = true;
+        p.stomp = stomp;
+        p
+    };
+    // Underground at the start, on the first tick it comes up at a hole.
+    let p = stand(&l, [0, 0, 0], 0);
+    l.cr.tick(&l.world, p.pos_obj(), p.pos_obj());
+    l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+    assert_eq!(l.cr.slots[4].pos[1], 0x3800);
+    let mut filled = Vec::new();
+    for round in 0..6 {
+        // Buzz beside the troop: it ducks.
+        let at = l.cr.slots[4].pos.map(|v| v >> 5);
+        let p = stand(&l, at, 0);
+        l.cr.tick(&l.world, p.pos_obj(), p.pos_obj());
+        l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+        assert_eq!(l.cr.slots[4].target[1], 0x5000, "round {round}: it ducks");
+        let from = holes.iter().position(|h| h.map(|v| v << 5)[0] == l.cr.slots[4].home[0] && h[2] << 5 == l.cr.slots[4].home[2]).expect("at a hole");
+        // Walk away; it sinks and comes up at another unfilled hole.
+        let far = stand(&l, [at[0] + 1200, 0, at[2]], 0);
+        let mut to = None;
+        for _ in 0..200 {
+            l.cr.tick(&l.world, far.pos_obj(), far.pos_obj());
+            l.script.step_creatures(&l.world, &mut l.specials, &far, &mut l.cr, 0);
+            let c = &l.cr.slots[4];
+            if c.target[1] != 0x5000 {
+                to = holes.iter().position(|h| h.map(|v| v << 5)[0] == c.home[0] && h[2] << 5 == c.home[2]);
+                break;
+            }
+        }
+        let to = to.expect("it comes up somewhere else");
+        assert!(to != from && !filled.contains(&to), "round {round}: hole {to} after {from}");
+        // Stomp the hole it left, while its dirt shows.
+        let p = stand(&l, holes[from], -40);
+        l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+        filled.push(from);
+        assert!(l.script.pop.contains(&0x3B), "round {round}: the dirt goes");
+        l.script.pop.clear();
+        if round < 5 {
+            assert_ne!(l.cr.slots[4].flags & 0x20, 0, "round {round}: not free yet");
+        }
+    }
+    let c = &l.cr.slots[4];
+    assert_eq!(c.flags & 0x20, 0);
+    assert_eq!(c.flags & 0x84, 0x84);
+}
+
+/// The stomp has to be on the hole, while its dirt shows.
+#[test]
+fn stomping_away_from_the_hole_does_nothing() {
+    let Some(mut l) = load() else { return };
+    let at = l.cr.slots[4].pos.map(|v| v >> 5);
+    let mut p = Player::new(Vec3::new(at[0] as f32, 0.0, at[2] as f32));
+    l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+    p.on_floor = true;
+    p.stomp = -40;
+    for _ in 0..30 {
+        l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+    }
+    assert!(l.script.pop.is_empty());
+    assert_ne!(l.cr.slots[4].flags & 0x20, 0);
+}

@@ -19,6 +19,8 @@
 //! - The paint puzzle (token 3): see [`Paint`]. The crane and a crate are push boxes
 //!   (0x4F1C88).
 //!
+//! - The paint-room door's hatch folds open as Buzz comes near (specials 0x3F / 0x40).
+//!
 //! Not ported: the dripping and lights.
 
 use crate::boxes::Boxes;
@@ -78,6 +80,8 @@ pub struct Level4 {
     /// The timed challenge's clock tick (every 64 ticks).
     in_water: bool,
     paint: Paint,
+    /// 0x52F7D0: the paint-room door's hatch, as a y scale (0x1000 shut, 0 open).
+    hatch: i32,
     common: Common,
 }
 
@@ -111,6 +115,9 @@ struct Paint {
 /// back (negative: hide −special, show −special + 3).
 const SIGNS: [(u32, i32); 8] = [(1, 0x30), (2, 0x31), (4, 0x32), (0, 0), (1, -0x30), (2, -0x31), (4, -0x32), (0, 0)];
 const PAINT: usize = 5;
+/// The paint-room hatch: the point Buzz must be near (0x41C640) and its two faces.
+const HATCH_AT: [i32; 3] = [0x51B97, -0x104FD, 0x5E58E];
+const HATCH: [i32; 2] = [0x3F, 0x40];
 
 impl Level4 {
     pub fn new(world: &World, specials: &mut Specials, exe: Option<&Exe>) -> Level4 {
@@ -138,6 +145,8 @@ impl Level4 {
             lanes: 0,
             in_water: false,
             paint: Paint::default(),
+            // 0x4A1A50 (level start) sets 0x52F7D0 = 0x1000: shut.
+            hatch: 0x1000,
             // 0x503A2A: level 4's missing item (9) and gift (bit 4, the disk launcher).
             // Token 3 is the paint puzzle's (0x41C640 reveals it once 0x52F770 = 7).
             common: Common { given: [false; 5], item: 9, show_collectables: Some(false), ..Default::default() },
@@ -149,6 +158,23 @@ impl Level4 {
         let mut texts = vec![crate::script::HAMM_THANKS, crate::script::HAMM_ASK, crate::script::ALL_TOKENS, CHALLENGE_ASK, CHALLENGE_HURRY, CHALLENGE_DONE, FINDER_ASK, FINDER_THANKS, DRILL_TEXT];
         texts.extend(POTATO_TEXTS);
         self.load_story(exe, lists, &texts, Some(INFO_TABLE));
+    }
+
+    /// The paint-room door's hatch (in 0x41C640): with Buzz within 0xFA (× 256) of its bottom
+    /// edge (0x51B97, −0x104FD, 0x5E58E) it folds up, 0x200 a tick, to a y scale of 0 (open);
+    /// otherwise it drops back to 0x1000. Specials 0x40 (outside face, room 1) and 0x3F
+    /// (inside face, room 2) both take the scale (0x4CCB20), pivoting on their top edge.
+    fn hatch(&mut self, specials: &mut Specials, buzz: [i32; 3]) {
+        if near(buzz, HATCH_AT, 0xFA) {
+            if self.hatch > 0 {
+                self.hatch -= 0x200;
+            }
+        } else if self.hatch < 0x1000 {
+            self.hatch += 0x200;
+        }
+        for id in HATCH {
+            specials.set_scale(id, [0x1000, self.hatch, 0x1000]);
+        }
     }
 
     /// The paint puzzle: see [`Paint`].
@@ -572,6 +598,7 @@ impl std::ops::DerefMut for Level4 {
 impl Script for Level4 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
+        self.hatch(specials, player.pos_obj());
         let lists = std::mem::take(&mut self.common.story.lists);
         let on = player.floor_mover.filter(|_| player.on_floor).map(|(m, _)| m);
         for k in 0..4 {

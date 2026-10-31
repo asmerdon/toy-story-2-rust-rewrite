@@ -83,3 +83,69 @@ fn paths_run() {
     eprintln!("furthest {far:?}");
     assert!(far.iter().all(|&d| d > 50.0));
 }
+
+/// Drops Buzz onto mover `m`'s top (above `at`, level units), running the script's pre-move
+/// part each tick; returns him once he stands on it.
+fn land_on(l: &mut L2, m: i32, at: Vec3) -> Player {
+    let mut p = Player::new(at + Vec3::new(0.0, -300.0, 0.0));
+    for _ in 0..240 {
+        p.update_with(&l.world, ts2::game::Input::default(), 1.0 / 60.0, &mut |p, w| {
+            l.script.step(w, &mut l.specials, p, &l.boxes);
+        });
+        if p.on_floor && p.floor_mover.is_some_and(|(id, _)| id == m) {
+            return p;
+        }
+    }
+    panic!("Buzz never stood on mover {m}: at {:?} on_floor {} {:?}", p.pos, p.on_floor, p.floor_mover);
+}
+
+/// Skateboard 1 (mover 10, special 0xB): Buzz landing on it starts it rolling towards −z; the
+/// special follows it; from z = 0x42C60 it falls and bounces; below 0x104C0 it stops and
+/// throws a rider.
+#[test]
+fn skateboard_one_rolls_when_landed_on() {
+    let Some(mut l) = load() else { return };
+    let home = l.world.mover_pos(10).unwrap();
+    let mut p = land_on(&mut l, 10, home);
+    let mut low = home;
+    let mut thrown = false;
+    for tick in 0..2400 {
+        p.update_with(&l.world, ts2::game::Input::default(), 1.0 / 60.0, &mut |p, w| {
+            l.script.step(w, &mut l.specials, p, &l.boxes);
+        });
+        let at = l.world.mover_pos(10).unwrap();
+        low = low.max(at);
+        if tick == 120 {
+            assert!(at.z < home.z - 100.0, "the skateboard did not roll: {at:?}");
+            let s = l.specials.pos_obj(0xB).unwrap().map(|v| v >> 5);
+            assert!((s[2] as f32 - at.z).abs() < 80.0, "special 0xB did not follow: {s:?} vs {at:?}");
+        }
+        thrown |= !p.on_floor && p.vel[1] < -0x800 && at.z * 32.0 < 0x104C0 as f32 + 200.0;
+    }
+    let end = l.world.mover_pos(10).unwrap();
+    eprintln!("skateboard 1: {home:?} -> {end:?}, thrown {thrown}");
+    assert!(end.z * 32.0 < 0x104C0 as f32 + 0x6A4 as f32, "it did not reach its stop: {end:?}");
+    assert!(end.y > home.y + 1000.0, "it did not fall: {end:?}");
+    assert!(thrown, "Buzz was not thrown at the end");
+}
+
+/// Skateboard 2 (mover 0xE, special 0x18) rolls to z = 0x2300 (level units), turns round, rolls
+/// back and rests again.
+#[test]
+fn skateboard_two_rolls_and_returns() {
+    let Some(mut l) = load() else { return };
+    let home = l.world.mover_pos(0xE).unwrap();
+    let mut p = land_on(&mut l, 0xE, home);
+    let mut far = home;
+    for _ in 0..2400 {
+        p.update_with(&l.world, ts2::game::Input::default(), 1.0 / 60.0, &mut |p, w| {
+            l.script.step(w, &mut l.specials, p, &l.boxes);
+        });
+        let at = l.world.mover_pos(0xE).unwrap();
+        far = far.min(at);
+    }
+    let end = l.world.mover_pos(0xE).unwrap();
+    eprintln!("skateboard 2: {home:?} -> far {far:?} -> {end:?}");
+    assert!(far.z < 0x2300 as f32 + 60.0, "it did not roll far enough: {far:?}");
+    assert!(end.z > far.z + 1000.0, "it did not come back: {end:?}");
+}

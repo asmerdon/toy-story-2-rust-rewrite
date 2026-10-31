@@ -85,6 +85,9 @@ pub struct Terrain {
     /// Polygon lists, shared by instanced objects.
     pub shapes: Vec<Vec<Poly>>,
     pub objects: Vec<Object>,
+    /// Boundary walls: the kind-0x101 lists (see `boundaries` below), each a polyline of
+    /// (x, z) points in level units, `count + 1` points for `count` segments.
+    pub boundaries: Vec<Vec<[i32; 2]>>,
 }
 
 fn i16_at(b: &[u8], o: usize) -> Result<i16, Error> {
@@ -109,6 +112,32 @@ fn read_shape(b: &[u8], mut o: usize) -> Result<Vec<Poly>, Error> {
         o = p;
     }
     Ok(polys)
+}
+
+/// Records of this kind hold a boundary list. 0x489980 chains every record of kind ≥ 0x100
+/// whose data starts 0x12345678 into a list per kind (heads at 0x728CF0 + kind × 4, i.e.
+/// 0x7290F0 + (kind − 0x100) × 4, cleared first). Only kind 0x101's head, 0x7290F4, is read:
+/// by Buzz's collision 0x484380 and the ray cast 0x48C860, which copy the segments near the
+/// motion into 0x728DA0 for the circle-against-line tests 0x480660 / 0x487B20 (vertical walls
+/// of unlimited height). Kind 0x104 (0x729100) is chained but never read.
+pub const BOUNDARY_KIND: i32 = 0x101;
+
+/// One boundary list block: u32 0x12345678 (overwritten by the chain link at load), u16
+/// segment count, u16 0, then `count + 1` points of three i32 (x, y, z, level units). The
+/// walls only use x and z: the y fields of points 16k..16k+3 hold group k's bounds (x min,
+/// x size, z min, z size) for 0x484380's broad test, or 0x80000000 for "always test".
+fn read_boundary(b: &[u8], at: usize, size: usize) -> Result<Option<Vec<[i32; 2]>>, Error> {
+    if size < 8 || i32_at(b, at)? as u32 != 0x1234_5678 {
+        return Ok(None);
+    }
+    let count = i16_at(b, at + 4)? as u16 as usize;
+    if count == 0 {
+        return Ok(None);
+    }
+    if 8 + 12 * (count + 1) > size {
+        return Err(Error(format!("boundary list of {count} segments overruns its {size}-byte record")));
+    }
+    (0..=count).map(|k| Ok([i32_at(b, at + 8 + 12 * k)?, i32_at(b, at + 16 + 12 * k)?])).collect::<Result<Vec<_>, _>>().map(Some)
 }
 
 pub fn parse(b: &[u8]) -> Result<Terrain, Error> {
@@ -144,6 +173,10 @@ pub fn parse(b: &[u8]) -> Result<Terrain, Error> {
             };
             if let Some(shape) = shape {
                 t.objects.push(Object { pos, kind, flags, linked, shape });
+            }
+        } else if kind == BOUNDARY_KIND {
+            if let Some(list) = read_boundary(b, cursor, size.max(0) as usize * 2)? {
+                t.boundaries.push(list);
             }
         }
         cursor += size.max(0) as usize * 2;

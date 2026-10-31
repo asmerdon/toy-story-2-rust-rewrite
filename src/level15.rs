@@ -125,7 +125,10 @@ impl Level15 {
                 c.set_script(if k == 1 { 0x68 / 2 } else { 0x5A / 2 });
                 c.rec.state = 4;
                 c.flags &= if k == 1 { !0x100 } else { !0x108 };
-                c.rec.speed = 16;
+                // 0x42F310 / 0x42F7B0 set speed 0x10; the gunslinger's 0x42F530 leaves it.
+                if k != 1 {
+                    c.rec.speed = 16;
+                }
                 let pos = c.pos;
                 self.sounds.push((0xFFFE, pos));
                 continue;
@@ -167,7 +170,12 @@ impl Level15 {
                 }
             } else {
                 let c = &mut cr.slots[k];
-                if c.anim == if k == 0 { 1 } else { 4 } && near(c.pos, player.pos_obj(), 300) {
+                // 0x42F3AE / 0x42F8C9: only on a tick its shared update (0x4076F0) found Buzz in
+                // its zone (byte +6 of the struct it passes, bit 1), within 300, in its walk.
+                if c.step.chase & 1 != 0
+                    && c.anim == if k == 0 { 1 } else { 4 }
+                    && near(c.pos, player.pos_obj(), 300)
+                {
                     c.rec.speed = 0;
                     cr.animate_slot(
                         k,
@@ -195,7 +203,9 @@ impl Level15 {
                             let pos = cr.node_point(k, 4, [180.0, -150.0, -50.0]).unwrap_or(pos);
                             self.particles.push(ParticleRequest {
                                 pos,
-                                vel: [0, -1, 0],
+                                // 0x42F310 passes vy −2 (halved to −1: home on Buzz, as
+                                // flag 8 of type 0x66 reads it) and its facing as the yaw.
+                                vel: [0, -2, 0],
                                 gravity: a << 2,
                                 angle: 0,
                                 spin: 0,

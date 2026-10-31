@@ -61,6 +61,26 @@ Triangle: (v0, v0+e1, v0+e2). Quad: (v0, v0+e1, v0+e2) with `normal` and (v0+e3,
 ## Movers (type 8)
 Scripts address movers by link id − 1 (0x4878A0(n) reads entry n + 1). Level object table 0x7286EC (0x34 bytes per link id): position (×32), angles at +0x40 (0x72872C, 16-bit ×4), velocity at +0x48 (0x728734, set by 0x487900), spin at +0x54 (0x728740, set by 0x487970), flags at +0x66 (0x728752: 0x80 moving, 0x08 spinning/rotated, 0x100 carries Buzz), collision object index at +0x64. 0x488E10 applies velocity and spin every frame. 0x4878A0 / 0x4878D0 switch a mover's collision on/off (type 8 / 0). Movers are driven by per-level scripts (e.g. 0x42DCB0 a carousel, 0x49EC00 a platform that tilts under Buzz, 0x417380 a popping object), not by data.
 
+## Boundary walls (records ≥ 0x100, magic 0x12345678)
+
+The loader 0x489980 chains each block into a list at 0x728CF0 + kind × 4, i.e. 0x7290F0 + (kind − 0x100) × 4. Kind 0x101 (head 0x7290F4) holds boundary walls.
+
+Who reads them:
+- Buzz's collision 0x484380, through 0x482A00 → 0x480660.
+- The ray cast 0x48C860, through 0x487B20, used by lasers, the grapple and the camera.
+
+Block layout: u32 magic, u16 segment count, u16 0, then count + 1 points of (x, y, z) as i32, in level units.
+- The y fields of points 16k..16k+3 hold group k's bounding box (x min, x size, z min, z size), or 0x80000000.
+- Each segment is a vertical wall of unlimited height, tested as a 2D circle against a line.
+- Each wall is solid on one side only, with normal (a.z − b.z, b.x − a.x).
+- The segment's first point is also a circle of radius r + 0x20.
+
+Every level except campaign 1, 10 and 11 has them. They close, for example, the final arena's back and the airport's conveyor ends. Kind 0x104 is chained, but no reader has been found.
+
+Belt and wind pushes (0x48B660) add to the collider's motion (0x729196 → 0x729190 via 0x488E10) and are swept with the velocity. They are refused while the last contact faces against them.
+
+Ported: `terrain::Terrain::boundaries`, `World::sweep` (`sweep_boundary`), `Player::move_and_collide`.
+
 ## Open
 - The per-level scripts that open doors and move platforms (level 1's is around 0x417680).
 - `level05/terrain.flr/.grd/.scn/.wal/.wuv` look like pipeline leftovers.

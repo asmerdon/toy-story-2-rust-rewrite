@@ -95,3 +95,29 @@ fn rotated_instance_matches_its_collision_object() {
         assert!((lo[j] - clo[j]).abs() < 4.0 && (hi[j] - chi[j]).abs() < 4.0, "axis {j}: mesh {lo:?}-{hi:?} vs collision {clo:?}-{chi:?}");
     }
 }
+
+/// Kind-0x101 records hold boundary lists (0x489980 chains them at 0x7290F4; 0x484380 and
+/// 0x48C860 read them): closed x/z polylines whose segments are vertical walls. Level 1's
+/// files have none; the final arena (level05/TERR1.ALL) is one closed loop of 29 segments
+/// whose back runs at x 6385–6450, just short of the floor's end at 6500.
+#[test]
+fn boundary_lists_parse() {
+    let Some(dir) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let read = |p: &str| terrain::parse(&fs::read(dir.join(p)).unwrap()).unwrap();
+    assert!(read("data/level01/TERRAIN.ALL").boundaries.is_empty());
+    let arena = read("data/level05/TERR1.ALL");
+    assert_eq!(arena.boundaries.len(), 1);
+    let l = &arena.boundaries[0];
+    assert_eq!(l.len(), 30);
+    assert_eq!(l[0], l[29], "closed");
+    assert!(l.iter().filter(|p| p[0] > 6000).all(|p| (6385..=6450).contains(&p[0])));
+    // Every campaign level but 1, 10 and 11 has at least one.
+    let mut lists = 0;
+    for lv in ts2::campaign::LEVELS {
+        let path = terrain::path_for(&lv.path(&dir)).unwrap();
+        let n = terrain::parse(&fs::read(&path).unwrap()).unwrap().boundaries.len();
+        assert_eq!(n == 0, matches!(lv.number, 1 | 10 | 11), "level {}: {n} boundary lists", lv.number);
+        lists += n;
+    }
+    assert!(lists >= 12, "{lists} boundary lists");
+}

@@ -55,6 +55,14 @@ fn level_select_flies_to_a_level_and_gates_on_tokens() {
     eprintln!("camera at {:?}", cam.map(|v| v / 32));
     assert!(near, "camera {:?} not near level 1's views {:?}", cam.map(|v| v / 32), &spots[3..6]);
     assert!(frame.pieces.len() == 13, "{} map pieces", frame.pieces.len());
+    // Inside the Etch A Sketch (0x494130): 14 pieces of pictures 0x20 / 0x21, zoomed in to
+    // the edge less 55 of 512 × 384; the map's variant 1 has those pictures.
+    assert_eq!(frame.panels.len(), 14);
+    let want = [-55.0 / 402.0, -55.0 / 274.0, 201.0 / 402.0, 10.0 / 274.0];
+    assert!(frame.panels[0].1.iter().zip(want).all(|(a, b): (&f32, f32)| (a - b).abs() < 1e-5), "{:?}", frame.panels[0]);
+    assert_eq!(Screen::Select.variant(), 1);
+    let t1 = ts2::formats::ngn::parse(&fs::read(ts2::campaign::variant_path(&dir, ts2::campaign::HUB, 1)).unwrap()).unwrap();
+    assert!(["tex32", "tex33"].iter().all(|n| t1.textures.iter().any(|t| t.name.eq_ignore_ascii_case(n))));
     assert!(!frame.glyphs.is_empty(), "no level name");
     // Right to level 2 (the last that can be chosen), right again does nothing.
     for b in [Pad::RIGHT, 0, Pad::RIGHT, 0] {

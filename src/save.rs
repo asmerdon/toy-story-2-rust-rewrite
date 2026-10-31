@@ -130,7 +130,7 @@ mod tests {
     use super::*;
 
     fn tables() -> Tables {
-        Tables { order: vec![1, 2, 6, 4, 5, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15], names: Vec::new(), needed: vec![0; 16], models: Vec::new() }
+        Tables { order: vec![1, 2, 6, 4, 5, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15], names: Vec::new(), needed: vec![0; 16], models: Vec::new(), etch: Vec::new() }
     }
 
     #[test]

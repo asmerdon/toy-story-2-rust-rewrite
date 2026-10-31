@@ -48,10 +48,17 @@ pub struct Tables {
     /// The level-select map's models by level (0x4F6DC4): specials to hide (the level's
     /// blueprint) and to show (its finished model) once the level can be chosen.
     pub models: Vec<(Vec<usize>, Vec<usize>)>,
+    /// The level select's Etch A Sketch frame (0x494130): 14 rectangles (x0, y0, x1, y1 in a
+    /// 512 × 384 screen; the first seven from picture 0x20, the rest from 0x21) and the seven
+    /// uv rectangles both halves share.
+    pub etch: Vec<([f32; 4], [f32; 4])>,
 }
 
 /// Pairs of i16 special lists (ending −1) per level, as 0x438A50 reads them.
 const MODELS: u32 = 0x4F6DC4;
+/// 0x494130's rectangles (14 × 4 f32) and uvs (7 × 4 f32).
+const ETCH_RECTS: u32 = 0x500B20;
+const ETCH_UVS: u32 = 0x500AB0;
 
 impl Tables {
     pub fn read(exe: &Exe) -> Tables {
@@ -65,7 +72,12 @@ impl Tables {
             (0..64).map_while(|k| exe.at(p + 2 * k, 2).ok().map(|b| i16::from_le_bytes([b[0], b[1]]))).take_while(|&v| v >= 0).map(|v| v as usize).collect()
         };
         let models = (0..15).map(|k| (ids(u32_at(MODELS + 8 * k)), ids(u32_at(MODELS + 8 * k + 4)))).collect();
-        Tables { order, names, needed, models }
+        let f4 = |va: u32| -> Option<[f32; 4]> {
+            let v = [0, 1, 2, 3].map(|k| u32_at(va + 4 * k).map(f32::from_bits));
+            v.iter().all(Option::is_some).then(|| v.map(Option::unwrap_or_default))
+        };
+        let etch = (0..14).filter_map(|k| Some((f4(ETCH_RECTS + 16 * k)?, f4(ETCH_UVS + 16 * (k % 7))?))).collect();
+        Tables { order, names, needed, models, etch }
     }
 }
 
@@ -167,7 +179,9 @@ impl Screen {
     /// save screens the map with 0xF8, variant 3 (`level1t3.ngn`: picture 40 `save_load256`).
     pub fn variant(self) -> u8 {
         match self {
-            Screen::Results | Screen::GameOver => 1,
+            // Scene ids over 10 load variant 1 unless one is asked for (0x452FC0): the map's
+            // `level1t1.ngn` has the Etch A Sketch frame (`etch_lh` / `etch_rh`, 32 / 33).
+            Screen::Results | Screen::GameOver | Screen::Select => 1,
             Screen::SavePrompt | Screen::Saves => 3,
             _ => 0,
         }
@@ -213,6 +227,9 @@ pub struct Frame {
     /// Full-screen picture: texture number (`bgrNN`).
     pub picture: Option<u32>,
     pub quads: Vec<Quad>,
+    /// Screen-space pictures (0x4B8CC0) under the sprites: picture number (`texNN`), the
+    /// rectangle (x0, y0, x1, y1, 0..1 of the screen) and uv rectangle.
+    pub panels: Vec<(u32, [f32; 4], [f32; 4])>,
     pub glyphs: Vec<Glyph>,
     /// Brightness, 0 (black) to 0x80.
     pub brightness: i32,
@@ -1054,7 +1071,8 @@ impl Select {
                 self.phases[k] = 0;
             }
             if let (Some(a), Some(b)) = (before, self.piece(k)) {
-                let heading = crate::boxes::angle12((b[0] - a[0]) as f32, (b[2] - a[2]) as f32);
+                // 0x438910 passes 0x4520D0 (Δz, −Δx), not (Δx, Δz): a quarter turn on.
+                let heading = crate::boxes::angle12((b[2] - a[2]) as f32, (a[0] - b[0]) as f32);
                 let d = (self.piece_yaw[k] - heading - 0x800) & 0xFFF;
                 self.piece_yaw[k] += if d <= 0x800 { -(d >> 2) } else { (0x1000 - d) >> 2 };
                 self.piece_yaw[k] &= 0xFFF;
@@ -1073,6 +1091,15 @@ impl Select {
     fn draw(&self, f: &mut Frame, sprites: &[Option<SpriteDef>], p: &Progress, t: &Tables) {
         let s = p.summary(t);
         f.camera = Some((self.drawn, self.pitch, self.yaw));
+        // 0x494130: the Etch A Sketch round the view, zooming in from the whole 512 × 384
+        // frame to its edge less 55 over the first 55 ticks (0x830C5C, reset on entry).
+        let z = self.clock.min(55) as f32;
+        let (fx, fy) = (1.0 / (512.0 - 2.0 * z), 1.0 / (384.0 - 2.0 * z));
+        for (k, (r, uv)) in t.etch.iter().enumerate() {
+            let (x, y) = ((r[0] - z) * fx, (r[1] - z) * fy);
+            let rect = [x, y, x + (r[2] - r[0] + 1.0) * fx, y + (r[3] - r[1] + 1.0) * fy];
+            f.panels.push((if k < 7 { 0x20 } else { 0x21 }, rect, *uv));
+        }
         // Specials 0–99 shown, 100–366 hidden; then for each level up to the last that can be
         // chosen, its blueprint hidden and its finished model shown.
         let mut shown: Vec<bool> = (0..0x16F).map(|k| k < 100).collect();
@@ -1458,7 +1485,7 @@ mod tests {
     use super::*;
 
     fn tables() -> Tables {
-        Tables { order: vec![1, 2, 6, 4, 5, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15], names: vec![String::new(); 16], needed: vec![0, 0, 3, 0, 0, 10, 0, 0, 18, 0, 0, 28, 0, 0, 40, 0], models: Vec::new() }
+        Tables { order: vec![1, 2, 6, 4, 5, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15], names: vec![String::new(); 16], needed: vec![0, 0, 3, 0, 0, 10, 0, 0, 18, 0, 0, 28, 0, 0, 40, 0], models: Vec::new(), etch: Vec::new() }
     }
 
     #[test]

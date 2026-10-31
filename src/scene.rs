@@ -298,10 +298,14 @@ pub fn creature_batches_scaled_xyz(ngn: &Ngn, c: &Creature, origin: [f32; 3], an
 /// The result is in level units; gameplay callers convert it to object units (x32).
 pub fn creature_node_point(origin: [f32; 3], angles: [f32; 3], scale: f32,
     animation: &Animation, frame: f32, node: usize, point: [f32; 3]) -> Option<[f32; 3]> {
-    let matrix = animation.matrix_at(node, frame)?;
+    // A node this animation doesn't move stays at rest, as the renderer draws it.
+    if node >= animation.node_offsets.len() {
+        return None;
+    }
+    let matrix = animation.matrix_at(node, frame);
     let mut place = Place::turned(origin, angles);
     for row in &mut place.m { for value in row { *value *= scale; } }
-    Some(place.apply(transform(Some(&matrix), point)))
+    Some(place.apply(transform(matrix.as_ref(), point)))
 }
 
 /// Point on the base layer's root node that the overlay follows (0x43BA80).
@@ -480,4 +484,151 @@ fn show_keyed_glass(batches: &mut Vec<Batch>, images: &[Option<crate::bmp::Image
         }
     }
     merge(batches, moved);
+}
+
+/// One room-to-room link from ngn chunk 0x103 (read by 0x4C3DF0: count, then per link the
+/// polygon index, the room it leads from and the room it leads to).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PortalLink {
+    pub poly: usize,
+    pub from: u32,
+    pub to: u32,
+}
+
+/// A level's room portals: the polygons of chunk 0x102 (0x4C3BE0: count, then per polygon a
+/// point count and that many float triples, in instance-position space) and the links of
+/// chunk 0x103. The original walks them each frame from the camera's room (0x4BC460).
+#[derive(Debug, Clone, Default)]
+pub struct Portals {
+    pub polys: Vec<Vec<[f32; 3]>>,
+    pub links: Vec<PortalLink>,
+}
+
+impl Portals {
+    /// Reads chunks 0x102 / 0x103 from a level's `.ngn` bytes; empty when absent or malformed.
+    pub fn parse(bytes: &[u8]) -> Portals {
+        let mut out = Portals::default();
+        let Ok(chunks) = crate::formats::ngn::chunks(bytes) else { return out };
+        let u32_at = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        let f32_at = |o: usize| u32_at(o).map(f32::from_bits);
+        for ch in &chunks {
+            let mut o = ch.data.start;
+            match ch.id {
+                0x102 => {
+                    let Some(n) = u32_at(o) else { continue };
+                    o += 4;
+                    for _ in 0..n {
+                        let Some(k) = u32_at(o).filter(|&k| o + 4 + k as usize * 12 <= ch.data.end) else { break };
+                        o += 4;
+                        let pts = (0..k as usize).map(|j| [0, 1, 2].map(|a| f32_at(o + j * 12 + a * 4).unwrap())).collect();
+                        o += k as usize * 12;
+                        out.polys.push(pts);
+                    }
+                }
+                0x103 => {
+                    let Some(n) = u32_at(o) else { continue };
+                    o += 4;
+                    for _ in 0..n {
+                        let (Some(p), Some(from), Some(to)) = (u32_at(o), u32_at(o + 4), u32_at(o + 8)) else { break };
+                        o += 12;
+                        out.links.push(PortalLink { poly: p as usize, from, to });
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.links.retain(|l| l.poly < out.polys.len());
+        out
+    }
+}
+
+/// A screen rectangle in normalised device coordinates: x0, y0, x1, y1 (y up).
+pub type Rect = [f32; 4];
+/// The whole screen.
+pub const FULL_SCREEN: Rect = [-1.0, -1.0, 1.0, 1.0];
+
+impl Portals {
+    /// The rooms seen from `start` this frame, as a bit mask (bit `r` = room `r`; room 0, the
+    /// always-drawn set, included). `clip` takes a point in instance-position space to clip
+    /// space (w = view depth). Links into room 15 are dead unless `room15` (0x4BC2C0 drops them
+    /// outside level 10).
+    ///
+    /// As 0x4BC460: the start room is drawn, then each link out of it, used at most once a
+    /// frame (+0x10, cleared by 0x4BC170), not leading straight back to the room it came from,
+    /// whose polygon isn't wholly outside the current view (0x4BA2F0) and survives 0x4BACF0 —
+    /// the polygon's screen box, cut down to the current rectangle, must be non-empty and the
+    /// polygon must face the camera; with a corner at or behind the eye it passes uncut — leads
+    /// on with the view narrowed to that box. Room 0 is drawn after, with the whole view
+    /// (0x4CDDD0's second 0x4BC460 call).
+    pub fn visible_rooms(&self, start: u32, clip: impl Fn([f32; 3]) -> glam::Vec4, room15: bool) -> u64 {
+        let polys: Vec<Vec<glam::Vec4>> = self.polys.iter().map(|p| p.iter().map(|&v| clip(v)).collect()).collect();
+        let mut used = vec![false; self.links.len()];
+        let mut mask = 1u64;
+        self.walk(start, FULL_SCREEN, None, &polys, &mut used, &mut mask, room15);
+        mask
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn walk(&self, room: u32, rect: Rect, came_from: Option<u32>, polys: &[Vec<glam::Vec4>], used: &mut [bool], mask: &mut u64, room15: bool) {
+        if room < 64 {
+            *mask |= 1 << room;
+        }
+        for (i, l) in self.links.iter().enumerate() {
+            if l.from != room || used[i] || Some(l.to) == came_from || (l.to == 15 && !room15) || l.to >= 64 {
+                continue;
+            }
+            let p = &polys[l.poly];
+            if outside(p, rect) {
+                continue;
+            }
+            let Some(narrowed) = narrow(p, rect) else { continue };
+            used[i] = true;
+            self.walk(l.to, narrowed, Some(room), polys, used, mask, room15);
+        }
+    }
+}
+
+/// 0x4BA2F0: the polygon (clip space) lies wholly outside one side of the view through `r`,
+/// or wholly behind the eye.
+fn outside(p: &[glam::Vec4], r: Rect) -> bool {
+    let all = |f: &dyn Fn(&glam::Vec4) -> bool| !p.is_empty() && p.iter().all(f);
+    all(&|v| v.w <= 0.0) || all(&|v| v.x < r[0] * v.w) || all(&|v| v.x > r[2] * v.w) || all(&|v| v.y < r[1] * v.w) || all(&|v| v.y > r[3] * v.w)
+}
+
+/// 0x4BACF0: the view through a portal polygon (clip space) from inside rectangle `r`.
+fn narrow(p: &[glam::Vec4], r: Rect) -> Option<Rect> {
+    // A corner at or behind the eye: passed whole, the view not narrowed.
+    if p.len() < 3 || p.iter().any(|v| v.w <= 1e-3) {
+        return Some(r);
+    }
+    let s: Vec<glam::Vec2> = p.iter().map(|v| glam::Vec2::new(v.x / v.w, v.y / v.w)).collect();
+    // Facing: its first three corners wind clockwise on screen (y up), as the data's portals
+    // do seen from the room they lead out of (tests/rooms.rs checks both directions).
+    let (a, b) = (s[1] - s[0], s[1] - s[2]);
+    if a.perp_dot(b) < 0.0 {
+        return None;
+    }
+    let lo = s.iter().fold(glam::Vec2::splat(f32::MAX), |m, v| m.min(*v));
+    let hi = s.iter().fold(glam::Vec2::splat(f32::MIN), |m, v| m.max(*v));
+    let n = [lo.x.max(r[0]), lo.y.max(r[1]), hi.x.min(r[2]), hi.y.min(r[3])];
+    (n[0] < n[2] && n[1] < n[3]).then_some(n)
+}
+
+/// An instance's centre (0x4C3740's +0x74: the mesh's centre through the instance's matrix, plus
+/// its position), taken here as the middle of the mesh's vertex box.
+pub fn instance_centre(mesh: &Mesh, inst: &crate::formats::ngn::Instance) -> [f32; 3] {
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for v in &mesh.vertices {
+        for k in 0..3 {
+            lo[k] = lo[k].min(v.pos[k]);
+            hi[k] = hi[k].max(v.pos[k]);
+        }
+    }
+    if lo[0] > hi[0] {
+        return inst.pos;
+    }
+    let c = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
+    let m = instance_matrix(inst);
+    let t = transform(Some(&m), c);
+    [0, 1, 2].map(|k| t[k] + inst.pos[k])
 }

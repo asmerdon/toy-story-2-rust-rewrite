@@ -8,6 +8,26 @@ The original game's behaviour was worked out by reverse-engineering the exe with
 - File formats are documented in [`docs/formats/`](docs/formats/).
 - Where work stopped and what comes next is in [`HANDOFF.md`](HANDOFF.md).
 
+## Latest progress — 2026-10-31
+
+The newest [HANDOFF.md](HANDOFF.md) entry has the details; [docs/coverage.md](docs/coverage.md) tracks what has been checked, level by level. Agents follow [AGENTS.md](AGENTS.md).
+
+Fixed after the user's playtest. These have been checked by simulation and offscreen screenshots, not yet replayed by the user.
+- The sky fill now matches each level's background picture.
+- Boss levels keep their own music.
+- Slime Time's boss wears its trash-can lid.
+- Level 2's troop-in-the-holes stomp game works.
+- Tarmac Trouble no longer hurts Buzz from far-away creatures.
+- The level select sits inside the Etch A Sketch, and its cars face the right way.
+- Airport Infiltration starts on the X-ray conveyor.
+- On the final level, falling off the back kills Buzz, as in the original, rather than silently resetting him.
+- The final level's bosses only swing while chasing.
+
+- Homing shots follow the original's steering (the blacksmith's shockwave now homes; Zurg's shots steer gently at first).
+- Level 4's paint-room hatch folds open as Buzz approaches. Interior props no longer show through walls (the original's room/portal visibility, Level 4 only for now).
+
+Still open: room culling for creatures and other levels, and a full interaction playtest of levels 2–15.
+
 ## Requirements
 
 - An installed copy of the PC game, by default at `C:\Program Files\Disney Interactive\Toy Story 2`. Set `TS2_GAME_DIR` if it's somewhere else.
@@ -109,7 +129,7 @@ set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
 
-There are 142 tests, many driving the real game data, covering movement, combat, bosses, races, gadgets, the front end, saves and movie decoding.
+The suite (over 150 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
 
 ## Tools for development
 

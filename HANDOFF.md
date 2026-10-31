@@ -1,6 +1,6 @@
 # Handover: Toy Story 2 Rust rewrite
 
-Last updated 2026-10-21. **Level 1 is complete and signed off by the user.** Every level
+Last updated 2026-10-31 (verification and user-report fixes; see the first entry). **Level 1 is complete and signed off by the user.** Every level
 (2–15) now has its script ported; none of 2–15 has been fully playtested. This file explains
 how the project works, what has been done, what went wrong along the way, and how to carry on.
 
@@ -8,6 +8,130 @@ Read this first. Then read `docs/re/functions.md` (every identified exe function
 know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `all`).
 
 ---
+
+## 2026-10-31 (third pass): second round of playtest reports — newest, read first
+
+The user retested. Everything reported before is fixed, except what's listed below. Their new reports, with status:
+
+| # | Report | Status |
+|---|---|---|
+| 1 | Level 5 bones challenge: one bone missing | Sonnet helper working (`level5.rs`) |
+| 2 | Clipping: L1 windowsill, L13 conveyor ends | Fixed L13 (Opus helper): the **boundary walls** (TERRAIN kind 0x101, read by 0x484380 / 0x48C860; see docs/formats/terrain.md) were never loaded, and belt pushes weren't swept. L1 windowsill **not reproduced**; ask the user for the spot. Sweep `examples/clipsweep.rs`: edge falls in L5/7/8/10 look like open pits, not verified against the original |
+| 3 | L14 enemies moving fast | Likely fixed with 4: the setup wrote 0x708 into every creature's flags (chase 8, harmful 0x100, touched 0x200); the original writes the draw distance at +0x42 |
+| 4 | L14 starts in a race and talking to Hamm | Fixed (same cause); `standing_at_the_start_starts_no_talk_or_race` |
+| 5 | Final level: should be walled at the back | Fixed: a 29-segment boundary loop closes it; `final_arena_back_is_closed_by_its_boundary_wall` (replaces the fall-plane test; 0x436220 still applies to real falls) |
+| 6 | Draw order: helicopter over the flagpole and plane, power-ups over walls | Not started; next helper (rendering). Specials of both layers draw in one late pass |
+| 7 | L7 skateboards (stomp to ride) | Sonnet helper working (`level7.rs`) |
+| 8 | Hide the cursor in play | Done: `sync_cursor` (hidden and confined while playing, released on focus loss) |
+| 9 | First-person model visible in cut-scenes | Done: 0x4020F0 ends first person; `Look::cancel` called when a script look-at begins |
+| 10 | L12 Zurg intro sinks into the floor | Fixed: the height goes to slot +0x60 (target), not home; `zurg_entrance_stays_above_the_floor` |
+| — | All bosses: attacks exactly as the original | Not started; helper after rendering |
+
+Open collision details:
+- The edge-cylinder slip: a body starting slightly inside an edge ignores it, and a naive fix broke the boundaries.
+- The camera is pulled in by boundary walls. The original's camera reads them too, but this is unverified.
+- Creature rays against boundaries are not done.
+- The mover carry is still added to position unswept.
+
+Suite: 165 tests pass in 36 suites (before helpers 1 and 7 report).
+
+## 2026-10-31 (later): verification and the user's playtest reports
+
+Objective: verify commit `7c34cc9`, then fix what the user found in a playtest. Nothing
+committed. Per-level coverage now lives in [docs/coverage.md](docs/coverage.md); keep it there.
+
+Helpers used under AGENTS.md:
+- Level 2 holes: Sonnet (standard).
+- Particle homing: Sonnet (standard).
+- Final-level fall and fight: Opus (advanced).
+- Level 4 visibility: Opus (advanced).
+All helpers ran one at a time, and the main agent reviewed each one's diff.
+
+### Verified first
+- `tilted_mover_matches_rendered_special_rotation` and `later_levels final_arena` pass.
+- The full suite passes and the release viewer builds. At the end of this session: 160 tests in 36 suites, all passing.
+- Post-fix shots inspected:
+  - Level 2 background picture (`out/verify/level2-*`).
+  - Level 15 suitcases, which sit in place.
+  - See-saws: not re-shot; covered by `continuation_audit` simulation only.
+
+### Fixed (cause → fix, evidence)
+| Report | Cause | Fix | Evidence |
+|---|---|---|---|
+| Background colour ≠ picture | Flat fills got raw sRGB bytes as linear vertex colour; textures are sRGB-decoded (fill drew (99,66,143) against the picture's (32,14,70)) | `sky_batch` samples the picture's corner texels for the fills; without a picture the colour is linearised | `level2-sky-fixed.png`: seamless |
+| Boss music switches to miniboss theme | 0x49EAC0 is called only by normal levels' scripts; boss scripts 0x41AA10/0x420060/0x424490/0x42B3A0/0x42FC50 restart their own track (0x52AD8A) at fight start | `music::level_switches_theme`, viewer `theme_events` | unit test |
+| Level 6 slime has no trash-can lid | Port placed special 0 once; 0x41AA10 sets it each tick on node 10 (−700, then −0x20) via 0x43C1C0 with a wobble (0x52F6F8); it drops from 0x3E9 | `level3.rs`; `scene::creature_node_point` now uses rest pose for nodes an animation doesn't move (as the renderer does) | `slime_shrinks_over_four_rounds` lid check fails before (1250/1295 ticks off), passes after; `level6-slime-0.png` |
+| Level 2 hole-stomping troop | 0x4190C0's mole game wasn't ported; also `think` pinned flag-0x20 creatures to home y, not target y (+0x60) | `Level2::troop_holes`; `creatures.rs` target[1] | two tests in `tests/level2.rs` |
+| Level 14 constant damage | `Creatures::contact` (0x407440) squared/multiplied object units in i32; level 14 spans >10⁶ units, so far creatures (slot 46, id 0x3A, ~50,000 units away) wrapped to "touching" | i64 maths in `contact` and `laser_ray` | `tests/level14.rs` fails before, passes after; teleport grid lost 14→4 health before, 14→10 after (left: propellers, a real hazard) |
+| Main-menu (level select) cars backwards | 0x438910 calls 0x4520D0 with (Δz, −Δx) | `Select::move_pieces` heading | decompile only; not visually confirmed |
+| Level select not inside the Etch A Sketch | Scenes > 10 load variant 1 (0x452FC0), so the map is `level1t1.ngn` with `etch_lh/rh` (tex32/33); 0x494130 draws 14 screen quads (tables 0x500B20 / 0x500AB0, read at runtime) zooming in over 55 ticks | `Screen::Select.variant() = 1`, `Frame::panels`, `front_batches`; viewer `scene_file` uses the base scene's .dat/.raw for variants (levelt1.cfg) | `select-etch.png`; frontend test |
+| Final level: falling off the back | Not a missing wall: the floor ends at x +6500, as in the original. 0x436220 kills Buzz 0x2000 object units under the lowest collision point (0x489C30, 0x729124); the port silently reset him at +4000 | `World::lowest`, death via `hurt(0, 4)` (all levels) | `final_arena_running_off_the_back_kills_buzz_at_the_fall_plane` |
+| Final fight (attacks) | Blacksmith/prospector swing needed 0x4076F0's chase bit (`Step.chase & 1`), not checked; 0x66 particle vy −2; gunslinger keeps its speed on defeat | `level15.rs`, `Creature::step` | `final_arena_bosses_swing_only_while_chasing`, `final_arena_fight_hurts_buzz_and_all_three_bosses_fall_to_hits` (real attacks, hits via `hit`, defeat, rescue) |
+| Spawn points (11–15) | ResetPlayer snaps with 0x4863A0 → 0x486520 (nearest floor above within 2048, from 32 above), +8; port took the floor below. Only level 13 differs: it starts on the X-ray conveyor | `World::start_floor` | `level_13_starts_on_the_conveyor_above_its_table_point`; `l13-start-orig.png` |
+
+Tools added: the `--shot` script takes `tp:x,y,z[,facing]` (level units) and `?` (prints
+Buzz's position, health, floor). Use them to reproduce reports at real coordinates.
+
+### Still open (exact next steps)
+1. **Level 4 (done this session, Opus helper):**
+   - The hatch is two specials (0x40 outside, 0x3F inside). 0x41C640 folds their y scale (0x52F7D0) to 0 by 0x200 a tick while Buzz is within 0xFA × 256 of (0x51B97, −0x104FD, 0x5E58E), and back to 0x1000 otherwise. Ported in `level4.rs`.
+   - Interior props showed through walls because the port lacked the original's room/portal walk (0x4BC460: chunks 0x102 / 0x103, camera room via 0x4885C0, facing and view tests 0x4BACF0 / 0x4BA2F0, room 0 always drawn) and the 12000 cut for layer-0 specials. Now in `scene::Portals` and the viewer's `RoomCull`, **gated to level 4 only** (`ROOM_CULLED_LEVELS`).
+   - Level 1 shots are pixel-identical before and after. Tests: `paint_room_hatch_opens_for_buzz`, `paint_room_seen_only_through_its_portals`, plus viewer unit tests. Shots: `out/verify/cmp_*.png` and `l4f_*` (free camera; the play+cam shots are not valid evidence).
+   - Open:
+     - Creatures and pickups are not yet room-gated (0x447BD0 checks the creature room byte +0x6C; its writer is not found).
+     - Levels 1, 2, 5 and 10 have portals but still draw everything; 2 and 10 have their own 0x440F70 overrides.
+     - The hatch room lighting (0x54F3BC / 0x54F3DC) is not ported.
+2. **Particles (0x410F40), done this session (Sonnet helper):**
+   - Flag-8 homing now applies to every kind (vy −1 = Buzz, gravity = yaw, +0x20 pitch, −1 = flat). It uses the original's constants: frame period 0xC4 → speed /8 and steering (life/16)² + 4; otherwise /16 and 8.
+   - Kind 0x2B hugs floor − 0x800; kind 0x2C dies above floor − 0x1000.
+   - **This changes Zurg's shots (level 12):** they now steer weakly at first. The Zurg particle test was updated to match.
+   - Still open: creature-targeted homing, trails 0x6B / 0x2C / 0x69 / 0x6A, and whether the blacksmith shockwave actually lands more (the fight test's counts are unchanged).
+3. **Level 14 "things not animated":** the user didn't say which. Rain and lightning aren't
+   ported; ask them which objects.
+4. Mode-4 death countdown: original 0x2E ticks, port `die()` 0x78. Unchanged.
+5. The 0x101 record in TERR1.ALL (a closed loop near x 6410–6450) has no reader outside the
+   loader; it's treated as unused.
+6. Car heading and the Etch A Sketch zoom need the user's eye. Levels 2–15: work through
+   docs/coverage.md.
+
+## 2026-10-31: recovered continuation status
+
+The user requested a documentation update after the session hit its usage limit. This entry records the interrupted work; no new gameplay changes or test runs were made on October 31. Tracked implementation and agent guidance are already saved in commit `7c34cc9`. The pre-existing untracked recordings, screenshots and `ChatGPT Log.md` remain untouched. Do not infer push status from the local commit.
+
+### Scope and working rules
+
+Continue the Rust rewrite within PROJECT.md's clean-room boundaries. AGENTS.md now defines provider-neutral economical/standard/advanced capability tiers, direct work for small tasks, one helper at a time, bounded briefs, escalation, and evidence requirements. CLAUDE.md links to it. The previous session used one inherited-model helper for sequential read-only boss/rendering investigations; no cheaper model was selected. Helpers consulted relevant level scripts, creature interpreter, world/scene/specials code, viewer integration, tests, and private original routines. Main-agent checks reproduced the consequential bugs.
+
+### Saved implementation
+
+| Area | Change / evidence | Status |
+| --- | --- | --- |
+| See-saws | `src/game.rs` now applies Z/Y/X rotation, matching `scene::instance_matrix`, rather than X/Y/Z. `tilted_mover_matches_rendered_special_rotation` failed before and passed after the fix. | Focused regression verified; final broad regression and visual playtest pending. |
+| Backgrounds | `examples/continuation_audit.rs` found decodable type-36 pictures in campaign levels 01–07, 09, 11, 13, 14. None in 08, 10, 12, 15. `sky_batch` draws the opaque picture before flat fills: the prior strict Greater depth test rejected the picture at equal depth. | Asset evidence verified; post-fix rendering not yet inspected. |
+| Floating suitcase | `src/level15.rs` places far specials 1/4 in full level units (`>>5`), matching near specials 0/3. Original setter 0x4CCE30 scales second-layer coordinates by four; Rust's setter does not. | New alignment test failed before and passed after. |
+| Creature jump continuation | `src/creatures.rs` landing advances `pc` by one i16 word, not two. Original 0x4076F0 advances two bytes. The old port could resume on an operand. | Saved; broad jumping-creature regression pending. |
+| Final boss attack | Blacksmith attack rates changed from positive 64 to negative 64. Positive rates depend on movement and freeze after the script sets speed to zero; original behavior uses negative rates. | Saved; result of the last coupled test/build command was not recovered. |
+| Test coverage | `tests/later_levels.rs` adds LOD suitcase alignment and a coupled test that calls creature ticking as well as level scripting. | The coupled test reproduced a frozen boss before the last rate fix. Do not claim it passes until rerun. |
+
+`examples/continuation_audit.rs` simulates the five see-saws in levels 01, 02 and 05. After the rotation fix it observed sustained contact and tipping on all five. An initial Level 05 probe was outside the short plank at offset -700; using -350 reached its collision surface. That initial miss was a diagnostic placement error, not evidence of absent collision. Level 01's attic remains the signed-off reference; its single-axis rotation is unchanged.
+
+### Verification actually observed
+
+- Before implementation, `cargo test --release --offline` completed successfully with `TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`.
+- The rotation regression failed before the fix and passed afterward.
+- The suitcase alignment regression failed before the position correction and passed afterward.
+- `cargo test --release --offline --test later_levels final_arena -- --nocapture` still failed on a stationary boss after the landing and suitcase fixes, before the final negative-rate correction.
+- The final command reran that test and requested `cargo build --release --offline --bin ts2-viewer`; its completion result was lost at interruption. Source is saved, but neither final success nor binary freshness is established.
+- Inspected pre-fix screenshots `out/continuation/level02-before.png` and `level04-before.png`, plus extracted `background02.png` and `background04.png`. These show the pictures exist (neighborhood sunset and construction skyline). No post-fix image has been inspected. All are local ignored outputs, not distributable assets.
+
+### Unresolved findings and next actions
+
+1. Run the focused final-arena and rotation regressions with game data, then the full release suite and release viewer build. Extend the boss test to verify attacks, real hit calls, defeat and rescue; the older test directly assigns health and never ticks creatures, and the new coupled test only checks movement/HUD so far.
+2. Render and inspect matching post-fix background views, final-level suitcase/intro/fight views, and rotated see-saws. Preserve Level 01 behavior. Use offscreen `--shot` to avoid taking over user input.
+3. Level 04: detailed static geometry clips at 12,000 view-depth units, while dynamic specials are unlimited; depth clears between far and near passes. Interior props can therefore appear over far walls. Original 0x4CDDD0 also uses room/portal selection (0x4BC460), absent here. No fix was made. Investigate near-layer-special range matching and room visibility without blindly clipping far-layer specials. Paint-room reference: level coordinates [9500,-4000,19050], zone 2; exterior walls zone 1.
+4. Final-level falling: unresolved. `level05/TERR1.ALL` contains four static collision objects and no movers; do not invent a missing mover link or barriers. The displaced suitcase had no matching collision and may explain some falls, but that is an inference. Reproduce actual fall coordinates against collision after the visual correction.
+5. Secondary boss discrepancy remains: original blacksmith/prospector proximity attacks require shared movement Step.flags bit 1; the port does not check it. Investigate before changing behavior.
+6. Build an explicit coverage checklist and test scriptable interactions in campaign levels 02–15. This exhaustive pass has NOT been completed or claimed. Existing tests and script inventories are a starting point, not full playthrough coverage. Older front-end/gadget tasks below remain outstanding unless superseded by later verified entries.
 
 ## Progress and what's left (2026-10-21)
 

@@ -222,6 +222,9 @@ impl Particles {
             angle: angle & 0xFFF,
             spin: spin / 2,
             rgb: t.rgb,
+            // 0x42F310 sets +0x20 to -1 (flat) on the blacksmith's 0x66 shockwave, the only
+            // spawner of it; the other homing shots steer their pitch from 0.
+            homing_pitch: if typ == 0x66 { -1 } else { 0 },
             ..Default::default()
         };
         if t.period < 0 {
@@ -244,22 +247,41 @@ impl Particles {
             }
             let mut p = self.slots[i];
             p.life = (p.life - 1).max(0);
-            // Flag 8 repurposes vertical velocity as a target and gravity as yaw
-            // (0x410F40). Zurg's 0x6D shots target Buzz, encoded as -1.
-            if p.kind == 0x30 && p.flags & 8 != 0 && p.vel[1] == -1 {
-                let dx = buzz.0[0] - p.pos[0];
-                let dy = buzz.0[1] - p.pos[1] - 0x2000;
-                let dz = buzz.0[2] - p.pos[2];
-                let yaw = crate::boxes::angle12((dx >> 5) as f32, (dz >> 5) as f32);
-                let turn = |to: i32, from: i32| ((to - from + 0x800) & 0xfff) - 0x800;
-                p.gravity = (p.gravity + turn(yaw, p.gravity) / 8) & 0xfff;
-                let horizontal = ((dx as f64).hypot(dz as f64)) as f32;
-                let pitch = crate::boxes::angle12(-dy as f32, horizontal);
-                p.homing_pitch = (p.homing_pitch + turn(pitch, p.homing_pitch) / 20) & 0xfff;
-                let horizontal_speed = sin14(p.homing_pitch + 0x400);
-                p.vel[0] = ((sin14(p.gravity) * horizontal_speed) >> 14) / 16;
-                p.vel[2] = ((sin14(p.gravity + 0x400) * horizontal_speed) >> 14) / 16;
-                p.pos[1] -= sin14(p.homing_pitch) / 16;
+            // Flag 8 (any kind, 0x410F40 +0x32 & 8) repurposes vertical velocity as a
+            // target and gravity as yaw; vel[1] == -1 (spawned as -2, halved) is Buzz. The
+            // other target, a creature pointer, isn't ported: those move as plain particles.
+            if p.flags & 8 != 0 && p.vel[1] == -1 {
+                // Turn rates: yaw turns by 1/local_8 of the error, pitch by 1/0x14. Particles
+                // whose frame period byte is 0xC4 close in faster as they age; speed
+                // divisor local_c is 8 for those, else 0x10.
+                let (rate, speed_div) = if p.period & 0xFF == 0xC4 {
+                    let l = p.life >> 4;
+                    (l * l + 4, 8)
+                } else {
+                    (8, 0x10)
+                };
+                if p.life > 0 {
+                    let dx = buzz.0[0] - p.pos[0];
+                    let dy = buzz.0[1] - p.pos[1] - 0x2000;
+                    let dz = buzz.0[2] - p.pos[2];
+                    let yaw = crate::boxes::angle12((dx >> 5) as f32, (dz >> 5) as f32);
+                    let turn = |to: i32, from: i32| ((to - from + 0x800) & 0xfff) - 0x800;
+                    p.gravity = (p.gravity + turn(yaw, p.gravity) / rate) & 0xfff;
+                    // Pitch -1 means flat: it never steers.
+                    if p.homing_pitch != -1 {
+                        let horizontal = ((dx as f64).hypot(dz as f64)) as f32;
+                        let pitch = crate::boxes::angle12(-dy as f32, horizontal);
+                        p.homing_pitch = (p.homing_pitch + turn(pitch, p.homing_pitch) / 20) & 0xfff;
+                    }
+                }
+                let (vertical, horizontal_speed) = if p.homing_pitch == -1 {
+                    (0, 0x4000)
+                } else {
+                    (sin14(p.homing_pitch), sin14(p.homing_pitch + 0x400))
+                };
+                p.vel[0] = ((sin14(p.gravity) * horizontal_speed) >> 14) / speed_div;
+                p.vel[2] = ((sin14(p.gravity + 0x400) * horizontal_speed) >> 14) / speed_div;
+                p.pos[1] -= vertical / speed_div;
             } else {
                 p.pos[1] += p.vel[1];
                 p.vel[1] += p.gravity;
@@ -465,6 +487,26 @@ impl Particles {
                     p.vel[2] = b * 2 - 0x100;
                 }
                 p.size[0] = (sin14((p.life & 0x3F) * 0x40) / grow.max(1)).abs();
+                0
+            }
+            0x2B => {
+                // Hugs the floor (0x410F40 case 0x2B): faces (0x7FF - yaw), and sits 0x800
+                // above the floor under it when there is one. Its trail (0x6B) isn't ported.
+                p.angle = (0x7FF - p.gravity) & 0xFFF;
+                p.floor = floor_at(world, p.pos);
+                if let Some(f) = p.floor {
+                    p.pos[1] = f - 0x800;
+                }
+                0
+            }
+            0x2C => {
+                // Dies once it is above floor - 0x1000 (case 0x2C). No floor reads as
+                // 0x80000000, so the subtraction wraps and it dies then too. Trails aren't
+                // ported.
+                p.floor = floor_at(world, p.pos);
+                if p.floor.is_none_or(|f| p.pos[1] < f - 0x1000) {
+                    p.life = 0;
+                }
                 0
             }
             0x2D => {
@@ -734,5 +776,82 @@ mod tests {
         assert_eq!(randomise(2, 0x1F, 0x0F), 0x0F << 3);
         assert_eq!(randomise(3, 0x7F, 0x10), -0x80);
         assert_eq!(randomise(0, 0x123, 0x55), 0x123);
+    }
+
+    /// A world with a floor at object y = 0 (level units, 4000 square), or none.
+    fn world(floor: bool) -> World {
+        let q = 4000.0;
+        let tris = if floor {
+            vec![[Vec3::new(-q, 0.0, -q), Vec3::new(q, 0.0, -q), Vec3::new(-q, 0.0, q)], [Vec3::new(q, 0.0, -q), Vec3::new(q, 0.0, q), Vec3::new(-q, 0.0, q)]]
+        } else {
+            Vec::new()
+        };
+        World::from_triangles(tris)
+    }
+
+    /// Particles with one made-up type per (index, kind, flags).
+    fn with_types(set: &[(u8, u8, u16)]) -> Particles {
+        let mut p = Particles::new(None, Vec::new());
+        for &(i, kind, flags) in set {
+            p.types[i as usize] = Type { life: 400, frames: 1, kind, flags, size: [8, 8], ..Default::default() };
+        }
+        p
+    }
+
+    fn dist(a: [i32; 3], b: [i32; 3]) -> f64 {
+        (0..3).map(|k| ((a[k] - b[k]) as f64).powi(2)).sum::<f64>().sqrt()
+    }
+
+    /// 0x410F40 flag 8 with vel[1] == -1 steers on Buzz for any kind, not just Zurg's 0x30.
+    #[test]
+    fn flag_8_particles_of_any_kind_home_on_buzz() {
+        let w = world(false);
+        let buzz = [0x20000, 0, 0];
+        for typ in [5u8, 0x66] {
+            let mut p = with_types(&[(typ, 0, 0x208)]);
+            // Made as the blacksmith's shot is: vy -2 (halved to -1), facing +z as yaw.
+            let k = p.create([0, -0x2000, 0], [0, -2, 0], 0x400 << 2, 0, 0, typ).unwrap();
+            assert_eq!(p.slots[k].vel[1], -1);
+            let start = dist(p.slots[k].pos, buzz);
+            for _ in 0..60 {
+                p.tick(&w, (buzz, 0));
+            }
+            let q = p.slots[k];
+            assert!(q.life > 0 && q.vel[1] == -1);
+            assert!(dist(q.pos, buzz) < start * 0.6, "type {typ:#x} should close in: {start} -> {}", dist(q.pos, buzz));
+            if typ == 0x66 {
+                // Pitch -1 is flat: the height never changes (0x42F310).
+                assert_eq!(q.pos[1], -0x2000);
+            }
+        }
+    }
+
+    /// Kind 0x2B hugs the floor at floor - 0x800 and faces 0x7FF - yaw.
+    #[test]
+    fn kind_2b_hugs_the_floor() {
+        let w = world(true);
+        let mut p = with_types(&[(7, 0x2B, 0x200)]);
+        let k = p.create([0x1000, -0x3000, 0x1000], [0, 0, 0], 0x100, 0, 0, 7).unwrap();
+        for _ in 0..3 {
+            p.tick(&w, ([0; 3], 0));
+            assert_eq!(p.slots[k].pos[1], -0x800);
+        }
+        assert_eq!(p.slots[k].angle, (0x7FF - p.slots[k].gravity) & 0xFFF);
+    }
+
+    /// Kind 0x2C dies once above floor - 0x1000 (and with no floor at all).
+    #[test]
+    fn kind_2c_dies_high_above_the_floor() {
+        let w = world(true);
+        let mut p = with_types(&[(8, 0x2C, 0x200)]);
+        let low = p.create([0, -0xE00, 0], [0, 0, 0], 0, 0, 0, 8).unwrap();
+        p.tick(&w, ([0; 3], 0));
+        assert!(p.slots[low].life > 0, "within 0x1000 of the floor it lives");
+        let high = p.create([0, -0x2000, 0], [0, 0, 0], 0, 0, 0, 8).unwrap();
+        p.tick(&w, ([0; 3], 0));
+        assert_eq!(p.slots[high].life, 0, "above floor - 0x1000 it dies");
+        let k = p.create([0, -0xE00, 0], [0, 0, 0], 0, 0, 0, 8).unwrap();
+        p.tick(&world(false), ([0; 3], 0));
+        assert_eq!(p.slots[k].life, 0, "no floor reads as 0x80000000, so it dies");
     }
 }

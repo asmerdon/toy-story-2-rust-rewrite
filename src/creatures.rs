@@ -119,6 +119,9 @@ pub struct Creature {
     /// A script's override of its hit ellipsoid (offset y, radius), as level 3 grows and
     /// shrinks the slime's table.
     pub hit_size: Option<(i32, i32)>,
+    /// The report of its last shared update (0x4076F0's struct), for level scripts that run
+    /// as its routine: the final arena's bosses only attack with `chase` bit 1 set.
+    pub step: Step,
 }
 
 /// The Tin Man fight (level 1, room 5): the boss's routine 0x416AB0 and the room script's
@@ -397,6 +400,7 @@ impl Creatures {
                 in_reach: false,
                 scale: 0x1000,
                 hit_size: None,
+                step: Step::default(),
             };
             c.reset(&mut cr, true);
             c.slots.push(cr);
@@ -482,9 +486,12 @@ impl Creatures {
             let (s, k) = (sin(c.angles[1] - 0x800) >> 2, sin(c.angles[1] - 0x400) >> 2);
             let [sx, sy, sz] = e.scale.map(|v| v as i32);
             // Into the ellipsoid's frame, where it is a sphere: level units.
+            // In i64, as in `contact`: far creatures on the big levels overflow i32.
             let local = |v: [i32; 3]| {
-                let (x, z) = (v[0] - centre[0], v[2] - centre[2]);
-                [((x * k + z * s) >> 12) * sx >> 8, (v[1] - centre[1]) * sy >> 8, ((z * k - x * s) >> 12) * sz >> 8]
+                let (x, z) = ((v[0] - centre[0]) as i64, (v[2] - centre[2]) as i64);
+                let (k, s) = (k as i64, s as i64);
+                [((x * k + z * s) >> 12) * sx as i64 >> 8, (v[1] - centre[1]) as i64 * sy as i64 >> 8, ((z * k - x * s) >> 12) * sz as i64 >> 8]
+                    .map(|v| v.clamp(i32::MIN as i64 / 2, i32::MAX as i64 / 2) as i32)
             };
             let a = local(origin).map(|v| -(v >> 5));
             let end = [0, 1, 2].map(|j| origin[j] + delta[j]);
@@ -653,6 +660,7 @@ impl Creatures {
             c.active = true;
             let heard = (self.sounds.len(), self.owned_sounds.len());
             let s = self.think(&mut c, world, buzz);
+            c.step = s;
             self.routine(i, &mut c, &s, world);
             // Kept in play beyond the original's reach, it makes no sound there (the original
             // only ran, and so only heard, creatures within it).
@@ -1701,7 +1709,7 @@ impl Creatures {
                     None => {}
                 }
             } else {
-                c.floor = c.home[1];
+                c.floor = c.target[1];
             }
             if c.floor - 0x200 < ny {
                 if jump_mode == 0 {
@@ -1733,7 +1741,7 @@ impl Creatures {
                 _ => ny,
             };
         } else {
-            c.pos[1] = c.home[1];
+            c.pos[1] = c.target[1];
         }
         self.finish(c, step, side, fwd)
     }
@@ -1862,18 +1870,20 @@ impl Creatures {
                 continue;
             }
             let sh = self.shape(c.id);
-            let sp = [0, 1, 2].map(|j| (sh.sphere[j] as i32 + c.pos[j] - chest[j]) >> 5);
-            let rr = sh.sphere[3] as i32 + reach;
+            // In i64: the later levels are big enough (level 14 spans over 10^6 object units)
+            // that these squares and products wrap in i32, making far creatures "touch" Buzz.
+            let sp = [0, 1, 2].map(|j| (sh.sphere[j] as i64 + c.pos[j] as i64 - chest[j] as i64) >> 5);
+            let rr = (sh.sphere[3] as i32 + reach) as i64;
             if c.hit_size.is_none() && sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2] >= rr * rr {
                 continue;
             }
             let (centre, e) = self.ellipsoid_at(i);
-            let (s, k) = (sin(c.angles[1] - 0x800) >> 2, sin(c.angles[1] - 0x400) >> 2);
-            let (x, z) = (centre[0] - chest[0], centre[2] - chest[2]);
-            let lz = ((k * z - s * x) >> 12) * e.scale[2] as i32 >> 13;
-            let lx = ((s * z + k * x) >> 12) * e.scale[0] as i32 >> 13;
-            let ly = (centre[1] - chest[1]) * e.scale[1] as i32 >> 13;
-            let r = e.radius as i32 + reach;
+            let (s, k) = ((sin(c.angles[1] - 0x800) >> 2) as i64, (sin(c.angles[1] - 0x400) >> 2) as i64);
+            let (x, z) = ((centre[0] - chest[0]) as i64, (centre[2] - chest[2]) as i64);
+            let lz = ((k * z - s * x) >> 12) * e.scale[2] as i64 >> 13;
+            let lx = ((s * z + k * x) >> 12) * e.scale[0] as i64 >> 13;
+            let ly = (centre[1] - chest[1]) as i64 * e.scale[1] as i64 >> 13;
+            let r = (e.radius as i32 + reach) as i64;
             if lx * lx + ly * ly + lz * lz >= r * r || c.flags & 0x80 == 0 {
                 continue;
             }

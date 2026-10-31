@@ -11,8 +11,11 @@
 //!   list 0xB).
 //! - The dino boss (slot 0, list 5, in room 4; token 4) with its routine 0x420AF0.
 //!
-//! Not ported: the bobbing platform and button race (mover 0 / 0xF, 0x52FA24), the rockets
-//! (movers 10 / 0xE), the chicks pushed by boxes (0x420F70), the drips and sparks.
+//! - The two skateboards (movers 10 / 0xE, specials 0xB / 0x18; their sound 0x7A is the sample
+//!   "SkBoard"): Buzz landing on one starts it rolling; see `Level7::skateboards`.
+//!
+//! Not ported: the bobbing platform and button race (mover 0 / 0xF, 0x52FA24), the
+//! chicks pushed by boxes (0x420F70), the drips and sparks.
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
@@ -21,6 +24,7 @@ use crate::formats::leveldat::PointList;
 use crate::game::{JumpPhase, Player, Sound, World};
 use crate::script::{touched, Common, PathRunner, Script};
 use crate::specials::Specials;
+use glam::Vec3;
 
 const INFO_TABLE: u32 = 0x4F2A54;
 const HINTS: u32 = 0x4F2A34;
@@ -56,6 +60,10 @@ pub struct Level7 {
     /// The spring (0x52F9C0) and the trampoline's squash (0x52F9EC).
     spring: i32,
     squash: i32,
+    /// The skateboards' speeds: 0x52FA4C (mover 10; 0 at rest, −1 once it has stopped for
+    /// good), its vertical speed 0x52F9BC, and 0x52F9E8 (mover 0xE; negative rolling back).
+    pub board: [i32; 2],
+    pub board_fall: i32,
     /// The egg: 0 first try, 1 second, 2 done (0x52FA1C); the gate lift's goal and height
     /// (0x52FA10 / 0x52FA08).
     egg: u8,
@@ -76,6 +84,8 @@ impl Level7 {
             path_flags: 0,
             spring: 0,
             squash: 0,
+            board: [0; 2],
+            board_fall: 0,
             egg: 0,
             gate_goal: 0,
             gate: 0,
@@ -141,6 +151,107 @@ impl Level7 {
                 self.squash = 0;
                 specials.set_scale(3, [0x1000, 0, 0x1000]);
             }
+        }
+    }
+
+    /// The two skateboards (frame script 0x421340, from 0x421A9A; the movers' velocities are set
+    /// with 0x487900 and applied by the collision code, so a later call in the tick wins).
+    ///
+    /// Both start when Buzz stands on top of one (0x52F38E, 0x488580 bit 2, and a contact
+    /// normal above −0x3000: a flat top; landing from a stomp counts, nothing else is asked):
+    /// a reward sparkle goes out (0x49FAB0 point 3 / 2 of group 1) and the speed starts at 0x20.
+    /// While rolling a board plays sound 0x7A (pitched by its speed) at itself and its special
+    /// (0xB / 0x18) is put where the mover is.
+    ///
+    /// - Mover 10 rolls towards −z, speeding up 0x20 a tick to 0x6A4. Past z = 0x42C60 it also
+    ///   falls (0x52F9BC: +0x60 a tick to 0x1000), bouncing off the plane y = −0x1E00 at −3/8
+    ///   of its speed (−0xC0 when slower than 0x4B1). Below z = 0x104C0 it stops for good (−1)
+    ///   and throws Buzz, if he is on it, at −0xA00 along 0x81E (sines >> 5).
+    /// - Mover 0xE rolls the same way (to 0x708), and below z = 0x2300 (level units) turns
+    ///   round at −7/8 of its speed, throwing Buzz (sines >> 4); rolling back at that speed
+    ///   it slows 0x20 a tick from z = 0x3A27 and rests again, ready for another ride.
+    fn skateboards(&mut self, world: &World, specials: &mut Specials, player: &mut Player) {
+        // Buzz on mover `m`: standing on it, and whether its top is flat.
+        let floor_mover = if player.on_floor { player.floor_mover } else { None };
+        let on = |m: i32| floor_mover.filter(|&(id, _)| id == m);
+        let flat = |m: i32| on(m).is_some_and(|(_, n)| n.y < -0.75);
+        let obj = |m: i32| world.mover_pos(m).map(|p| [p.x, p.y, p.z].map(|v| (v * 32.0).round() as i32));
+        let level = |o: [i32; 3]| o.map(|v| v >> 5);
+        let per_tick = |dy: i32, dz: i32| Vec3::new(0.0, dy as f32 / 32.0, dz as f32 / 32.0);
+
+        // Mover 10 (special 0xB).
+        if self.board[0] == 0 && flat(10) {
+            self.board[0] = 0x20;
+            self.put_out.push((3, 1));
+        }
+        if self.board[0] > 0
+            && let Some(at) = obj(10)
+        {
+            let v = self.board[0];
+            self.sounds.push((0x7A, at));
+            specials.set_pos(0xB, level(at));
+            self.board[0] = if v < 0x6A4 { v + 0x20 } else { 0x6A4 };
+            if at[2] < 0x42C60 {
+                let w = self.board_fall;
+                self.board_fall = if -0x1E00 - w < at[1] && w > 0 {
+                    if w < 0x4B1 { -0xC0 } else { w * -3 / 8 }
+                } else if w < 0x1000 {
+                    w + 0x60
+                } else {
+                    0x1000
+                };
+            }
+            if at[2] < 0x104C0 {
+                // Arrived: no more rolling, and a throw for a rider.
+                self.board[0] = -1;
+                if on(10).is_some() {
+                    player.sounds.push(Sound { id: 0x1C, voice: false });
+                    player.launch_at(-0xA00, 0x81E, 5);
+                }
+            } else {
+                // The fall speed the bounce just chose is the one that moves it.
+                world.move_mover(10, per_tick(self.board_fall, -v));
+            }
+        }
+
+        // Mover 0xE (special 0x18).
+        if self.board[1] == 0 && flat(0xE) {
+            self.board[1] = 0x20;
+            self.put_out.push((2, 1));
+        }
+        let mut dz = None;
+        if self.board[1] > 0
+            && let Some(at) = obj(0xE)
+        {
+            let v = self.board[1];
+            self.sounds.push((0x7A, at));
+            specials.set_pos(0x18, level(at));
+            dz = Some(-v);
+            self.board[1] = if v < 0x708 { v + 0x20 } else { 0x708 };
+            if at[2] >> 5 < 0x2300 {
+                self.board[1] = self.board[1] * -7 / 8;
+                if on(0xE).is_some() {
+                    player.sounds.push(Sound { id: 0x1C, voice: false });
+                    player.launch_at(-0xA00, 0x81E, 4);
+                }
+            }
+        }
+        if self.board[1] < 0
+            && let Some(at) = obj(0xE)
+        {
+            specials.set_pos(0x18, level(at));
+            if at[2] >> 5 < 0x3A27 {
+                dz = Some(-self.board[1]);
+            } else {
+                self.board[1] += 0x20;
+                dz = if self.board[1] < 0 { Some(-self.board[1]) } else { Some(0) };
+                if self.board[1] >= 0 {
+                    self.board[1] = 0;
+                }
+            }
+        }
+        if let Some(dz) = dz.filter(|&d| d != 0) {
+            world.move_mover(0xE, per_tick(0, dz));
         }
     }
 
@@ -270,6 +381,7 @@ impl Script for Level7 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
         self.springs(specials, player);
+        self.skateboards(world, specials, player);
         self.gate(world, specials);
     }
 

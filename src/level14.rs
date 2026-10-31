@@ -365,13 +365,11 @@ impl Script for Level14 {
         cr: &mut Creatures,
         coins: i32,
     ) {
-        if !std::mem::replace(&mut self.started, true) {
-            for c in &mut cr.slots {
-                if c.id != 0 {
-                    c.flags = (c.flags & 0xFFFF) | 0x708;
-                }
-            }
-        }
+        // 0x42E600 sets every creature's draw distance (+0x42, beside the flags at +0x40) to
+        // 0x708 (normally 0x500, 0x406CD0). The port doesn't model draw distance; this must not
+        // touch the flags: 0x708 there marked every creature touched (0x200: Hamm and the
+        // race began at once), harmful (0x100) and chasing (8).
+        self.started = true;
         self.hamm(cr, 39, 2, None, 0, coins);
         self.hint_character(cr, 47, 10);
         self.finder(cr, 40, 3, 0x4F47CC, 0x4F4844, None, 1);
