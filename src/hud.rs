@@ -50,6 +50,8 @@ pub struct Status {
     /// 0x52B7E0: a boss's health bar (0..54), shown while `boss_on`.
     pub boss: i32,
     pub boss_on: bool,
+    /// 0x830D4C: a timed challenge's collected count (−1, here `None`, without one).
+    pub collected: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -185,16 +187,41 @@ impl Hud {
         }
         // 6: laps to go (a big digit, sprite 3) beside the flag icon (sprite 0x1A), pulsing on
         // the last one.
+        // From 100 up the same value is a countdown (0x52AD64 − 100, seconds in two digits),
+        // with a timed challenge's collected count and its icon (0x33) beside it, the count
+        // blinking at five (0x49FD40).
         if let Some(off) = self.offset(LAPS) {
-            let left = (3 - s.laps).clamp(0, 3);
-            let c = if s.laps == 2 {
-                let u = self.counter(6) as i32;
-                ((if u > 0x1F { 0x3F - u } else { u }) * 4 + 0x14) as u8
+            if s.laps < 100 {
+                let left = (3 - s.laps).clamp(0, 3);
+                let c = if s.laps == 2 {
+                    let u = self.counter(6) as i32;
+                    ((if u > 0x1F { 0x3F - u } else { u }) * 4 + 0x14) as u8
+                } else {
+                    0x80
+                };
+                put(WIDE, 0xFA, off + 0x18, 3, left as usize, [c; 3], 0x1000, 0x1000);
+                put(NARROW, 0x8C, off + 0x10, 0x1A, 0, [c; 3], 0x1000, 0x1000);
             } else {
-                0x80
-            };
-            put(WIDE, 0xFA, off + 0x18, 3, left as usize, [c; 3], 0x1000, 0x1000);
-            put(NARROW, 0x8C, off + 0x10, 0x1A, 0, [c; 3], 0x1000, 0x1000);
+                let (mut dx, mut dw) = (0, 0);
+                if let Some(n) = s.collected.filter(|&n| n >= 0) {
+                    (dx, dw) = (-0x14, -0x20);
+                    let blink = self.counter(5) as i32;
+                    let c = if n == 5 {
+                        let u = blink & 0x1F;
+                        (if u > 0xF { 0x1F - u } else { u }) * 4 + 0x50
+                    } else {
+                        0x80
+                    };
+                    if n != 5 || blink > 0xF {
+                        put(WIDE, 0x12E, off + 0x20, 3, n.clamp(0, 9) as usize, white, 0x1000, 0x1000);
+                    }
+                    put(NARROW, 0xA0, off + 0x10, 0x33, 0, [c as u8; 3], 0x1000, 0x1000);
+                }
+                let t = (s.laps - 100).clamp(0, 99);
+                put(WIDE, dw + 0xF3, off + 0x18, 3, (t / 10) as usize, white, 0x1000, 0x1000);
+                put(WIDE, dw + 0x101, off + 0x18, 3, (t % 10) as usize, white, 0x1000, 0x1000);
+                put(NARROW, dx + 0x8C, off + 0x10, 0x1A, 0, [0x80; 3], 0x1000, 0x1000);
+            }
         }
         // 5: the sheep count beside its icon (sprite 0x32, the level's own), blinking at five,
         // left of the batteries' place by however far they are in.
@@ -305,6 +332,26 @@ pub fn batches(quads: &[Quad], sprites: &[Option<SpriteDef>], texture: &dyn Fn(i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 0x49FD40 element 6: under 100 the laps to go; from 100 a two-digit countdown, with
+    /// the challenge's count and icon (0x33) when there is one.
+    #[test]
+    fn laps_from_100_are_a_countdown() {
+        let sprites: Vec<Option<SpriteDef>> = (0..0x40).map(|_| Some(SpriteDef { texture: 31, size: [8, 8], cells: vec![[0, 0]; 16] })).collect();
+        let mut h = Hud::default();
+        let mut s = Status { race: 2, laps: 127, collected: Some(3), ..Default::default() };
+        for _ in 0..40 {
+            h.tick(&s);
+        }
+        let q = h.quads(&s, &sprites);
+        let mut digits: Vec<(f32, usize)> = q.iter().filter(|q| q.sprite == 3).map(|q| (q.pos[0] / q.width, q.cell)).collect();
+        digits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(digits.iter().map(|d| d.1).collect::<Vec<_>>(), [2, 7, 3], "27 seconds, then the count 3");
+        assert!(q.iter().any(|q| q.sprite == 0x33), "the challenge icon");
+        s.laps = 1;
+        let q = h.quads(&s, &sprites);
+        assert_eq!(q.iter().filter(|q| q.sprite == 3).map(|q| q.cell).collect::<Vec<_>>(), [2], "two laps to go");
+    }
 
     #[test]
     fn elements_slide_in_and_out() {

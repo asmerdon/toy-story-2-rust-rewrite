@@ -1,326 +1,138 @@
 # Handover: Toy Story 2 Rust rewrite
 
-Last updated 2026-10-31 (verification and user-report fixes; see the first entry). **Level 1 is complete and signed off by the user.** Every level
-(2–15) now has its script ported; none of 2–15 has been fully playtested. This file explains
-how the project works, what has been done, what went wrong along the way, and how to carry on.
+Last updated 2026-10-31. This file is the resume point: current state first, then the open
+issues and next direction, then reference sections (§1–§10). Dated history lives in
+[MODLOG.md](MODLOG.md) and git. Per-interaction test coverage lives in
+[docs/coverage.md](docs/coverage.md); keep it there, not here.
 
-Read this first. Then read `docs/re/functions.md` (every identified exe function, with what we
-know about it) and `docs/formats/*.md` (`ngn`, `terrain`, `anim`, `packets`, `all`).
+Read [AGENTS.md](AGENTS.md) (delegation and evidence rules) and [PROJECT.md](PROJECT.md)
+(ground rules). Then `docs/re/functions.md` (identified exe functions) and
+`docs/formats/*.md`.
 
 ---
 
-## 2026-10-31 (third pass): second round of playtest reports — newest, read first
+## Current state (2026-10-31)
 
-The user retested. Everything reported before is fixed, except what's listed below. Their new reports, with status:
+- **Campaign:** all 15 levels and the front end are ported and playable in `ts2-viewer`.
+- **Level 1:** signed off by the user.
+- **Levels 2–15:** the user played through them in two rounds of reports; every reproduced report has been fixed (see the list below).
+- **Not done:** no level other than 1 has a full sign-off.
+- **Tests:** 185 pass in 37 suites with `TS2_GAME_DIR` set. The release viewer builds.
+- **Git:** work is on `dev` (local `master` tracks `origin/dev`). The user asks before each push.
 
-| # | Report | Status |
-|---|---|---|
-| 1 | Level 5 bones challenge: one bone missing | **Not reproduced**: all five (0x61–0x65, y 827 over the water) exist, can be collected (`bones_all_collectable`) and show once the challenge starts (`l5-bones-0.png`). Ask the user which bone and when |
-| 2 | Clipping: L1 windowsill, L13 conveyor ends | Fixed L13 (Opus helper): the **boundary walls** (TERRAIN kind 0x101, read by 0x484380 / 0x48C860; see docs/formats/terrain.md) were never loaded, and belt pushes weren't swept. L1 windowsill **not reproduced**; ask the user for the spot. Sweep `examples/clipsweep.rs`: edge falls in L5/7/8/10 look like open pits, not verified against the original |
-| 3 | L14 enemies moving fast | Likely fixed with 4: the setup wrote 0x708 into every creature's flags (chase 8, harmful 0x100, touched 0x200); the original writes the draw distance at +0x42 |
-| 4 | L14 starts in a race and talking to Hamm | Fixed (same cause); `standing_at_the_start_starts_no_talk_or_race` |
-| 5 | Final level: should be walled at the back | Fixed: a 29-segment boundary loop closes it; `final_arena_back_is_closed_by_its_boundary_wall` (replaces the fall-plane test; 0x436220 still applies to real falls) |
-| 6 | Draw order: helicopter over the flagpole, power-ups over walls | Fixed (Opus helper):
-- Specials now follow 0x4CDDD0's per-layer rules on every level: layer 1 drawn beyond 1000 (0x5088B4) in the low-detail pass, before the depth clear; layer 0 within 12000 (0x5088B0), clipped like the detailed set.
-- Level 1 is pixel-identical indoors.
-- Test: `specials_of_each_layer_have_their_own_distance`. Shots: `out/rv/cmp/*`, sweep sheets `out/rv/sweep/sheet-lN.png`.
-- Open:
-  - L13 follow camera ends inside Buzz's head after 300 ticks.
-  - The far-set near clip of 10000 is not applied (it showed holes).
-  - Creatures draw within 10176 rather than the original's active list. |
-| 7 | L7 skateboards (stomp to ride) | Ported by a Sonnet helper (the user stopped it before it reported): `Level7::skateboards` from 0x421340; tests `skateboard_*`. No shot checked |
-| 8 | Hide the cursor in play | Done: `sync_cursor` (hidden and confined while playing, released on focus loss) |
-| 9 | First-person model visible in cut-scenes | Done: 0x4020F0 ends first person; `Look::cancel` called when a script look-at begins |
-| 10 | L12 Zurg intro sinks into the floor | Fixed: the height goes to slot +0x60 (target), not home; `zurg_entrance_stays_above_the_floor` |
-| — | All bosses: attacks exactly as the original | Audited (Opus helper); 15 regressions in `tests/boss_attacks.rs`.
-- **Fixed:**
-  - The stale cut-scene tick count (0x50A1F4) in level6/9/3. It skipped the campaign-3 fly-in and death scene, the level-9 rise and its rounds, and the slime's regrow.
-  - Campaign 3: hit flash and lean.
-  - Slime: blob heading, lid drop height, wait while regrowing.
-  - Level 9: minions kept near the middle; beam wrap.
-  - Zurg: lob z uses facing − 0x80.
-  - Final arena: swing rates; wave-4 speeds; suitcases' target height.
-  - Dino: fire only in room 4.
-  - Car boss: missile pitch 0x400, taunt.
-  - Prospector and blacksmith: zone checks.
-  - Blacksmith shockwave: vy −2 (it never homed).
-- **Matching:** Tin Man, kite, clown, spider, gunslingers.
-- **Open:**
-  - Shared kill (0x405D20) plays sound 10 for all types; the original plays it only for death-burst types, and type 0x30 plays −2 plus 0x410540.
-  - Drill's state 5 and weapon check.
-  - Level 9 flail animation phase, lights, sparks; camera picks every 0x1E ticks.
-  - Level 15 swing outside phase 2; boss 3 hurt voice (r − 0x3C).
-  - Dino fire from node 1; campaign 3 dust uses floor height.
-- The lid test's y tolerance was loosened to 0x600: the original places the lid before rescaling. |
+### Fixed from the user's playtests
+Every fix below comes from the original's code, has a regression test, and was mostly checked with offscreen shots. The user has only re-played the first round's fixes.
 
-Open collision details:
-- The edge-cylinder slip: a body starting slightly inside an edge ignores it, and a naive fix broke the boundaries.
-- The camera is pulled in by boundary walls. The original's camera reads them too, but this is unverified.
-- Creature rays against boundaries are not done.
-- The mover carry is still added to position unswept.
+**Collision and movement**
+- Boundary walls: TERRAIN kind 0x101 lists (0x484380 / 0x48C860). These close the final arena's back and the airport's conveyor ends. See docs/formats/terrain.md.
+- Belt pushes are swept (0x48B660).
+- Fall plane under the lowest collision point (0x436220).
+- i64 maths in creature contact and the laser ray. Large levels overflowed i32, which caused Level 14's constant damage.
+- Start-floor snap (0x4863A0): Level 13 starts on the X-ray conveyor.
 
-Pushed `6653ae3` and `0e879a2` to dev. The boss audit (184 tests in 37 suites) is committed locally, not yet pushed.
+**Drawing**
+- Specials are drawn by their own layer and distance rules (0x4CDDD0): power-ups and the helicopter no longer show through walls, and the two layer copies no longer z-fight.
+- Level 4: room/portal visibility (0x4BC460), applied to Level 4 only, and the paint-room hatch.
+- The sky fill matches the background picture (sRGB).
 
-## 2026-10-31 (later): verification and the user's playtest reports
+**Bosses**
+- Boss levels keep their own music.
+- The slime wears its lid (node 10).
+- Attack audit of all 15 bosses and minibosses, with tests in `tests/boss_attacks.rs`. It fixed:
+  - the stale cut-scene timer (0x50A1F4), which skipped intros and death scenes;
+  - projectile headings;
+  - zone checks;
+  - the final arena's waves.
+- Zurg's entrance height.
 
-Objective: verify commit `7c34cc9`, then fix what the user found in a playtest. Nothing
-committed. Per-level coverage now lives in [docs/coverage.md](docs/coverage.md); keep it there.
+**Levels**
+- Level 2's troop holes.
+- Level 7's skateboards. Ported by a helper the user stopped; the tests pass, but no shot was checked.
+- Level 14's start-up no longer marks every creature touched, harmful and chasing (0x708 is the +0x42 draw distance). That had started Hamm's talk and the race at once.
+- Challenge countdowns: HUD element 6 from 100 up (0x49FD40) shows seconds and the collected count.
+- The slime level's laser power-up (special 0x32, `Kind::Timer`) appears from the third round, as in the original.
 
-Helpers used under AGENTS.md:
-- Level 2 holes: Sonnet (standard).
-- Particle homing: Sonnet (standard).
-- Final-level fall and fight: Opus (advanced).
-- Level 4 visibility: Opus (advanced).
-All helpers ran one at a time, and the main agent reviewed each one's diff.
+**Front end and viewer**
+- The level select sits inside the Etch A Sketch (0x494130, map variant 1), and the map cars' heading is fixed.
+- The cursor is held while playing.
+- A look-at scene ends first person (0x4020F0).
 
-### Verified first
-- `tilted_mover_matches_rendered_special_rotation` and `later_levels final_arena` pass.
-- The full suite passes and the release viewer builds. At the end of this session: 160 tests in 36 suites, all passing.
-- Post-fix shots inspected:
-  - Level 2 background picture (`out/verify/level2-*`).
-  - Level 15 suitcases, which sit in place.
-  - See-saws: not re-shot; covered by `continuation_audit` simulation only.
+### Open issues (exact next steps)
 
-### Fixed (cause → fix, evidence)
-| Report | Cause | Fix | Evidence |
-|---|---|---|---|
-| Background colour ≠ picture | Flat fills got raw sRGB bytes as linear vertex colour; textures are sRGB-decoded (fill drew (99,66,143) against the picture's (32,14,70)) | `sky_batch` samples the picture's corner texels for the fills; without a picture the colour is linearised | `level2-sky-fixed.png`: seamless |
-| Boss music switches to miniboss theme | 0x49EAC0 is called only by normal levels' scripts; boss scripts 0x41AA10/0x420060/0x424490/0x42B3A0/0x42FC50 restart their own track (0x52AD8A) at fight start | `music::level_switches_theme`, viewer `theme_events` | unit test |
-| Level 6 slime has no trash-can lid | Port placed special 0 once; 0x41AA10 sets it each tick on node 10 (−700, then −0x20) via 0x43C1C0 with a wobble (0x52F6F8); it drops from 0x3E9 | `level3.rs`; `scene::creature_node_point` now uses rest pose for nodes an animation doesn't move (as the renderer does) | `slime_shrinks_over_four_rounds` lid check fails before (1250/1295 ticks off), passes after; `level6-slime-0.png` |
-| Level 2 hole-stomping troop | 0x4190C0's mole game wasn't ported; also `think` pinned flag-0x20 creatures to home y, not target y (+0x60) | `Level2::troop_holes`; `creatures.rs` target[1] | two tests in `tests/level2.rs` |
-| Level 14 constant damage | `Creatures::contact` (0x407440) squared/multiplied object units in i32; level 14 spans >10⁶ units, so far creatures (slot 46, id 0x3A, ~50,000 units away) wrapped to "touching" | i64 maths in `contact` and `laser_ray` | `tests/level14.rs` fails before, passes after; teleport grid lost 14→4 health before, 14→10 after (left: propellers, a real hazard) |
-| Main-menu (level select) cars backwards | 0x438910 calls 0x4520D0 with (Δz, −Δx) | `Select::move_pieces` heading | decompile only; not visually confirmed |
-| Level select not inside the Etch A Sketch | Scenes > 10 load variant 1 (0x452FC0), so the map is `level1t1.ngn` with `etch_lh/rh` (tex32/33); 0x494130 draws 14 screen quads (tables 0x500B20 / 0x500AB0, read at runtime) zooming in over 55 ticks | `Screen::Select.variant() = 1`, `Frame::panels`, `front_batches`; viewer `scene_file` uses the base scene's .dat/.raw for variants (levelt1.cfg) | `select-etch.png`; frontend test |
-| Final level: falling off the back | Not a missing wall: the floor ends at x +6500, as in the original. 0x436220 kills Buzz 0x2000 object units under the lowest collision point (0x489C30, 0x729124); the port silently reset him at +4000 | `World::lowest`, death via `hurt(0, 4)` (all levels) | `final_arena_running_off_the_back_kills_buzz_at_the_fall_plane` |
-| Final fight (attacks) | Blacksmith/prospector swing needed 0x4076F0's chase bit (`Step.chase & 1`), not checked; 0x66 particle vy −2; gunslinger keeps its speed on defeat | `level15.rs`, `Creature::step` | `final_arena_bosses_swing_only_while_chasing`, `final_arena_fight_hurts_buzz_and_all_three_bosses_fall_to_hits` (real attacks, hits via `hit`, defeat, rescue) |
-| Spawn points (11–15) | ResetPlayer snaps with 0x4863A0 → 0x486520 (nearest floor above within 2048, from 32 above), +8; port took the floor below. Only level 13 differs: it starts on the X-ray conveyor | `World::start_floor` | `level_13_starts_on_the_conveyor_above_its_table_point`; `l13-start-orig.png` |
+**Reported but not reproduced**
+- Level 1: fell out at the living-room windowsill. Needs the user's spot.
 
-Tools added: the `--shot` script takes `tp:x,y,z[,facing]` (level units) and `?` (prints
-Buzz's position, health, floor). Use them to reproduce reports at real coordinates.
+**Collision**
+- If the body starts slightly inside an edge cylinder, it ignores that edge (`sweep_edge` / `sweep_point`). A naive fix broke the boundary walls.
+- The mover carry is not swept.
+- Creature rays don't test boundary walls.
+- The camera against boundary walls is unverified.
+- Open edges in L5/7/8/10, found by `examples/clipsweep.rs`, are unverified against the original.
 
-### Still open (exact next steps)
-1. **Level 4 (done this session, Opus helper):**
-   - The hatch is two specials (0x40 outside, 0x3F inside). 0x41C640 folds their y scale (0x52F7D0) to 0 by 0x200 a tick while Buzz is within 0xFA × 256 of (0x51B97, −0x104FD, 0x5E58E), and back to 0x1000 otherwise. Ported in `level4.rs`.
-   - Interior props showed through walls because the port lacked the original's room/portal walk (0x4BC460: chunks 0x102 / 0x103, camera room via 0x4885C0, facing and view tests 0x4BACF0 / 0x4BA2F0, room 0 always drawn) and the 12000 cut for layer-0 specials. Now in `scene::Portals` and the viewer's `RoomCull`, **gated to level 4 only** (`ROOM_CULLED_LEVELS`).
-   - Level 1 shots are pixel-identical before and after. Tests: `paint_room_hatch_opens_for_buzz`, `paint_room_seen_only_through_its_portals`, plus viewer unit tests. Shots: `out/verify/cmp_*.png` and `l4f_*` (free camera; the play+cam shots are not valid evidence).
-   - Open:
-     - Creatures and pickups are not yet room-gated (0x447BD0 checks the creature room byte +0x6C; its writer is not found).
-     - Levels 1, 2, 5 and 10 have portals but still draw everything; 2 and 10 have their own 0x440F70 overrides.
-     - The hatch room lighting (0x54F3BC / 0x54F3DC) is not ported.
-2. **Particles (0x410F40), done this session (Sonnet helper):**
-   - Flag-8 homing now applies to every kind (vy −1 = Buzz, gravity = yaw, +0x20 pitch, −1 = flat). It uses the original's constants: frame period 0xC4 → speed /8 and steering (life/16)² + 4; otherwise /16 and 8.
-   - Kind 0x2B hugs floor − 0x800; kind 0x2C dies above floor − 0x1000.
-   - **This changes Zurg's shots (level 12):** they now steer weakly at first. The Zurg particle test was updated to match.
-   - Still open: creature-targeted homing, trails 0x6B / 0x2C / 0x69 / 0x6A, and whether the blacksmith shockwave actually lands more (the fight test's counts are unchanged).
-3. **Level 14 "things not animated":** the user didn't say which. Rain and lightning aren't
-   ported; ask them which objects.
-4. Mode-4 death countdown: original 0x2E ticks, port `die()` 0x78. Unchanged.
-5. The 0x101 record in TERR1.ALL (a closed loop near x 6410–6450) has no reader outside the
-   loader; it's treated as unused.
-6. Car heading and the Etch A Sketch zoom need the user's eye. Levels 2–15: work through
-   docs/coverage.md.
+**Drawing**
+- Room culling only applies to Level 4. Levels 1, 2, 5 and 10 have portals, and 2 and 10 have their own 0x440F70 overrides.
+- Creatures and pickups are not room-gated (0x447BD0, creature room byte +0x6C).
+- The far set's near clip of 10000 is not applied.
+- Creatures are drawn within 10176 rather than from the original's active list.
+- The Level 13 follow camera can end up inside Buzz's head.
 
-## 2026-10-31: recovered continuation status
+**Bosses**
+- Shared kill (0x405D20) death sounds per type.
+- The drill's state 5 / weapon check.
+- Level 9: flail animation phase, lights, sparks, and the camera's every-0x1E-tick pick.
+- Level 15: swing outside phase 2, and boss 3's hurt voice.
+- The dino fires from a fixed offset, not node 1.
+- Campaign 3's dust uses the boss's height, not the floor height.
 
-The user requested a documentation update after the session hit its usage limit. This entry records the interrupted work; no new gameplay changes or test runs were made on October 31. Tracked implementation and agent guidance are already saved in commit `7c34cc9`. The pre-existing untracked recordings, screenshots and `ChatGPT Log.md` remain untouched. Do not infer push status from the local commit.
+**Missing features**
+- The countdown tick sound (0x5E in 0x49FD40).
+- Pause menu.
+- Options (0x4371B0).
+- Movie viewer (0x453FA0).
+- Credits.
+- Loading pictures.
+- Attract demo.
+- Level 8 electric arcs and cannon.
+- Drips, dynamic lights and floor shadows.
+- Shield slowing Buzz.
 
-### Scope and working rules
+**Unconfirmed**
+- Level 14's "things not animated": the user didn't say which. Rain and lightning aren't ported.
 
-Continue the Rust rewrite within PROJECT.md's clean-room boundaries. AGENTS.md now defines provider-neutral economical/standard/advanced capability tiers, direct work for small tasks, one helper at a time, bounded briefs, escalation, and evidence requirements. CLAUDE.md links to it. The previous session used one inherited-model helper for sequential read-only boss/rendering investigations; no cheaper model was selected. Helpers consulted relevant level scripts, creature interpreter, world/scene/specials code, viewer integration, tests, and private original routines. Main-agent checks reproduced the consequential bugs.
+### Next direction: OpenTS2
+The user wants to distribute the project as **OpenTS2**:
+- an installer;
+- a launcher UI to play the original or a modded version, or open the level tester (free camera);
+- later, a free-camera level editor and modding (playing as other creatures, importing animations from other Rust rewrites).
 
-### Saved implementation
+The app icon is a Pizza Planet token. OpenMW is the model to follow: an engine that uses the user's own data, a launcher, and a separate editor. The brief for that work is in [docs/opents2-brief.md](docs/opents2-brief.md).
 
-| Area | Change / evidence | Status |
-| --- | --- | --- |
-| See-saws | `src/game.rs` now applies Z/Y/X rotation, matching `scene::instance_matrix`, rather than X/Y/Z. `tilted_mover_matches_rendered_special_rotation` failed before and passed after the fix. | Focused regression verified; final broad regression and visual playtest pending. |
-| Backgrounds | `examples/continuation_audit.rs` found decodable type-36 pictures in campaign levels 01–07, 09, 11, 13, 14. None in 08, 10, 12, 15. `sky_batch` draws the opaque picture before flat fills: the prior strict Greater depth test rejected the picture at equal depth. | Asset evidence verified; post-fix rendering not yet inspected. |
-| Floating suitcase | `src/level15.rs` places far specials 1/4 in full level units (`>>5`), matching near specials 0/3. Original setter 0x4CCE30 scales second-layer coordinates by four; Rust's setter does not. | New alignment test failed before and passed after. |
-| Creature jump continuation | `src/creatures.rs` landing advances `pc` by one i16 word, not two. Original 0x4076F0 advances two bytes. The old port could resume on an operand. | Saved; broad jumping-creature regression pending. |
-| Final boss attack | Blacksmith attack rates changed from positive 64 to negative 64. Positive rates depend on movement and freeze after the script sets speed to zero; original behavior uses negative rates. | Saved; result of the last coupled test/build command was not recovered. |
-| Test coverage | `tests/later_levels.rs` adds LOD suitcase alignment and a coupled test that calls creature ticking as well as level scripting. | The coupled test reproduced a frozen boss before the last rate fix. Do not claim it passes until rerun. |
+### Facts and pitfalls worth knowing
+- **Offscreen screenshots:** `ts2-viewer [--level N] --shot out.png "<script>"`. Script words:
+  - numbers: frames to run
+  - `play`: start as Buzz
+  - `+Key` / `-Key`: press and release a key
+  - `cam:x,y,z,yaw,pitch`: hold the view (level / 256, y and z negated)
+  - `tp:x,y,z[,facing]`: teleport, in level units
+  - `?`: print Buzz's state
 
-`examples/continuation_audit.rs` simulates the five see-saws in levels 01, 02 and 05. After the rotation fix it observed sustained contact and tipping on all five. An initial Level 05 probe was outside the short plank at offset -700; using -350 reached its collision surface. That initial miss was a diagnostic placement error, not evidence of absent collision. Level 01's attic remains the signed-off reference; its single-axis rotation is unchanged.
+  In play mode, rooms come from the follow camera, so use free-camera shots to check culling.
+- **Front-end scenes:**
+  - Scene 0 is `level00\level.ngn`.
+  - The map is scene 16, variant 1: `level06\level1t1.ngn`. Scene ids above 10 load variant 1 (0x452FC0). Variants use their base scene's `.dat` / `.raw` (`scene_file`).
+  - Picture n is texture slot n (`bgr40` = 0x28).
+  - Menus are drawn on a 320-wide screen, the level select on a 512-wide one.
+- **Creature slot fields:** +0x40 flags, +0x42 draw distance, +0x50 home, +0x5C target (+0x60 is the hover/pin height), +0x68 target facing. Several bugs came from writing home or flags instead of target or +0x42.
+- **Vertex colours:** the shader reads RGB from bytes 1–3. Anything that tints vertex colours must offset by one.
+- **Culling follows the materials:** mode bit 8 means cull-none (0x4B6760).
+- **Negative sound ids from scripts are jingles.**
+- **Level 4's paint puzzle** starts empty (0x41C190).
+- **Footsteps** come from frame-list markers 0x81 / 0x82.
+- **Shell trap:** `python -` or `cat >` with no input hangs the command chain. Use heredocs or scratchpad scripts.
+- **PS1 recompilation:** github.com/PeriBluGaming/ToyStory2Recomp can be used as a playable reference only. The PC exe is the source of truth.
+- **Music:** `TS2_CD_DIR` or the ignored `ts2-media.txt` points at the folder containing `audio/`.
 
-### Verification actually observed
-
-- Before implementation, `cargo test --release --offline` completed successfully with `TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2`.
-- The rotation regression failed before the fix and passed afterward.
-- The suitcase alignment regression failed before the position correction and passed afterward.
-- `cargo test --release --offline --test later_levels final_arena -- --nocapture` still failed on a stationary boss after the landing and suitcase fixes, before the final negative-rate correction.
-- The final command reran that test and requested `cargo build --release --offline --bin ts2-viewer`; its completion result was lost at interruption. Source is saved, but neither final success nor binary freshness is established.
-- Inspected pre-fix screenshots `out/continuation/level02-before.png` and `level04-before.png`, plus extracted `background02.png` and `background04.png`. These show the pictures exist (neighborhood sunset and construction skyline). No post-fix image has been inspected. All are local ignored outputs, not distributable assets.
-
-### Unresolved findings and next actions
-
-1. Run the focused final-arena and rotation regressions with game data, then the full release suite and release viewer build. Extend the boss test to verify attacks, real hit calls, defeat and rescue; the older test directly assigns health and never ticks creatures, and the new coupled test only checks movement/HUD so far.
-2. Render and inspect matching post-fix background views, final-level suitcase/intro/fight views, and rotated see-saws. Preserve Level 01 behavior. Use offscreen `--shot` to avoid taking over user input.
-3. Level 04: detailed static geometry clips at 12,000 view-depth units, while dynamic specials are unlimited; depth clears between far and near passes. Interior props can therefore appear over far walls. Original 0x4CDDD0 also uses room/portal selection (0x4BC460), absent here. No fix was made. Investigate near-layer-special range matching and room visibility without blindly clipping far-layer specials. Paint-room reference: level coordinates [9500,-4000,19050], zone 2; exterior walls zone 1.
-4. Final-level falling: unresolved. `level05/TERR1.ALL` contains four static collision objects and no movers; do not invent a missing mover link or barriers. The displaced suitcase had no matching collision and may explain some falls, but that is an inference. Reproduce actual fall coordinates against collision after the visual correction.
-5. Secondary boss discrepancy remains: original blacksmith/prospector proximity attacks require shared movement Step.flags bit 1; the port does not check it. Investigate before changing behavior.
-6. Build an explicit coverage checklist and test scriptable interactions in campaign levels 02–15. This exhaustive pass has NOT been completed or claimed. Existing tests and script inventories are a starting point, not full playthrough coverage. Older front-end/gadget tasks below remain outstanding unless superseded by later verified entries.
-
-## Progress and what's left (2026-10-21)
-
-### Where it stands
-
-| Area | State |
-|---|---|
-| Level 1 | Complete, signed off by the user |
-| Levels 2–10 | Scripts ported; not playtested (the user is working through them in order) |
-| Levels 11–15 | Scripts ported and simulation-tested; not playtested |
-| Level 4 paint puzzle (token 3) | **User confirmed it works**, jingles included; they repeated (same-sample notes), now played once per run of one sample |
-| Level 8 claw machine (token 3) | Ported and simulation-tested; not playtested |
-| Rocket boots, hover boots, grappling hook | Ported and unit-tested; not playtested |
-| Footsteps, footprint trails, wading slowdown | Ported; **user confirmed all three** |
-| Stomp swirl (particles 0x12 / 0x13) | Ported; not checked in the viewer |
-| Two-sided materials (fences, boards, cut-outs) | From the material bit (mode 8) in both mesh sets; level 1 confirmed. User still sees level 2 pool water drawing over everything; not reproduced in shots (needs their spot) |
-| Front end | Title, menu and map confirmed by the user. New, needing a playtest: movies (logos, trailer, level intros, boss movies), results after normal levels, boss-defeated after boss levels, game over when lives run out (lives and abilities now carry across levels), "SAVE GAME?" (Slinky) and the load / save screens |
-| Tests | 142 pass with `TS2_GAME_DIR` set; release build clean |
-
-### Still to do, in order
-
-1. **User re-tests** the paint jingles, then the claw machine, boots and hook (paint, fence
-   and level 1 confirmed 2026-10-21). Fix what they report.
-2. **Front end, rest of it:** done: title, menu, level select, results, boss defeated, game
-   over, save prompt and the load / save screens (0x49D910's flow is in functions.md;
-   scenes and variants in `campaign::variant_path`). Left: the pause menu (Escape quits to
-   the menu for now), options (0x4371B0, scene 0 variant 2), the movie viewer (0x453FA0),
-   credits (0x43A380, variant 3), loading pictures (`gfx\levelNx`), the
-   attract demo, and the level select's per-level sound (0x4A3B90). The viewer switches
-   scenes by rebuilding itself with `load()` and `attach()` on the same window.
-3. **Saves:** done (`src/save.rs`, the original's format). Not kept yet: health between
-   levels, the movies-seen and boss flags (+0x157 / +0x158, kept as loaded), volumes.
-4. **Music changes:** done: miniboss and race themes (0x49EAC0, `music::theme`), and the
-   front end's tracks (title, menu, results, game over, boss defeated). Needs a listen.
-5. **FMV playback:** done (`src/fmv.rs`: own demux, `oxideav-mpeg12video` for the video in
-   background runs of 4 GOPs, Symphonia for MP2). Needs a watch. The movie viewer menu (0x453FA0)
-   isn't ported.
-6. **Playtest-and-fix pass over levels 2–15** in campaign order.
-7. **Smaller gadgets still skipped:** level 8's electric arcs (0x422D20) and room 2 cannon,
-   level 11's lights / room 5 overlay / slot 31 constraint, drips, dynamic lights (0x44F200),
-   floor shadows, the stomp's camera shake, the shield slowing Buzz (0x436220 reads 0x52F398:
-   weaker jump −0x3C0, gentler acceleration; not ported).
-8. **Side projects** the user wants afterwards: a tool to replace characters and textures
-   (assets already load at runtime, so an override folder checked first is the natural
-   route), and a web build (wgpu and winit run in the browser; audio via rodio and file
-   loading need web versions).
-
-### Recent findings worth knowing
-
-- **Front-end scenes:** scene 0 is `level00\level.ngn` (pictures `bgr40`–`bgr44`, font `tex31`),
-  scene 16 the level-select map `level06\level1.ngn`. The original's texture table is global
-  and each scene only partly fills it, so the map uses scene 0's `tex31`: `load()` borrows it.
-  Menus draw in a 320-wide sprite screen, the level select in 512.
-- **Negative sound ids from level scripts** are jingles (pushed as `0xFFFx`); the viewer now
-  routes them, which fixed level 4's paint sounds.
-
-- **Vertex colour bytes:** the shader reads red, green, blue from bytes 1–3 (`color.yzw`), not
-  0–2. Anything tinting vertex colours must offset by one (fixed for lit creatures).
-- **Layer 1 is not just low detail.** The original draws the second mesh set only from 10000
-  out, then clears depth and draws the first set. We draw layer 1 whole under layer 0, so
-  anything missing from layer 0 shows layer 1's copy with props drawn over it.
-- **Culling follows the materials** (`Material::two_sided`): mode bit 8 → cull-none
-  (0x4B6760 sets render state 0x40), in both mesh sets; everything else is back-face
-  culled, except pure-black faces of two-sided materials, which stay culled. An earlier
-  thickness guess ("flat sheets") dropped billboards in thin meshes (level 1's carved
-  headboards) and culled the far set's fences from behind; it's gone.
-- **Screenshots without a window:** `ts2-viewer [--level N] --shot out.png "<script>"`
-  renders offscreen, silent: numbers run frames, `+Space` / `-Space` press and release,
-  `play` starts Buzz, `cam:x,y,z,yaw,pitch` holds the view. Use it to check rendering
-  and menus yourself before asking the user.
-- **Paint puzzle state:** the paint starts empty and colourless (height 0, light 0), as
-  0x41C190 sets it. Specials 0x33–0x35 are the lit green signs, 0x30–0x32 the grey ones.
-- **Footsteps** come from frame-list markers 0x81 / 0x82, now on `BuzzAnimator::feet`;
-  `Player::foot_effects` ports 0x4A2D80's sounds and prints.
-- **Shell traps:** a bare `cat >` or `python -` with no input hangs the whole command chain.
-  Write scripts to the scratchpad and use the Edit tool for source changes.
-
-## 2026-10-20: levels 11, 13–15 (Claude session)
-
-- **Context:** a PS1 static recompilation exists (github.com/PeriBluGaming/ToyStory2Recomp).
-  It's machine-generated C with almost no symbols, so it isn't ported from; it serves as a
-  playable reference for how levels behave. The PC exe stays the source of truth.
-- Levels 13–15 (written by the ChatGPT session, which hit its limit mid-level-14) were
-  checked, formatted, given level 14 tests and committed. Two bugs fixed in them:
-  `set_script` takes a **word** index (pass `0x1C / 2`, as levels 2–10 do; the drafts passed
-  byte offsets), and `story.hints` must be set **before** `load_story` or the hint texts
-  aren't loaded.
-- Level 11 (Al's Penthouse) ported in `src/level11.rs`: water levels, valves, plug, pipes
-  and the boat's routes, floats, six turrets and their buttons, doors, spring, horse
-  challenge, critters, gunslinger. New creature routines 0x28 / 0x29 / 0x2E.
-- `Boxes::pushed()` exposes 0x53C648. `campaign::script_available` is true for all 15.
-- Verification: **117 passed** with `TS2_GAME_DIR`; release build clean.
-- Then ported: level 4's "crane" (really a paint-mixing puzzle: the crane is a push box,
-  slot 5 is the PAINT creature lit in the mixed colour; token 3), level 8's claw machine
-  (token 3 is the prize), rocket boots, hover boots and the grappling hook (hook points =
-  list 59, targeted in first person as 1000 + index; hook ammo = pickups `ammo_a`).
-  Creatures gained `light` (+0x24–0x28) and `scale_y` (+0x2E); the viewer tints lit
-  creatures by `light` and scales by `scale_y`. Level 4's `given[3]` is now false (the
-  puzzle reveals it). 123 tests pass.
-- Remaining (in order): front end and level select, saves, boss/race music changes, FMV
-  playback; then the playtest-and-fix pass over levels 2–15. Small gadgets still skipped:
-  level 8's electric arcs (0x422D20) and cannon, drips, lights, floor shadows.
-- Lesson: `python -` (stdin) still hangs this shell. A command that starts with it blocks the
-  whole chain; write scripts to the scratchpad. The capstone venv lives in the session
-  scratchpad (`re/dis.py`: `dis|hex|i32 <va> <n>`).
-
-## Latest continuation: neighbourhood scenery, music and gadgets
-
-- User confirmed levels 3/6 ordering and signed off level 1. Focus is now level 2;
-  Zurg polish is deferred until their ordered playthrough.
-- Fixed missing neighbourhood house/fences/tree: zone 0 is not a camera-only zone.
-  The static pass excludes special-object instances, not zone-0 scenery. Camera
-  models remain under first-person control. Removed the old Z visibility toggle.
-- Original stereo level themes loop on a separate rodio sink. **M** toggles music
-  mute; SFX remain independent. `src/music.rs` reads names from exe table 0x4ECCD8
-  and campaign ordering from 0x50268C. PCM8/16 mono/stereo decoder validates chunks.
-- `TS2_CD_DIR` overrides the media root; local ignored `ts2-media.txt` is already
-  configured to the private extracted CD folder under the Codex chat's work/disc.
-  If that folder moves, update the config to the folder containing `audio/`.
-- Level 2: loaded the two pushable objects from exe table 0x4F1518; ported the
-  falling drawbridge and tree collision swaps, pump inflation, ball launch,
-  buoyancy, stomp interaction and splashes. Box push/progress cells allow scripts
-  to release a pushed object or reset tree progress through the existing interface.
-- Remaining level-2 visual effects: kite string and sky effects. Music currently
-  stays on the level theme; miniboss/race/completion theme changes remain to port.
-- Headless regressions cover scenery inclusion and level-1 camera exclusion,
-  all 15 music tracks, malformed/stereo PCM, pump/ball and bridge/tree transitions.
-  No viewer launched: user continues visual and listening checks themselves.
-- Verification: **107 passed** with `TS2_GAME_DIR` set and local CD music configured;
-  `cargo build --release --bins` and `git diff --check` passed.
-- Changes kept local for the user's preferred batch push. No game assets added.
-
-## 2026-10-19 continuation: read before the historical notes below
-
-**The missing-level diagnosis below was wrong. All 15 core asset sets are installed.**
-Levels 11–15 are `data/level01..05/level1.ngn`, with `level1.dat`, `level1.raw`
-and `TERR1.ALL` beside them. The original loader (0x452FC0) and Pconv configs confirm it.
-All 15 sets passed parser checks with `TS2_GAME_DIR` set.
-
-- `src/campaign.rs` separates campaign numbers from executable IDs. Campaign 3 is
-  internal 6 (Bombs Away); campaign 6 is internal 3 (Slime Time). Do not swap only
-  the scripts: sounds, starts, HUD and pickups must retain internal IDs.
-- Viewer: `cargo run --release --bin ts2-viewer -- --level N [game_dir]`.
-- Audit: `cargo run --release --bin ts2-tool -- audit-levels <game_dir>`.
-- `src/level12.rs`: Zurg setup/frame logic, intro, attack timing, recovery, death,
-  completion, HUD and camera. Animated node-1 projectile origin uses the renderer's
-  matrices via `Creatures::load_animations` / `node_point`.
-- `src/particles.rs`: Zurg bounce/trail routines 0x42B090 / 0x42B250, and the
-  flag-8 Buzz homing path in 0x410F40. Creature-targeted homing remains unported.
-- Level 12 is simulation-tested, **not visually signed off**. Lighting and the
-  nearest-light marker are not ported. Playtest the intro, spin hits, retaliation,
-  death fall, projectile muzzle position and camera.
-- Levels 11, 13, 14, 15 still need their scripts. Existing level 2–10 omissions remain.
-- Disc audit: 23 PCM WAVs decode cleanly; 22 MPEG video files are present. 21 report
-  an MP2 packet error during decode (at the end of the sampled level-1 intro).
-  `tracks.txt` is an old directory listing, NOT an authoritative track map.
-- Verification: full `cargo test --release` with game data: **100 passed**;
-  `cargo build --release --bins` passed. User preference remains to playtest themselves.
-- Current user prefers batching pushes at the end; this supersedes the historical
-  instruction below to push after every piece of work.
-
-See `docs/re/asset-audit.md` and `MODLOG.md` for details. No original assets were
-added to the repository or installed/modified in Program Files.
+---
 
 ## 1. What this project is
 
@@ -345,8 +157,8 @@ branch (local `master` tracks `origin/dev`). There is no `main` yet; the user ma
 - Write original Rust from understood behaviour; don't paste decompiler output. Name things by
   what they do and cite the exe address in comments (`0x417680`, `0x52F300`).
 - Record every identified function in `docs/re/functions.md`.
-- After each piece of work: build, run the tests, commit, push to `dev`.
-- **The user tests in the viewer themselves.** Don't launch the viewer; tell them what to try.
+- After each piece of work, build and run the tests. Commit and push to `dev` only when the user asks; they like a push before a session runs out.
+- **The user tests in the viewer themselves.** Don't launch an interactive viewer; use offscreen `--shot` renders to check things, and tell them what to try.
   If the viewer is running, `cargo build` can't replace `ts2-viewer.exe` ("Access is denied"):
   build with `--lib --tests --examples` instead and tell them to close it.
 - The user likes long autonomous runs and plain reports: what changed, what to test, what is
@@ -377,7 +189,7 @@ cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy
 set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
-(about 100 tests; those needing game data skip without `TS2_GAME_DIR`)
+(185 tests; those needing game data skip without `TS2_GAME_DIR`, which doesn't count as coverage)
 
 To re-run the Ghidra dump on the existing project (about 10 minutes):
 ```bash
@@ -468,24 +280,12 @@ the spring box), the swing bars (ledges), zip lines, the plank, the fan, the pop
 platforms, the garage drill bits, info signposts, hint Hamm, reward sparkles, the token menu
 and exit.
 
-### Levels 2–10: scripts ported, not playtested
-Each `src/levelN.rs` module doc lists what it covers. In short:
-
-| Level | Ported | Not ported |
-|---|---|---|
-| 2 | see-saws, water, Hamm, hint Hamm, the sarge's troops, stomp switches → door → spring, rope lift, the Zurg kite boss | drawbridge, tree, ball, squash pad, boxes list, kite string effects |
-| 3 | the slime boss (rounds, regrowth, look-at scenes) | lights, fog, drips, camera shake |
-| 4 | hanging platforms and rigs, shuttles, presses, drawbridge, button lift, water, characters, timed challenge, the drill boss | the crane combination puzzle (token 3), drips, lights |
-| 5 | gliding platforms, see-saws, trampoline, water, the clown, characters, challenge | the bubble machine, the falling gate, drips, fog |
-| 6 | the boss arena | music change, camera drift |
-| 7 | path movers and locks, spring, trampoline, egg challenge and gate, characters, the dino | bobbing platform and button race, rockets, chicks pushed by boxes, drips, sparks |
-| 8 | spinners, characters, flying race, water, the car boss | the claw machine, 0x422D20, the room 2 cannon, swaying specials, lights |
-| 9 | the boss, flails, minion rounds, chase, beam | flail call-up animation, sparks |
-| 10 | spinners, air shafts, fans, wind, lifts, vents, stomp-switch puzzle, sparks, characters, runaway token, the spider | lifts pausing while Buzz mantles onto them (0x559E80), lights, electric beams |
-
-Also not ported anywhere: rocket boots (0x4A4D60 etc.), the grappling hook (0x4A5370, list 59),
-lights (0x44F200), floor shadows, homing particles, footstep dust, music and FMVs, a front end
-or level select. Levels 11–15 data was subsequently located; see correction above.
+### Levels 2–15: ported, playtested in two rounds by the user
+Each `src/levelN.rs` module doc lists what it covers and what isn't ported. docs/coverage.md
+tracks each interaction: simulated, shot-checked, or user-played. The "Open issues" section
+above lists what is left. Systems that used to be listed missing here (rocket and hover boots,
+the grappling hook, homing particles, music, FMVs, front end, level select, saves) are all
+ported now.
 
 ## 6. Problems met, and what they taught
 

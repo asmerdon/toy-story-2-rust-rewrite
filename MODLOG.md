@@ -65,3 +65,9 @@
 - Viewer: cursor hidden and confined while playing. A look-at scene ends first person (0x4020F0).
 - Rendering: specials drawn by their own layer's rules on every level (layer 1 beyond 1000 in the far pass; layer 0 within 12000 after the clear, 0x4CDDD0 / 0x4BC460). This fixes things showing through walls and z-fighting. Level 1 is identical indoors. 169 tests pass.
 - Boss attack audit across the 5 boss levels and 10 minibosses. Divergences fixed with 15 regressions (`tests/boss_attacks.rs`); open items are in HANDOFF. 184 tests pass in 37 suites.
+
+## 2026-10-31 (fourth pass): countdowns, docs consolidation
+
+- HUD element 6 from 100 up draws the challenge countdown (two digits) and the collected count with icon 0x33 (0x49FD40). Before this, timed challenges and races showed no timer. The tick sound 0x5E is not ported.
+- Confirmed the slime level's laser power-up (19-polygon `Kind::Timer`, 0x53C824 = 1200) appears from the slime's third round; renamed its doc comment.
+- HANDOFF consolidated into one current-state section with open issues and next direction; dated history is now here and in git. README status refreshed. Added docs/opents2-brief.md (launcher/installer brief).

@@ -1387,6 +1387,7 @@ impl Viewer {
                     laps: self.script.as_ref().map_or(0, |l| l.laps),
                     boss: self.script.as_ref().and_then(|l| l.boss_bar).unwrap_or_else(|| self.creatures.as_ref().map_or(0, |c| c.boss.bar)),
                     boss_on: self.script.as_ref().is_some_and(|l| l.boss_hud),
+                    collected: challenge_count(self.script.as_deref(), self.pickups.as_ref()),
                 });
                 // 0x49EAC0: the miniboss theme while the boss bar shows, the race theme while
                 // the laps show with a race on (0x52F2F8 ≥ 2), else the level's own.
@@ -2046,6 +2047,7 @@ impl Viewer {
                     laps: self.script.as_ref().map_or(0, |l| l.laps),
                     boss: self.script.as_ref().and_then(|l| l.boss_bar).unwrap_or_else(|| self.creatures.as_ref().map_or(0, |c| c.boss.bar)),
                     boss_on: self.script.as_ref().is_some_and(|l| l.boss_hud),
+                    collected: challenge_count(self.script.as_deref(), self.pickups.as_ref()),
                 };
                 let ngn = &self.ngn;
                 let texture = |slot: i16| {
@@ -3295,6 +3297,14 @@ fn sky_batch(b: &packets::Backdrop, view_proj: Mat4, forward: Vec3, picture: Opt
         out.insert(0, Batch { texture: Some(tex), blend: scene::Blend::Opaque, vertices: v });
     }
     out
+}
+
+/// 0x830D4C for the HUD: during a countdown (laps ≥ 100) in a level with challenge
+/// collectables, how many are collected. Approximation: the original sets it when the
+/// challenge starts; a plain countdown (level 10's runaway token) has none.
+fn challenge_count(script: Option<&dyn ts2::script::Script>, pickups: Option<&ts2::pickups::Pickups>) -> Option<i32> {
+    let (l, pk) = (script?, pickups?);
+    (l.race == 2 && l.laps >= 100 && pk.items.iter().any(|i| i.kind == ts2::pickups::Kind::Collectable)).then_some(pk.collectables)
 }
 
 /// A scene's `.dat` / `.raw` beside its `.ngn`. The texture variants (`levelt1.ngn`,

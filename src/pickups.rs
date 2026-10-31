@@ -44,7 +44,8 @@ pub enum Kind {
     HoverBoots,
     /// 31, 50 or 80 polygons: a challenge item ("find five ..."), counted in `0x830D4C`.
     Collectable,
-    /// 19 polygons: sets `0x53C824` to 1200 ticks. Not identified.
+    /// 19 polygons: the laser power-up, `0x53C824` = 1200 ticks of power shots (the HUD's
+    /// power bar; e.g. the one the slime boss reveals from its third round, special 0x32).
     Timer,
     /// Any other model: flips the sign of `0x830D48` (a per-level value from 0x503A22).
     Other,

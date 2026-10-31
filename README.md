@@ -8,25 +8,22 @@ The original game's behaviour was worked out by reverse-engineering the exe with
 - File formats are documented in [`docs/formats/`](docs/formats/).
 - Where work stopped and what comes next is in [`HANDOFF.md`](HANDOFF.md).
 
-## Latest progress — 2026-10-31
+## Status — 2026-10-31
 
-The newest [HANDOFF.md](HANDOFF.md) entry has the details; [docs/coverage.md](docs/coverage.md) tracks what has been checked, level by level. Agents follow [AGENTS.md](AGENTS.md).
+All 15 campaign levels, the front end, saves, music and movies are in.
+- **Level 1** is signed off by the project's playtester.
+- **Levels 2–15** have been through two rounds of playtest reports. Every report that could be reproduced is fixed:
+  - collision walls and conveyor ends;
+  - boss attacks, checked against the original's code;
+  - drawing order;
+  - challenge countdowns;
+  - the Etch A Sketch level select;
+  - level-specific scripts.
+- **Not yet:** a full sign-off of levels 2–15.
 
-Fixed after the user's playtest. These have been checked by simulation and offscreen screenshots, not yet replayed by the user.
-- The sky fill now matches each level's background picture.
-- Boss levels keep their own music.
-- Slime Time's boss wears its trash-can lid.
-- Level 2's troop-in-the-holes stomp game works.
-- Tarmac Trouble no longer hurts Buzz from far-away creatures.
-- The level select sits inside the Etch A Sketch, and its cars face the right way.
-- Airport Infiltration starts on the X-ray conveyor.
-- On the final level, falling off the back kills Buzz, as in the original, rather than silently resetting him.
-- The final level's bosses only swing while chasing.
+[HANDOFF.md](HANDOFF.md) has the current state and open issues; [docs/coverage.md](docs/coverage.md) has what has been checked, level by level. Agents follow [AGENTS.md](AGENTS.md).
 
-- Homing shots follow the original's steering (the blacksmith's shockwave now homes; Zurg's shots steer gently at first).
-- Level 4's paint-room hatch folds open as Buzz approaches. Interior props no longer show through walls (the original's room/portal visibility, Level 4 only for now).
-
-Still open: room culling for creatures and other levels, and a full interaction playtest of levels 2–15.
+**Next:** OpenTS2, an installer and launcher (play the original or a modded game, or open the level tester), then a level editor and modding support. See [docs/opents2-brief.md](docs/opents2-brief.md).
 
 ## Requirements
 
@@ -64,6 +61,8 @@ The numbers follow the campaign order, so 3 is Bombs Away and 6 is Slime Time. `
 | M | Mute or unmute the music |
 | V | Switch between the original camera and a free follow camera |
 
+While you play, the mouse cursor is hidden and kept inside the window.
+
 When a level is opened with `--level`, F toggles between playing and a free camera, and Escape closes the window.
 
 ## What's in
@@ -71,13 +70,13 @@ When a level is opened with `--level`, F toggles between playing and a free came
 ### The game
 
 - **Buzz:** running, jumping, double jump, stomp, spin attack and charged super spin; the laser and its charged shot; first-person aiming with target lock; poles, ledge grabs, mantling, zip lines, swing bars, pushing boxes and swimming; springs; rocket boots, hover boots and the grappling hook; getting hurt, dying and lives.
-- **World:** the original collision data, movers that switch on and off, slide, tilt and carry Buzz, platforms on scripted paths, and room detection.
+- **World:** the original collision data (including the invisible boundary walls), movers that switch on and off, slide, tilt and carry Buzz, platforms on scripted paths, and room detection.
 - **Camera:** the original follow camera, the cutscene camera and the look-at scenes.
 - **Creatures:** the shared behaviour-script interpreter, hit shapes, combat and coin drops, and type-specific routines for the enemies and characters of every level.
 - **Pickups:** coins, batteries, extra lives, tokens, power-ups, the info signposts and ability-locked items.
 - **Level scripts:** all 15 campaign levels, with their characters, gadgets, challenges, races and bosses.
   - **Level 1 (Andy's House)** is complete and signed off.
-  - **Levels 2–15** are ported; they still need a full playtest.
+  - **Levels 2–15** are ported and playtested in two rounds; a full sign-off is still to come.
 - **HUD and conversations:** lives, batteries, coins, charge meters, challenge counters and boss bars; typed speech boxes and the talk camera; the "keep playing / exit level" token menu.
 - **Particles**, driven by the exe's own particle tables.
 
@@ -98,13 +97,14 @@ When a level is opened with `--level`, F toggles between playing and a free came
 
 ### Rendering
 
-- The original two-pass level draw (low-detail set in the distance, detailed set close up).
+- The original two-pass level draw (low-detail set in the distance, detailed set close up), with special objects following each set's distance rules, and Level 4's room/portal visibility.
 - Back-face culling decided per material, as the original does, so fences, boards and cut-outs are drawn from both sides.
 - Fixes for the level data's black faces and glass, and the PS1 background picture behind windows and the sky.
 
 ## Not done yet
 
-- A playtest-and-fix pass over levels 2–15 in campaign order. Expect bugs there.
+- A final sign-off pass over levels 2–15; see HANDOFF's open issues.
+- The countdown's tick sound; room culling outside level 4.
 - The pause menu (Escape quits to the main menu for now), options, the movie viewer, the credits, the loading pictures and the attract demo.
 - A few small gadgets: level 8's electric arcs and cannon, drips, dynamic lights, floor shadows and the stomp's camera shake; level 11's lights; level 12's lighting.
 - Health isn't carried between levels yet, and the sound and music volume settings aren't saved.
@@ -129,11 +129,11 @@ set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
 
-The suite (over 150 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
+The suite (185 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
 
 ## Tools for development
 
-- **Screenshots without a window:** `ts2-viewer [--level N] --shot out.png "<script>"` renders offscreen and silently. In the script, numbers run that many frames, `+Space` / `-Space` press and release a key, `play` starts Buzz, and `cam:x,y,z,yaw,pitch` holds the camera.
+- **Screenshots without a window:** `ts2-viewer [--level N] --shot out.png "<script>"` renders offscreen and silently. In the script, numbers run that many frames, `+Space` / `-Space` press and release a key, `play` starts Buzz, `cam:x,y,z,yaw,pitch` holds the camera, `tp:x,y,z` puts Buzz somewhere (level units) and `?` prints his position and health.
 - **Asset audit:** `cargo run --release --bin ts2-tool -- audit-levels "<game dir>"` parses the geometry, textures, models, point lists, spawns and collision of every campaign level.
 - **Diagnostics:** about 50 examples in `examples/` (`cargo run --release --example <name>`), listed in HANDOFF.
 

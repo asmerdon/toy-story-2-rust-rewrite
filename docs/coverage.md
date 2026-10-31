@@ -55,7 +55,8 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Gliding platforms | `platforms_glide` | | |
 | See-saws (2), trampoline | `continuation_audit` example (see-saws) | | |
 | Clown boss (token 4) | `clown_challenge_in_room_2` | | |
-| Bones challenge (2): all five exist, show and can be collected | `bones_all_collectable` | `l5-bones-0.png` (five visible after starting it) | reported one missing; not reproduced |
+| Bones challenge (2): all five exist, show and can be collected | `bones_all_collectable` | `l5-bones-0.png` | user's report was really the missing countdown |
+| Challenge/race countdown (HUD element 6 ≥ 100, 0x49FD40) | `hud::laps_from_100_are_a_countdown` | `l5-countdown.png` | reported missing; fixed |
 | Finder ducks (1), Hamm, hint | | | |
 | Not ported: stomp machine and bubbles, falling gate, drips, underwater fog | | | |
 
@@ -63,6 +64,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
 | Meeting, four rounds, pickup, death, end | `slime_shrinks_over_four_rounds` | | |
+| Laser power-up (special 0x32) from the third round | `slime_shrinks_over_four_rounds` (pickup shown) | | asked; confirmed present |
 | Trash-can lid on its head, dropped at death | same test (lid tracks node 10) | 2026-10-31 | reported missing before fix |
 | Own music throughout | `music::boss_levels_keep_their_own_track` | | reported before fix |
 | Not ported: light and fog, drips, camera shake | | | |
