@@ -662,3 +662,41 @@ fn final_arena_coupled_creature_simulation() {
     }
     assert!(l.script.boss_hud);
 }
+
+/// Type-0xD floors (0x53C818, levels 11 and 15): landing on one Buzz slides downhill on his
+/// own, faces down the slope and can't stop; leaving it for another floor ends the slide.
+#[test]
+fn sliding_floors_carry_buzz_downhill() {
+    let Some(game) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let t =
+        ts2::formats::terrain::parse(&std::fs::read(game.join("data/level05/TERR1.ALL")).unwrap())
+            .unwrap();
+    let world = ts2::game::World::from_terrain(&t);
+    // Level 15's slope, object 3 (normal (0, -0.69, 0.73): down towards +z).
+    let start = glam::Vec3::new(-500.0, -1100.0, -4600.0);
+    let mut p = ts2::game::Player::new(start);
+    let dt = 1.0 / 60.0;
+    let mut slid = false;
+    for _ in 0..90 {
+        p.update(&world, ts2::game::Input::default(), dt);
+        slid |= p.slip != 0;
+        if std::env::var_os("SLIDE_TRACE").is_some() {
+            eprintln!(
+                "  {:?} vel {:?} floor {} surface {:?} slip {} contact {:?}",
+                p.pos, p.vel, p.on_floor, p.surface, p.slip, p.contact_normal
+            );
+        }
+    }
+    eprintln!(
+        "from {start:?} to {:?}, slip {} surface {:?} floor {}",
+        p.pos, p.slip, p.surface, p.on_floor
+    );
+    assert!(slid, "never slid");
+    assert!(
+        p.pos.z - start.z > 300.0,
+        "slid downhill along +z: {:?}",
+        p.pos
+    );
+}

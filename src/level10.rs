@@ -384,14 +384,13 @@ impl Level10 {
         if player.stomp == 0 {
             return;
         }
-        let on = player.floor_mover.map(|(m, _)| m);
-        if self.opened & 1 == 0 && on == Some(4) {
+        if self.opened & 1 == 0 && player.touching_mover(4) {
             world.turn_mover(4, [0x180, 0, 0]);
             specials.turn_from_own(0x11, [0x180, 0, 0]);
             self.opened |= 1;
             self.put_out.push((0, 1));
         }
-        if self.opened & 2 == 0 && on == Some(5) {
+        if self.opened & 2 == 0 && player.touching_mover(5) {
             world.turn_mover(5, [0, 0, 0x180]);
             specials.turn_from_own(0x10, [0, 0, 0x180]);
             self.opened |= 2;

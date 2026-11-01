@@ -65,6 +65,11 @@ pub struct Level2 {
     tree_angle: i32,
     tree_speed: i32,
     holes: Holes,
+    /// The tree's falling leaves (0x4190C0): the canopy points (`level.dat` list 0, level
+    /// units), the next to try (0x52F6E4) and a drop waiting for a point near Buzz (0x52F678).
+    canopy: Vec<[i32; 3]>,
+    leaf_at: usize,
+    leaf_due: bool,
     common: Common,
 }
 
@@ -115,7 +120,13 @@ impl Level2 {
             tree_angle: 0,
             tree_speed: 0,
             holes: Holes::default(),
-            common: Common { given: [false, false, false, true, false], ..Default::default() },
+            canopy: Vec::new(),
+            leaf_at: 0,
+            leaf_due: false,
+            common: Common {
+                given: [false, false, false, true, false],
+                ..Default::default()
+            },
         };
         // 0x488AA0: the see-saws' turns.
         world.turn_mover(0, [0, 0x961, 0]);
@@ -124,6 +135,9 @@ impl Level2 {
     }
 
     pub fn set_story(&mut self, exe: &Exe, lists: &[PointList]) {
+        if let Some(l) = lists.iter().find(|l| l.kind == 0) {
+            self.canopy = l.points.clone();
+        }
         if let Some(l) = lists.iter().find(|l| l.kind == 2) {
             self.holes.points = l.points.clone();
             self.holes.filled = vec![false; l.points.len()];
@@ -311,6 +325,46 @@ impl Level2 {
         self.pad -= (self.pad - self.pad_target) / 8;
     }
 
+    /// The tree's leaves (0x4190C0). Every 4 ticks (16 once Buzz is up high, above
+    /// y −0xBE01), one time in eight, a leaf is due; each tick one canopy point is tried: with
+    /// Buzz 0x380–0x2800 below it and within 800 × 256, a leaf (particle 0x37, mode 0x13)
+    /// falls from up to 0x200 either side of it, spinning, onto the floor under 0x4000 up.
+    fn leaves(&mut self, world: &World, player: &Player) {
+        if self.canopy.is_empty() {
+            return;
+        }
+        let buzz = player.pos_obj();
+        let beat = if buzz[1] > -0xBE01 {
+            self.every(4)
+        } else {
+            self.every(16)
+        };
+        if beat && self.rand() & 7 == 0 {
+            self.leaf_due = true;
+        }
+        if !self.leaf_due {
+            return;
+        }
+        let p = self.canopy[self.leaf_at];
+        let y = p[1] * 32;
+        let below = buzz[1] - y;
+        if below > 0x7000 && below < 0x50000 {
+            let x = p[0] - 0x200 + self.rand() * 4;
+            let z = p[2] - 0x200 + self.rand() * 4;
+            let (dx, dz) = ((buzz[0] - x * 32) >> 8, (buzz[2] - z * 32) >> 8);
+            if dx * dx + dz * dz < 640_000 {
+                let floor = world
+                    .floor_below(x as f32, z as f32, -0x4000 as f32 / 32.0)
+                    .map_or(0x1460, |f| (f * 32.0) as i32);
+                let spin = self.rand() - 0x80;
+                self.drops
+                    .push(([x * 32, y, z * 32], 0x37, 0x13, spin, floor));
+                self.leaf_due = false;
+            }
+        }
+        self.leaf_at = (self.leaf_at + 1) % self.canopy.len();
+    }
+
     /// The switches, planks, door and spring (see the module notes).
     fn switches(&mut self, world: &World, specials: &mut Specials, player: &mut Player) {
         let surface = if player.on_floor && player.stomp != 0 { player.surface.filter(|s| (8..=0xB).contains(s)) } else { None };
@@ -494,6 +548,7 @@ impl std::ops::DerefMut for Level2 {
 
 impl Script for Level2 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, boxes: &Boxes) {
+        self.leaves(world, player);
         self.clock = self.clock.wrapping_add(1);
         if !std::mem::replace(&mut self.pole_set, true) {
             player.move_pole(0, self.rope[1]);

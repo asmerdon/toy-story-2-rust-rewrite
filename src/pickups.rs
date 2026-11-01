@@ -34,13 +34,13 @@ pub enum Kind {
     Life,
     /// 6 polygons: starts a cutscene (0x402610) and stays. Not ported.
     Cutscene,
-    /// 39 polygons: 0x4A4D60 (250 ticks, sound 0x4C BOOTLNCH). Not ported.
+    /// 39 polygons: the rocket boots, 0x4A4D60 (250 ticks, sound 0x4C BOOTLNCH).
     Launch,
     /// 100 polygons: `0x882938` + 5 (up to 10); comes back after 400 ticks.
     AmmoA,
-    /// 30 polygons: `0x882964` + 10 (up to 30); comes back after 400 ticks.
+    /// 30 polygons: discs, `0x882964` + 10 (up to 30); comes back after 400 ticks.
     AmmoB,
-    /// 20 polygons: hover boots (0x4A4B70); comes back after 400 ticks. Hovering is not ported.
+    /// 20 polygons: hover boots (0x4A4B70); comes back after 400 ticks.
     HoverBoots,
     /// 31, 50 or 80 polygons: a challenge item ("find five ..."), counted in `0x830D4C`.
     Collectable,

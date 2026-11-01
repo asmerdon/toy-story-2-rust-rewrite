@@ -283,3 +283,40 @@ fn stomping_away_from_the_hole_does_nothing() {
     assert!(l.script.pop.is_empty());
     assert_ne!(l.cr.slots[4].flags & 0x20, 0);
 }
+
+/// 0x4190C0: under the tree, leaves (particle 0x37, mode 0x13) fall from the canopy points
+/// (`level.dat` list 0) every so often, each settling on the floor below.
+#[test]
+fn leaves_fall_from_the_tree() {
+    let Some(mut l) = load() else { return };
+    let game = env::var_os("TS2_GAME_DIR").map(PathBuf::from).unwrap();
+    let lists = leveldat::parse(&fs::read(game.join("data/level02/level.dat")).unwrap()).unwrap();
+    let canopy = lists.iter().find(|p| p.kind == 0).expect("list 0").points[0];
+    // 2000 units below the first canopy point.
+    let at = Vec3::new(
+        canopy[0] as f32,
+        canopy[1] as f32 + 2000.0,
+        canopy[2] as f32,
+    );
+    let mut p = Player::new(at);
+    p.on_floor = true;
+    let mut leaves = Vec::new();
+    for _ in 0..1200 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        l.script
+            .step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+        leaves.extend(l.script.drops.drain(..));
+    }
+    eprintln!(
+        "{} leaves in 20 s, first {:?}",
+        leaves.len(),
+        leaves.first()
+    );
+    assert!(leaves.len() >= 3, "leaves fell: {}", leaves.len());
+    assert!(
+        leaves
+            .iter()
+            .all(|&(at, t, m, _, floor)| t == 0x37 && m == 0x13 && floor > at[1]),
+        "below them"
+    );
+}

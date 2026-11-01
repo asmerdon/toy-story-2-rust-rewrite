@@ -143,6 +143,8 @@ pub struct Boss {
     pub challenge: bool,
     /// 0x50A118: the camera turns towards here this tick.
     pub focus: Option<[i32; 3]>,
+    /// 0x52FE34: Zurg is answering a hit (level 12); he chases from higher up.
+    pub retaliating: bool,
     /// Its death animation is far enough on to give token 4.
     pub token: bool,
     /// Jingles to play (id, where).
@@ -412,6 +414,45 @@ impl Creatures {
     pub fn load_animations(&mut self, ngn: &crate::formats::ngn::Ngn) {
         self.animations = ngn.creatures.iter().map(|c| (c.id as u8,
             c.animations.iter().map(|b| crate::formats::anim::parse(b).ok()).collect())).collect();
+    }
+
+    /// What a homing disc steers at for each slot (0x410F40): its position plus its current
+    /// animation's ellipsoid offset (unturned), in play (health, not dying), immune (record
+    /// state 4).
+    pub fn aims(&self) -> Vec<Option<crate::particles::Aim>> {
+        self.slots
+            .iter()
+            .map(|c| {
+                (c.id != 0).then(|| {
+                    let e = self.ellipsoid_of(c);
+                    crate::particles::Aim {
+                        centre: [
+                            c.pos[0] + e.offset[0] as i32,
+                            c.pos[1] + e.offset[1] as i32,
+                            c.pos[2] + e.offset[2] as i32,
+                        ],
+                        alive: c.health > 0 && c.hurt >= 0,
+                        immune: c.rec.state == 4,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// 0x4A4960's pick: the nearest creature a disc can home on (record state set, not
+    /// dying, flags & 3 = 3) within 4096 units of `from`.
+    pub fn disc_target(&self, from: [i32; 3]) -> Option<usize> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.id != 0 && c.rec.state != 0 && c.hurt >= 0 && c.flags & 3 == 3)
+            .map(|(i, c)| {
+                let d = [0, 1, 2].map(|k| ((c.pos[k] - from[k]) >> 5) as i64);
+                (i, d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+            })
+            .filter(|&(_, d)| d < 0x100_0000)
+            .min_by_key(|&(_, d)| d)
+            .map(|(i, _)| i)
     }
 
     /// 0x43C1C0: an animated model-node attachment, in object units.
@@ -1657,6 +1698,12 @@ impl Creatures {
             goal = [buzz[0], goal[1], buzz[2]];
             let (above, keep, approach) = match c.id {
                 4 | 0x14 => (0x5000, 0x4B0, true),
+                // Zurg (level 12) keeps 2000 away, higher while he answers a hit.
+                0x39 => (
+                    if self.boss.retaliating { 0x5000 } else { 0x800 },
+                    2000,
+                    true,
+                ),
                 5 => (0x800, 0, false),
                 0xF => (-1, 0x5DC, false),
                 _ => (0x800, 0, true),

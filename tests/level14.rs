@@ -66,3 +66,60 @@ fn standing_at_the_start_starts_no_talk_or_race() {
     }
     assert_eq!(script.race, 0, "the wing race started by itself");
 }
+
+/// The helicopter puzzle (0x42E790): Buzz jumping and stomping on a button, with his own
+/// physics and the script running inside each tick as the viewer runs it, takes one press:
+/// the sparkles go out and the presses-left marker goes from 3 to 2 (specials 0x36 + n).
+#[test]
+fn stomping_a_helicopter_button_presses_it() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else {
+        return;
+    };
+    let dir = game.join("data/level04");
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let n = ts2::formats::ngn::parse(&fs::read(dir.join("level1.ngn")).unwrap()).unwrap();
+    let t = ts2::formats::terrain::parse(&fs::read(dir.join("TERR1.ALL")).unwrap()).unwrap();
+    let lists = ts2::formats::leveldat::parse(&fs::read(dir.join("level1.dat")).unwrap()).unwrap();
+    let world = ts2::game::World::from_terrain(&t);
+    let mut specials = ts2::specials::Specials::new(&n);
+    let random = fs::read(game.join("data/rand.dat")).unwrap();
+    let mut script =
+        ts2::script::for_level(14, &world, &mut specials, Some(&e), &lists, Some(random)).unwrap();
+    let mut boxes = ts2::boxes::Boxes::new(14, &lists, Some(&e), &world, &mut specials);
+    // Button 0 (surface 0x20).
+    let mut p = Player::new(Vec3::new(-25500.0, -2104.0, -19500.0));
+    let dt = 1.0 / 60.0;
+    let mut run = |p: &mut Player,
+                   input: ts2::game::Input,
+                   specials: &mut ts2::specials::Specials,
+                   script: &mut Box<dyn ts2::script::Script>| {
+        p.update_with(&world, input, dt, &mut |p, w| {
+            boxes.tick(p, w, specials);
+            script.step(w, specials, p, &boxes);
+        });
+    };
+    for _ in 0..30 {
+        run(&mut p, Default::default(), &mut specials, &mut script);
+    }
+    script.put_out.clear();
+    assert!(!specials.get(0x4C).unwrap().hidden, "button 0 starts up");
+    for tick in 0..120 {
+        let input = ts2::game::Input {
+            jump: tick == 0,
+            jump_held: tick < 4,
+            stomp: tick == 14,
+            ..Default::default()
+        };
+        run(&mut p, input, &mut specials, &mut script);
+    }
+    assert_eq!(
+        script.put_out.iter().filter(|&&(_, g)| g == 1).count(),
+        4,
+        "the press's sparkles"
+    );
+    assert!(
+        specials.get(0x38).is_some_and(|s| !s.hidden),
+        "two presses left"
+    );
+    assert!(specials.get(0x39).is_some_and(|s| s.hidden));
+}

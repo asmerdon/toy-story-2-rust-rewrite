@@ -116,3 +116,49 @@ fn zurg_entrance_stays_above_the_floor() {
     }
     assert_eq!(cr.slots[0].pos[1], spawn_y - 0x2800, "the scene ends 0x2800 above his spawn");
 }
+
+/// 0x4076F0's chase keeps Zurg (type 0x39) 2000 units from Buzz, pushing him out a sixteenth
+/// of the way a tick; before, he flew straight onto Buzz and stayed there.
+#[test]
+fn zurg_keeps_his_distance_while_chasing() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else {
+        return;
+    };
+    let path = campaign::level(12).unwrap().path(&game);
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let n = ngn::parse(&fs::read(&path).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(terrain::path_for(&path).unwrap()).unwrap()).unwrap();
+    let lists = leveldat::parse(&fs::read(path.with_extension("dat")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let mut specials = ts2::specials::Specials::new(&n);
+    let random = fs::read(game.join("data/rand.dat")).unwrap();
+    let mut script = ts2::script::for_level(
+        12,
+        &world,
+        &mut specials,
+        Some(&e),
+        &lists,
+        Some(random.clone()),
+    )
+    .unwrap();
+    let pk = packets::parse(&fs::read(path.with_extension("raw")).unwrap()).unwrap();
+    let spawns: Vec<_> = pk.iter().flat_map(packets::spawns).collect();
+    let mut cr = Creatures::new(&spawns, Some(&e), random);
+    cr.always_active = true;
+    cr.load_shapes(&game.join("data"));
+    cr.load_animations(&n);
+    let mut player = Player::new(glam::Vec3::new(-1500.0, -2400.0, 1800.0));
+    player.on_floor = true;
+    let mut nearest = f32::MAX;
+    for _ in 0..2400 {
+        cr.tick(&world, player.pos_obj(), player.pos_obj());
+        script.step_creatures(&world, &mut specials, &player, &mut cr, 0);
+        cr.hurts.clear();
+        if script.boss_hud && script.look.is_none() {
+            let (c, b) = (cr.slots[0].pos, player.pos_obj());
+            nearest = nearest.min(((c[0] - b[0]) as f32).hypot((c[2] - b[2]) as f32) / 32.0);
+        }
+    }
+    eprintln!("nearest {nearest:.0}");
+    assert!(nearest > 1200.0 && nearest < 2000.0, "nearest {nearest}");
+}

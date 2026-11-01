@@ -42,6 +42,9 @@ pub struct Status {
     pub laser_charge: i32,
     /// 0x53C824: the laser power-up left.
     pub power: i32,
+    /// 0x882964 discs and 0x882938 hooks left.
+    pub discs: i32,
+    pub hooks: i32,
     /// 0x52B7D8: Bo Peep's sheep found (−1 when done).
     pub sheep: i32,
     /// 0x52F2F8 and 0x52AD64: the race's state and Buzz's laps.
@@ -123,7 +126,7 @@ impl Hud {
         if s.spin_charge != 0 {
             self.timer[SPIN] = 0x78;
         }
-        if s.laser != 0 || s.power != 0 {
+        if s.laser != 0 || s.power != 0 || s.discs != 0 || s.hooks != 0 {
             self.timer[LASER] = 0x3C;
         }
         if s.sheep > 0 {
@@ -267,19 +270,96 @@ impl Hud {
         if let Some(off) = self.offset(LASER) {
             // Beside the spin meter when that is up.
             let shift = (spin_off.unwrap_or(-0x40) + 0x40) / 2;
-            put(NARROW, 0x110 - shift, 0xE0 - off, 0xF, 0, grey, 0x800, 0x800);
-            let c = s.laser_charge;
-            let blink = c == 0x40 && self.counter(3) < 4;
-            let (color, width) = if s.power != 0 {
-                // The power-up's green bar, its length what's left.
-                ([0, ((s.power >> 4) + 0x40).min(0xFF) as u8, 0], s.power * 0x98)
-            } else if blink {
-                ([0, (c * 2 - 0x80) as u8, 0], c * 0x1644 / 2)
+            put(
+                NARROW,
+                0x110 - shift,
+                0xE0 - off,
+                0xF,
+                0,
+                grey,
+                0x800,
+                0x800,
+            );
+            // The ammo left (0x49FD40): discs (with their icon, sprite 0x1C, in place of the
+            // bar) or hooks (the bar staying, the count 7 higher). The hook's icon (0x493DC0,
+            // a model) isn't drawn.
+            let (count, lift) = if s.hooks != 0 {
+                (s.hooks, -7)
             } else {
-                ([0x80, (c * 2) as u8, 0], c * 0x1644 / 2)
+                (s.discs, 0)
             };
-            put(WIDE, 0x1B6 - (shift << 9) / 0x140, 0xDA - off, 6, 0, color, width, 0x3000);
-            put(NARROW, 0x110 - shift, 0xD8 - off, 0xD, 0, grey, 0x1000, 0x1000);
+            if count != 0 {
+                let y = lift + 0xD8 - off;
+                put(
+                    NARROW,
+                    0x122 - shift,
+                    y,
+                    0x14,
+                    digit(count / 10),
+                    white,
+                    0x800,
+                    0x800,
+                );
+                put(
+                    NARROW,
+                    0x129 - shift,
+                    y,
+                    0x14,
+                    digit(count % 10),
+                    white,
+                    0x800,
+                    0x800,
+                );
+                if s.hooks == 0 {
+                    put(
+                        WIDE,
+                        0x1B6 - (shift << 9) / 0x140,
+                        y - 2,
+                        0x1C,
+                        0,
+                        grey,
+                        0xC00,
+                        0x800,
+                    );
+                }
+            }
+            if s.discs != 0 && s.hooks == 0 {
+                // Discs: no laser bar.
+            } else {
+                let c = s.laser_charge;
+                let blink = c == 0x40 && self.counter(3) < 4;
+                let (color, width) = if s.power != 0 {
+                    // The power-up's green bar, its length what's left.
+                    (
+                        [0, ((s.power >> 4) + 0x40).min(0xFF) as u8, 0],
+                        s.power * 0x98,
+                    )
+                } else if blink {
+                    ([0, (c * 2 - 0x80) as u8, 0], c * 0x1644 / 2)
+                } else {
+                    ([0x80, (c * 2) as u8, 0], c * 0x1644 / 2)
+                };
+                put(
+                    WIDE,
+                    0x1B6 - (shift << 9) / 0x140,
+                    0xDA - off,
+                    6,
+                    0,
+                    color,
+                    width,
+                    0x3000,
+                );
+                put(
+                    NARROW,
+                    0x110 - shift,
+                    0xD8 - off,
+                    0xD,
+                    0,
+                    grey,
+                    0x1000,
+                    0x1000,
+                );
+            }
         }
         // 7: a boss's health bar at the top (sprite 6 stretched, red to yellow) in its frame
         // (sprite 0xD); blinking when nearly empty.
@@ -351,6 +431,24 @@ mod tests {
         s.laps = 1;
         let q = h.quads(&s, &sprites);
         assert_eq!(q.iter().filter(|q| q.sprite == 3).map(|q| q.cell).collect::<Vec<_>>(), [2], "two laps to go");
+    }
+
+    /// 0x49FD40 element 4 with discs: the count (two digits) and the disc icon (0x1C) in
+    /// place of the laser bar.
+    #[test]
+    fn disc_count_shows_on_the_weapon_meter() {
+        let sprites: Vec<Option<SpriteDef>> = (0..0x40).map(|_| Some(SpriteDef { texture: 31, size: [8, 8], cells: vec![[0, 0]; 40] })).collect();
+        let mut h = Hud::default();
+        let s = Status { discs: 12, ..Default::default() };
+        for _ in 0..40 {
+            h.tick(&s);
+        }
+        let q = h.quads(&s, &sprites);
+        let mut digits: Vec<(f32, usize)> = q.iter().filter(|q| q.sprite == 0x14).map(|q| (q.pos[0] / q.width, q.cell)).collect();
+        digits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(digits.iter().map(|d| d.1 - 0x1A).collect::<Vec<_>>(), [1, 2], "12 discs");
+        assert!(q.iter().any(|q| q.sprite == 0x1C), "the disc icon");
+        assert!(!q.iter().any(|q| q.sprite == 6), "no laser bar");
     }
 
     #[test]

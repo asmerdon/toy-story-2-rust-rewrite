@@ -149,3 +149,66 @@ fn skateboard_two_rolls_and_returns() {
     assert!(far.z < 0x2300 as f32 + 60.0, "it did not roll far enough: {far:?}");
     assert!(end.z > far.z + 1000.0, "it did not come back: {end:?}");
 }
+
+/// "Ride the HayBale" (0x421340): stomping the button tips it, starts the 45-second
+/// countdown and sets the bale bobbing; standing on the bale throws Buzz towards 0xB90.
+#[test]
+fn hay_bale_ride() {
+    let Some(mut l) = load() else { return };
+    let button = l.world.mover_pos(0xF).unwrap();
+    let bale0 = l.world.mover_pos(0).unwrap();
+    let mut p = Player::new(button - Vec3::Y * 40.0);
+    p.on_floor = true;
+    p.floor_mover = Some((0xF, Vec3::NEG_Y));
+    // Standing there does nothing.
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    assert_eq!(l.script.race, 0);
+    p.stomp = -40;
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    p.stomp = 0;
+    p.floor_mover = None;
+    // The countdown shows from the next tick.
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    assert_eq!(l.script.race, 2, "the ride runs as a challenge");
+    assert_eq!(l.script.laps, 0xA8C / 60 + 100);
+    assert_eq!(
+        l.world.mover_turn(0xF),
+        [0, 0, -0x180],
+        "the button tips down"
+    );
+    assert!(l.script.put_out.contains(&(0, 1)));
+    p.stomp = 0;
+    p.floor_mover = None;
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for _ in 0..600 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        let y = l.world.mover_pos(0).unwrap().y;
+        lo = lo.min(y);
+        hi = hi.max(y);
+    }
+    eprintln!("bale y {} .. {} (rest {})", lo, hi, bale0.y);
+    assert!(
+        hi - lo > 200.0 && hi - lo < 600.0,
+        "the bale bobs: {lo}..{hi}"
+    );
+    // On the bale: thrown.
+    p.on_floor = true;
+    p.floor_mover = Some((0, Vec3::NEG_Y));
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    assert!(!p.on_floor && p.vel[1] < 0, "thrown up");
+    assert_eq!(p.facing, 0xB90);
+    // The bale tips back to −0x708 (raw) to throw.
+    p.floor_mover = None;
+    let mut most = 0;
+    for _ in 0..60 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        most = most.min(l.world.mover_turn(0)[2]);
+    }
+    assert!(most <= -0x1B0, "tipped back: {most}");
+    // Leaving the bale's end of the room ends the ride and lifts the button.
+    p.pos.z = 0.0;
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    assert_eq!(l.script.race, 0);
+    assert_eq!(l.world.mover_turn(0xF), [0; 3]);
+}

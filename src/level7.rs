@@ -14,8 +14,10 @@
 //! - The two skateboards (movers 10 / 0xE, specials 0xB / 0x18; their sound 0x7A is the sample
 //!   "SkBoard"): Buzz landing on one starts it rolling; see `Level7::skateboards`.
 //!
-//! Not ported: the bobbing platform and button race (mover 0 / 0xF, 0x52FA24), the
-//! chicks pushed by boxes (0x420F70), the drips and sparks.
+//! - "Ride the HayBale" (mover 0 / special 0, button mover 0xF / special 0x21): stomping the
+//!   button starts a 45-second ride; see `Level7::hay_bale`.
+//!
+//! Not ported: the chicks pushed by boxes (0x420F70), the drips and sparks.
 
 use crate::boxes::Boxes;
 use crate::creatures::Creatures;
@@ -69,6 +71,14 @@ pub struct Level7 {
     egg: u8,
     gate_goal: i32,
     gate: i32,
+    /// The hay-bale ride: ticks left (0x52FA24), the bob's speed (0x52FA28, to 0x200) and
+    /// phase (0x52FA30), the tip state (0x52F9E4: 1 tipping back to throw, 2 settling) and
+    /// the bale's tilt about Z (mover +0x30, 0x4000 a turn).
+    ride: i32,
+    bob_speed: i32,
+    bob_phase: i32,
+    tip_state: u8,
+    tip: i32,
     common: Common,
 }
 
@@ -89,6 +99,11 @@ impl Level7 {
             egg: 0,
             gate_goal: 0,
             gate: 0,
+            ride: 0,
+            bob_speed: 0,
+            bob_phase: 0,
+            tip_state: 0,
+            tip: 0,
             // 0x503A30: level 7's missing item (1) and gift (bit 2, the rocket boots).
             common: Common { given: [false, false, false, true, false], item: 1, ..Default::default() },
         }
@@ -255,6 +270,106 @@ impl Level7 {
         }
     }
 
+    /// "Ride the HayBale" (frame script 0x421340, its first block).
+    ///
+    /// - Stomping the button (mover 0xF, any contact, 0x48B640) with no challenge running
+    ///   tips it and its special 0x21 down 0x180 about Z (0x488AA0 / 0x4CCC70), puts out
+    ///   reward sparkle 0 of group 1 and starts the ride: 0xA8C ticks, shown as the
+    ///   challenge countdown (race 2, laps = ticks / 60 + 100). Buzz leaving the bale's end of
+    ///   the room (z ≥ −0x11202) cuts it to its last tick; at the end the button comes back up.
+    /// - The bob speeds up 1 a tick to 0x200 during the ride and runs down after it; its phase
+    ///   advances by speed / 16. While it moves, sound 0x75 plays at the button.
+    /// - The bale (mover 0) is held at its special's placed height plus sin(phase · 7/6) / 2
+    ///   (object units, by velocity 0x487900), and rocks about Z towards sin(phase) / 32
+    ///   (raw angle, a quarter of the way a tick by its spin 0x487970).
+    /// - Buzz standing on it during the ride is thrown: 0x434090(−0xC00), sound 0x1C, heading
+    ///   0xB90 at a seventh of full speed, flags 0x44; the bale tips back to −0x708, then
+    ///   settles (to within 8) before rocking again.
+    /// - Special 0 follows the mover (position and angles), special 1 (its far copy) too.
+    ///   The bob holds the bale at its special's height, which is 251 units above the
+    ///   collision object's stored one: from the first tick, as in the original.
+    fn hay_bale(&mut self, world: &World, specials: &mut Specials, player: &mut Player) {
+        if self.ride >= 2 && player.pos_obj()[2] >= -0x11202 {
+            self.ride = 1;
+        }
+        if self.ride > 0 {
+            self.race = 2;
+            self.laps = self.ride / 60 + 100;
+            self.bob_speed = (self.bob_speed + 1).min(0x200);
+            self.ride -= 1;
+            if self.ride < 1 {
+                self.ride = 0;
+                world.turn_mover(0xF, [0; 3]);
+                specials.turn_from_own(0x21, [0; 3]);
+                self.race = 0;
+                self.laps = 100;
+            }
+        } else {
+            if self.bob_speed > 0 {
+                self.bob_speed -= 1;
+            }
+            if player.stomp != 0 && player.touching_mover(0xF) && self.race == 0 {
+                world.turn_mover(0xF, [0, 0, -0x180]);
+                specials.turn_from_own(0x21, [0, 0, -0x180]);
+                self.ride = 0xA8C;
+                self.put_out.push((0, 1));
+            }
+        }
+        if self.bob_speed != 0
+            && let Some(at) = specials.pos_obj(0x21)
+        {
+            self.sounds.push((0x75, at));
+        }
+        self.bob_phase += self.bob_speed >> 4;
+
+        if self.ride > 0 && player.on_floor && player.floor_mover.is_some_and(|(m, _)| m == 0) {
+            self.tip_state = 1;
+            player.launch(-0xC00, 0xB90);
+            player.vel[0] /= 7;
+            player.vel[2] /= 7;
+            player.sounds.push(Sound {
+                id: 0x1C,
+                voice: false,
+            });
+        }
+
+        // The bob: a velocity that puts the mover on its target height this tick.
+        if let (Some(home), Some(now)) = (specials.home_obj(0), world.mover_pos(0)) {
+            let target = home[1] + crate::script::sin_table(self.bob_phase * 7 / 6) / 2;
+            let dy = target - (now.y * 32.0).round() as i32;
+            world.move_mover(0, Vec3::new(0.0, dy as f32 / 32.0, 0.0));
+        }
+        let rock = crate::script::sin_table(self.bob_phase) / 32;
+        let spin = match self.tip_state {
+            1 => {
+                let d = (-0x708 - self.tip) >> 2;
+                if d.abs() < 8 {
+                    self.tip_state = 2;
+                }
+                d
+            }
+            2 => {
+                let d = (rock - self.tip) >> 3;
+                if d.abs() < 8 {
+                    self.tip_state = 0;
+                }
+                d
+            }
+            _ => (rock - self.tip) >> 2,
+        };
+        self.tip += spin;
+        world.turn_mover(0, [0, 0, self.tip >> 2]);
+        if let Some(p) = world.mover_pos(0) {
+            let o = [p.x, p.y, p.z].map(|v| (v * 32.0).round() as i32);
+            specials.set_angles(0, [0, 0, self.tip >> 2]);
+            specials.set_pos(0, o.map(|v| v >> 5));
+            // The exe passes >> 7 and 0x4CCE30 multiplies far-set specials by 4; here the far
+            // set is in level units too.
+            specials.set_pos(1, o.map(|v| v >> 5));
+            specials.turn_from_own(1, [0, 0, self.tip >> 2]);
+        }
+    }
+
     /// The hatching egg (0x52F2F8 = `race`, its clock `laps`).
     fn egg_challenge(&mut self, world: &World, player: &Player, cr: &mut Creatures) {
         let pos = cr.slots.get(EGG_HEN.0).map_or([0; 3], |c| c.pos);
@@ -278,7 +393,8 @@ impl Level7 {
         if self.race == 1 && self.cutscene.is_none() {
             self.race = 2;
         }
-        if self.race == 2 {
+        // 0x4223F7: the egg's clock runs only while no hay-bale ride does.
+        if self.race == 2 && self.ride == 0 {
             if self.egg == 0 && cr.slots.get(EGG).is_none_or(|c| c.id == 0 || c.health <= 0) {
                 // Reached in time: the egg's done; again, quicker, for the token.
                 self.egg = 1;
@@ -302,7 +418,7 @@ impl Level7 {
             }
         }
         if let Some(e) = cr.slots.get_mut(EGG) {
-            if self.race != 0 {
+            if self.race != 0 && self.ride == 0 {
                 e.flags |= 0x81;
             } else {
                 e.flags &= 0x7E | 0xFF00;
@@ -381,6 +497,7 @@ impl Script for Level7 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
         self.springs(specials, player);
+        self.hay_bale(world, specials, player);
         self.skateboards(world, specials, player);
         self.gate(world, specials);
     }

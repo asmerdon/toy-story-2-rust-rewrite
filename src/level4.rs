@@ -436,8 +436,9 @@ impl Level4 {
         if player.stomp != 0 {
             for k in 0..3 {
                 let m = 0x16 + k as i32;
-                if self.buttons & (1 << k) == 0 && player.floor_mover.is_some_and(|(f, _)| f == m) {
-                    world.turn_mover(m, [-0x180 >> 2, 0, 0]);
+                if self.buttons & (1 << k) == 0 && player.touching_mover(m) {
+                    // 0x488AA0 takes 12-bit angles, as the special's turn.
+                    world.turn_mover(m, [-0x180, 0, 0]);
                     specials.turn_from_own(0x41 + k as i32, [-0x180, 0, 0]);
                     self.buttons |= 1 << k;
                     self.put_out.push((4 + k, 1));

@@ -38,6 +38,8 @@ impl Level14 {
         let mut s = Self {
             common: Common {
                 given: [false, false, false, true, false],
+                // 0x42E790 calls 0x44ED90(0x100, 0x1000, 0x33) every tick: rain.
+                rain: Some(0x33),
                 ..Default::default()
             },
             bits: 0,

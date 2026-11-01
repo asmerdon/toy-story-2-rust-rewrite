@@ -31,7 +31,7 @@ exe functions) and `docs/formats/*.md`.
 - **Level 1:** signed off by the user.
 - **Levels 2–15:** the user played through them in two rounds of reports; every reproduced report has been fixed (see the list below).
 - **Not done:** no level other than 1 has a full sign-off.
-- **Tests:** 196 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (185 engine + 11 launcher). `cargo build --release` builds the viewer, tool and launcher without warnings (the `zurgintro` example has an older unused-`mut` warning).
+- **Tests:** 213 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (202 engine + 11 launcher), 2026-11-01. `cargo build --release` builds the viewer, tool and launcher without warnings.
 - **Git:** work is on `dev` (local `master` tracks `origin/dev`). The user asks before each push.
 
 ### Fixed from the user's playtests
@@ -41,6 +41,7 @@ Every fix below comes from the original's code, has a regression test, and was m
 - Boundary walls: TERRAIN kind 0x101 lists (0x484380 / 0x48C860). These close the final arena's back and the airport's conveyor ends. See docs/formats/terrain.md.
 - Belt pushes are swept (0x48B660).
 - Fall plane under the lowest collision point (0x436220).
+- Floor types 4-7 (level 13's oil) have little grip (0x436220): side slowing 0x10, friction 8, acceleration 0x14. Type 0xD slides (0x53C818; levels 11 and 15), state 0x20; the slide ends on landing on another floor (the exe asks its coyote counter, here a tick of contact).
 - i64 maths in creature contact and the laser ray. Large levels overflowed i32, which caused Level 14's constant damage.
 - Start-floor snap (0x4863A0): Level 13 starts on the X-ray conveyor.
 
@@ -75,6 +76,7 @@ Every fix below comes from the original's code, has a regression test, and was m
 
 **Reported but not reproduced**
 - Level 1: fell out at the living-room windowsill. Needs the user's spot.
+- Level 14: helicopter buttons "not working". Physics, the script and a `--shot` all take the press (`stomping_a_helicopter_button_presses_it`). Needs the user's steps.
 
 **Collision**
 - If the body starts slightly inside an edge cylinder, it ignores that edge (`sweep_edge` / `sweep_point`). A naive fix broke the boundary walls.
@@ -93,12 +95,14 @@ Every fix below comes from the original's code, has a regression test, and was m
 **Bosses**
 - Shared kill (0x405D20) death sounds per type.
 - The drill's state 5 / weapon check.
-- Level 9: flail animation phase, lights, sparks, and the camera's every-0x1E-tick pick.
+- Level 9: lights, and the camera's every-0x1E-tick pick.
 - Level 15: swing outside phase 2, and boss 3's hurt voice.
 - The dino fires from a fixed offset, not node 1.
 - Campaign 3's dust uses the boss's height, not the floor height.
 
 **Missing features**
+- The hook's icon on the HUD's weapon meter (0x493DC0 draws a model there).
+- Lightning on level 14 (0x42E790, 0x52FFA8).
 - The countdown tick sound (0x5E in 0x49FD40).
 - Pause menu.
 - Options (0x4371B0).
@@ -131,6 +135,11 @@ The project is distributed as **OpenTS2**, modelled on OpenMW. Design, OpenMW re
 - **Next:** phase 2/3 per the design doc: the VFS (route engine file reads through layers), then the editor as `opents2-editor` saving `mods/<id>/scenes/levelNN.toml`.
 
 ### Facts and pitfalls worth knowing
+- **Creature matrices turn Z first** (roll in the model's frame), then Y, then X (`scene::Place::turned`, 0x4CD880's helpers multiply on the left). The old X-Y-Z order turned a banking plane into a pitching one.
+- **Script requests for particles:** `spawns` (type and mode), `particles` (fully specified), `lasting` (fully specified with a life), `drops` (type, mode, spin and a chosen floor); `rain` names the level's rain sprite.
+- **The viewer draws between ticks** (`Interp` in ts2-viewer.rs): Buzz, creatures and the follow/scene camera are blended from the previous tick by `Player::tick_fraction`. Anything new that moves every tick and is drawn should be blended the same way, or it will judder on fast displays (the user's is 144 Hz).
+- **Far-set specials are in level units here.** The exe passes positions `>> 7` for layer-1 (low-detail) specials and 0x4CCE30 multiplies them by 4; `Specials::set_pos` takes level units for both layers, so pass `>> 5`.
+- **Stomp buttons on movers** use 0x48B640: the mover is the floor under Buzz (0x4863A0 sets its flags 0x12) or his sweep touched it (0x482A00 sets 2). `Player::touching_mover`. Surface switches use the floor's surface type on the impact tick (stomp == -0x28).
 - **Offscreen screenshots:** `ts2-viewer [--level N] --shot out.png "<script>"`. Script words:
   - numbers: frames to run
   - `play`: start as Buzz
@@ -452,6 +461,10 @@ shadows are the biggest unported systems.
 | `potato`, `dialog` | Conversations through the level script; speech-box typing |
 | `shared_specials`, `floorline`, `room`, `wander`, `stress`, `gaps` | Misc: shared specials, floor heights, room lookups, fall-through stress tests |
 | `token_model <game> <out>` | Exports the Pizza Planet token (level 1 special 0x39) for the icon generator |
+| `floor_at <dir> x z [file]`, `object_tris <dir> index [file]` | Every collision triangle under a point; one object's triangles and normals |
+| `zurgintro [-v\|-f]` | Level 12's entrance tick by tick (`-v`: every tick, with the scene camera; `-f`: the fight, Zurg's distance from Buzz and the middle) |
+| `bossanim <campaign level> slot x y z [ticks]` | A creature slot tick by tick with Buzz held at a point (animation, state, angles, the scene) |
+| `minions9`, `surface_kind <dir> type [file]` | Level 9's first minion call-up tick by tick; every collision object of one surface type |
 
 ## 10. Where to find more
 - `docs/re/functions.md`: every exe function and global identified, with behaviour notes.

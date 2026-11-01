@@ -485,7 +485,9 @@ impl Level11 {
             specials.turn_from_own(0x50, [0, b.yaw, 0]);
         }
         specials.set_pos(0x26, b.pos.map(|v| v >> 5));
-        specials.set_pos(0x50, b.pos.map(|v| v >> 7));
+        // Its far-set copy: the exe passes >> 7 and 0x4CCE30 multiplies far specials by 4;
+        // here the far set is in level units.
+        specials.set_pos(0x50, b.pos.map(|v| v >> 5));
         let (pos, yaw) = (b.pos, b.yaw);
         if self.common.every(4) && near(buzz, pos, 0x300) {
             let spin = self.common.rand() - 0x80;
@@ -918,7 +920,8 @@ impl Script for Level11 {
         // The push boxes' children follow them.
         for (child, parent) in [(0x57, 0x51), (0x40, 0x1D)] {
             if let Some(p) = specials.pos_obj(parent) {
-                specials.set_pos(child, p.map(|v| v >> 7));
+                // Far-set copies, in level units here (the exe's >> 7, then × 4 in 0x4CCE30).
+                specials.set_pos(child, p.map(|v| v >> 5));
             }
         }
         for k in 0..6 {

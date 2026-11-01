@@ -83,6 +83,8 @@ pub struct Particle {
     pub spin: i32,
     pub rgb: [u8; 3],
     ended: bool,
+    /// +0x10 when it homes on a creature (flag 8): that slot.
+    pub target: Option<usize>,
 }
 
 /// Something particles did that the game around them handles.
@@ -94,6 +96,18 @@ pub enum Event {
     Coin([i32; 3]),
     /// Something hurtful touched Buzz, coming from here: HurtBuzz(angle, 3).
     Hurt([i32; 3]),
+    /// A disc hit creature slot `slot` coming at `angle`: HitCreature(c, angle, 4) (0x408A60).
+    HitCreature { slot: usize, angle: i32 },
+}
+
+/// A creature a homing particle can steer at (0x410F40 with a creature at +0x10): where it
+/// aims (position plus its animation's ellipsoid offset, unturned), whether it's still in play
+/// (health, not dying) and whether hits bounce off it (record state 4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aim {
+    pub centre: [i32; 3],
+    pub alive: bool,
+    pub immune: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +121,12 @@ pub struct Particles {
     rpos: usize,
     /// Where the camera is (0x52ADC0): far particles aren't made and die.
     pub camera: [i32; 3],
+    /// Buzz's velocity (0x52F368 / 0x52F370), for the rocket flames' exhaust.
+    pub buzz_vel: [i32; 3],
+    /// The creatures homing particles can steer at, by slot (set by the caller each tick).
+    pub aims: Vec<Option<Aim>>,
+    /// Ticks run (for the every-n-ticks effects).
+    ticks: u32,
     pub events: Vec<Event>,
 }
 
@@ -154,7 +174,19 @@ impl Particles {
                 Mode { random: i(0) as u32, values: [i(4), i(8), i(12), i(16)], angle: i16::from_le_bytes([d[20], d[21]]), spin: i16::from_le_bytes([d[22], d[23]]) }
             })
             .collect();
-        Particles { slots: vec![Particle::default(); SLOTS], types, modes, next: 0, random, rpos: 0, camera: [0; 3], events: Vec::new() }
+        Particles {
+            slots: vec![Particle::default(); SLOTS],
+            types,
+            modes,
+            next: 0,
+            random,
+            rpos: 0,
+            camera: [0; 3],
+            buzz_vel: [0; 3],
+            aims: Vec::new(),
+            ticks: 0,
+            events: Vec::new(),
+        }
     }
 
     /// The next byte of the game's random table (0x52ADAC).
@@ -246,6 +278,7 @@ impl Particles {
 
     /// 0x410F40 for one tick. `buzz` is Buzz's feet and facing (kinds that follow him).
     pub fn tick(&mut self, world: &World, buzz: ([i32; 3], i32)) {
+        self.ticks = self.ticks.wrapping_add(1);
         for i in 0..SLOTS {
             if self.slots[i].life < 1 {
                 continue;
@@ -255,20 +288,34 @@ impl Particles {
             // Flag 8 (any kind, 0x410F40 +0x32 & 8) repurposes vertical velocity as a
             // target and gravity as yaw; vel[1] == -1 (spawned as -2, halved) is Buzz. The
             // other target, a creature pointer, isn't ported: those move as plain particles.
-            if p.flags & 8 != 0 && p.vel[1] == -1 {
+            if p.flags & 8 != 0 && (p.vel[1] == -1 || p.target.is_some()) {
                 // Turn rates: yaw turns by 1/local_8 of the error, pitch by 1/0x14. Particles
                 // whose frame period byte is 0xC4 close in faster as they age; speed
-                // divisor local_c is 8 for those, else 0x10.
-                let (rate, speed_div) = if p.period & 0xFF == 0xC4 {
+                // divisor local_c is 8 for those, else 0x10. At a creature: its ellipsoid's
+                // centre, turning by 1/((life & 15) + 2) (× 3 from 0x20 on), speed / 6; a
+                // creature gone or dying ends it.
+                let aim = p.target.map(|t| self.aims.get(t).copied().flatten());
+                let (rate, speed_div) = if let Some(a) = aim {
+                    if a.is_none_or(|a| !a.alive) {
+                        p.life = p.life.min(1);
+                    }
+                    let l = p.life & 0xF;
+                    (if p.life < 0x20 { l + 2 } else { l * 3 + 2 }, 6)
+                } else if p.period & 0xFF == 0xC4 {
                     let l = p.life >> 4;
                     (l * l + 4, 8)
                 } else {
                     (8, 0x10)
                 };
                 if p.life > 0 {
-                    let dx = buzz.0[0] - p.pos[0];
-                    let dy = buzz.0[1] - p.pos[1] - 0x2000;
-                    let dz = buzz.0[2] - p.pos[2];
+                    let goal = match aim {
+                        Some(Some(a)) => a.centre,
+                        Some(None) => p.pos,
+                        None => [buzz.0[0], buzz.0[1] - 0x2000, buzz.0[2]],
+                    };
+                    let dx = goal[0] - p.pos[0];
+                    let dy = goal[1] - p.pos[1];
+                    let dz = goal[2] - p.pos[2];
                     let yaw = crate::boxes::angle12((dx >> 5) as f32, (dz >> 5) as f32);
                     let turn = |to: i32, from: i32| ((to - from + 0x800) & 0xfff) - 0x800;
                     p.gravity = (p.gravity + turn(yaw, p.gravity) / rate) & 0xfff;
@@ -583,7 +630,118 @@ impl Particles {
                 p.size[0] = (sin14((p.life & 0x3F) * 0x40) / grow.max(1)).abs();
                 0
             }
+            0x1D | 0x1E => {
+                // Discs (0x410F40). Homing (0x1D): a whirr (0x55) every 8 ticks; within 128 of
+                // its creature's centre it hits it (0x408A60, kind 4) and goes, or bounces off
+                // one that can't be hurt (record state 4: knocked up and away, sound 7). Both
+                // leave a trail (0x2C) every 3 ticks while they last.
+                if p.kind == 0x1D {
+                    if self.clock_8() {
+                        self.events.push(Event::Sound(0x55, p.pos));
+                    }
+                    if let Some(t) = p.target
+                        && let Some(a) = self.aims.get(t).copied().flatten()
+                    {
+                        let d = [0, 1, 2].map(|k| ((a.centre[k] - p.pos[k]) >> 5) as i64);
+                        if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 0x4000 {
+                            let angle = crate::boxes::angle12(d[0] as f32, d[2] as f32);
+                            if a.immune {
+                                p.flags &= !0xA;
+                                p.target = None;
+                                p.vel =
+                                    [sin14(angle + 0x800) >> 4, -0x400, sin14(angle + 0xC00) >> 4];
+                                p.gravity = 0x30;
+                                p.life = 0x32;
+                                p.death = 0x1E;
+                                self.events.push(Event::Sound(7, p.pos));
+                            } else {
+                                self.events.push(Event::HitCreature { slot: t, angle });
+                                p.life = 0;
+                            }
+                        }
+                    }
+                }
+                if p.life > 4 && self.clock_3() {
+                    let r = self.rand() as i32 - 0x80;
+                    for _ in 0..3 {
+                        self.rand();
+                    }
+                    self.create(
+                        [p.pos[0] + r, p.pos[1] + r, p.pos[2] + r],
+                        [p.vel[0] / 3, 0, p.vel[2] / 3],
+                        0,
+                        0,
+                        r,
+                        0x2C,
+                    );
+                }
+                0
+            }
+            0x15 => {
+                // A rocket boot's flame (type 0x2F, 0x410F40): on Buzz's heel, 128 units out at
+                // his facing ± 0x680 (the one marked 0x65 on the left), 32 up, spraying
+                // exhaust (0x2E) at half his speed while it has more than 4 ticks to live.
+                // Not ported: 0x2D under water.
+                let (b, f) = buzz;
+                let a = if p.period & 0xFF == 0x65 {
+                    f + 0x680
+                } else {
+                    f - 0x680
+                };
+                p.pos = [
+                    b[0] + (sin14(a) >> 2),
+                    b[1] - 0x400,
+                    b[2] + (sin14(a + 0x400) >> 2),
+                ];
+                if p.life > 4 {
+                    let spin = (self.rand() as i32) * 8 - 0x400;
+                    let v = self.buzz_vel;
+                    self.create(p.pos, [v[0] / 2, 0, v[2] / 2], -16, 0, spin, 0x2E);
+                }
+                1
+            }
             _ => 0,
+        }
+    }
+
+    /// The every-3 / every-8 tick flags of 0x4A2960 (0x52F1C3 / 0x52F1C8), on our own clock.
+    fn clock_3(&self) -> bool {
+        self.ticks.is_multiple_of(3)
+    }
+
+    fn clock_8(&self) -> bool {
+        self.ticks.is_multiple_of(8)
+    }
+
+    /// Discs of either kind (0x47 homing, 0x48 straight) in flight (0x4A4910).
+    pub fn discs_in_flight(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|p| p.life > 0 && matches!(p.typ, 0x47 | 0x48))
+            .count()
+    }
+
+    /// 0x4A4D60: the rocket boots' two flames (type 0x2F), living as long as the boots
+    /// (`life` ticks), turning opposite ways; the second (+0x2A = 0x65) on the left.
+    pub fn rocket_flames(&mut self, at: [i32; 3], life: i32) {
+        if let Some(k) = self.spawn(at, 0x2F, 2) {
+            let p = &mut self.slots[k];
+            (p.spin, p.angle, p.life) = (-0x20, 0x80, life);
+        }
+        if let Some(k) = self.spawn(at, 0x2F, 2) {
+            let p = &mut self.slots[k];
+            (p.period, p.spin, p.life) = (0x65, 0x20, life);
+        }
+    }
+
+    /// 0x4A4EC0 / 0x4A4E60: the boots are off; their flames (type 0x2F) go.
+    pub fn end_rocket_flames(&mut self) {
+        for p in self
+            .slots
+            .iter_mut()
+            .filter(|p| p.life > 0 && p.typ == 0x2F)
+        {
+            p.life = 1;
         }
     }
 
@@ -774,6 +932,68 @@ fn floor_at(world: &World, pos: [i32; 3]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 0x410F40 kind 0x1D: a homing disc steers onto its creature and hits it (0x408A60);
+    /// one that can't be hurt (record state 4) knocks it away instead.
+    #[test]
+    fn homing_discs_hit_or_bounce() {
+        let w = world(false);
+        for immune in [false, true] {
+            let mut p = with_types(&[(0x47, 0x1D, 0x1E8), (0x2C, 0, 0)]);
+            p.aims = vec![Some(Aim { centre: [0x20000, -0x2000, 0], alive: true, immune })];
+            // Fired facing +z; the target is off to +x.
+            let k = p.create([0, -0x2000, 0], [0, -2, 0], 0, 0, 0, 0x47).unwrap();
+            p.slots[k].target = Some(0);
+            let mut hit = false;
+            for _ in 0..200 {
+                p.tick(&w, ([0, 0, 0x40000], 0));
+                hit |= p.events.drain(..).any(|e| matches!(e, Event::HitCreature { slot: 0, .. }));
+            }
+            assert_eq!(hit, !immune, "immune {immune}");
+            if immune {
+                assert!(p.slots[k].target.is_none() && p.slots[k].flags & 8 == 0, "bounced off");
+            }
+        }
+    }
+
+    /// 0x4A4D60 / kind 0x15: the rocket boots' flames sit on Buzz's heels, follow him, spray
+    /// exhaust (0x2E) and go when the boots stop.
+    #[test]
+    fn rocket_flames_ride_on_the_boots() {
+        let w = world(false);
+        let mut p = with_types(&[(0x2F, 0x15, 0), (0x2E, 0, 0)]);
+        for t in &mut p.types {
+            t.life = 0x64;
+        }
+        p.rocket_flames([0, 0, 0], 0xFA);
+        let flames = |p: &Particles| {
+            p.slots
+                .iter()
+                .filter(|q| q.life > 0 && q.typ == 0x2F)
+                .map(|q| q.pos)
+                .collect::<Vec<_>>()
+        };
+        for _ in 0..120 {
+            p.tick(&w, ([0x1000, 0, 0], 0));
+        }
+        let f = flames(&p);
+        assert_eq!(f.len(), 2, "both flames still lit after 120 ticks");
+        for q in &f {
+            let d = ((q[0] - 0x1000) as f32).hypot(q[2] as f32);
+            assert!(
+                (d - 4096.0).abs() < 64.0 && q[1] == -0x400,
+                "on a heel: {q:?}"
+            );
+        }
+        assert_ne!(f[0], f[1]);
+        assert!(
+            p.slots.iter().any(|q| q.life > 0 && q.typ == 0x2E),
+            "exhaust"
+        );
+        p.end_rocket_flames();
+        p.tick(&w, ([0x1000, 0, 0], 0));
+        assert!(flames(&p).is_empty());
+    }
 
     #[test]
     fn randomisation_matches_the_spawner() {

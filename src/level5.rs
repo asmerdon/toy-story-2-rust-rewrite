@@ -6,6 +6,7 @@
 //!   a pair stops while Buzz stands on either.
 //! - Two see-saws (movers 2 / 1, specials 4 / 6, mode 2, ±0x1C0, /1); specials 5 / 7 copy them.
 //! - A trampoline (mover 3).
+//! - Live zip wires (list 62): a spark runs along one every 0x14 ticks; see `Level5::sparks`.
 //! - Water (mode 1) with its surface at 0x70000 past z 0xF329F, else 0x10000.
 //! - The clown boss (slot 3, list 0xD, in room 2; token 4) with its routine 0x41DDB0.
 //! - Hamm (0x14, list 0xF), the hint character (0x22, list 0x14), the finder (0x13, list 0x10:
@@ -13,10 +14,10 @@
 //!
 //! Not ported: the stomp-started machine and the bubbles it blows (specials 0xC / 0xD and
 //! 0x12 / 0x13 carrying poles 0 / 1), the gate that falls (0x53C6E8; movers 0x12 / 0x13,
-//! specials 2 / 3), the drips along list 62, underwater fog and sounds.
+//! specials 2 / 3), underwater fog and sounds.
 
 use crate::boxes::Boxes;
-use crate::creatures::Creatures;
+use crate::creatures::{Creatures, ParticleRequest};
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
 use crate::game::{JumpPhase, Player, Sound, World};
@@ -54,6 +55,11 @@ pub struct Level5 {
     glide: [i32; 8],
     placed: bool,
     saws: [Tilt; 2],
+    /// The zip wires (`level.dat` list 62, object units), the one the next spark runs along
+    /// (0x52F980) and the countdown to it (0x52F930).
+    wires: Vec<[[i32; 3]; 2]>,
+    wire: usize,
+    spark_in: i32,
     common: Common,
 }
 
@@ -74,8 +80,17 @@ impl Level5 {
             glide: GLIDES.map(|g| g.5),
             placed: false,
             saws: Default::default(),
+            wires: Vec::new(),
+            wire: 0,
+            spark_in: 0,
             // 0x41E300: the challenge's five things are hidden until it starts.
-            common: Common { given: [false, false, false, true, false], show_collectables: Some(false), ..Default::default() },
+            // 0x41E880 calls 0x44ED90(0x100, 0x1000, 0x34) every tick: rain.
+            common: Common {
+                given: [false, false, false, true, false],
+                show_collectables: Some(false),
+                rain: Some(0x34),
+                ..Default::default()
+            },
         }
     }
 
@@ -83,6 +98,36 @@ impl Level5 {
         self.story.hints = (0..5).filter_map(|k| exe.at(HINTS + 4 * k, 4).ok().map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))).collect();
         let texts = [crate::script::HAMM_THANKS, crate::script::HAMM_ASK, crate::script::ALL_TOKENS, CLOWN_TEXT, FINDER_ASK, FINDER_THANKS, CHALLENGE_ASK, CHALLENGE_HURRY, CHALLENGE_DONE];
         self.load_story(exe, lists, &texts, None);
+        self.wires = crate::formats::leveldat::segments(lists, crate::formats::leveldat::ZIP_LINES);
+    }
+
+    /// 0x41E880: the zip wires are live. Every 0x14 ticks a spark (particle 0x4C, life 0x80,
+    /// sound 0xA4) sets off along the next wire, crossing it in 128 ticks; touching one hurts
+    /// unless Buzz is spinning (as any sprite-5 particle), so a ride has to go between them.
+    fn sparks(&mut self) {
+        if self.wires.is_empty() {
+            return;
+        }
+        self.spark_in -= 1;
+        if self.spark_in >= 0 {
+            return;
+        }
+        self.wire = (self.wire + 1) % self.wires.len();
+        let [a, b] = self.wires[self.wire];
+        let vel = [0, 1, 2].map(|k| (b[k] - a[k]) >> 6);
+        self.lasting.push((
+            ParticleRequest {
+                pos: a,
+                vel,
+                gravity: 0,
+                angle: 0,
+                spin: 0,
+                typ: 0x4C,
+            },
+            0x80,
+        ));
+        self.sounds.push((0xA4, a));
+        self.spark_in = 0x14;
     }
 
     /// 0x41E150 for platform `k`.
@@ -251,7 +296,15 @@ impl Script for Level5 {
         player.water = (1, if z > 0xF329F { 0x70000 } else { 0x10000 });
     }
 
-    fn step_creatures(&mut self, world: &World, _specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
+    fn step_creatures(
+        &mut self,
+        world: &World,
+        _specials: &mut Specials,
+        player: &Player,
+        cr: &mut Creatures,
+        coins: i32,
+    ) {
+        self.sparks();
         self.boss_hud = false;
         let room = world.room_at(player.pos);
         self.clown(room, player, cr);

@@ -10,12 +10,17 @@ Columns:
 - **User**: the user played it in the viewer.
 - Blank means untested. "Not ported" items come from each script's module doc.
 
+Every stomp switch in the game (33, levels 1, 2, 4, 7, 8, 10, 11, 14) is landed on with Buzz's
+own physics by `tests/stomps.rs` (`every_stomp_switch_registers`): on the impact tick he must
+stand on the switch's surface type or touch its mover.
+
 Campaign number → internal script: 3 is `level6.rs` (Bombs Away), 6 is `level3.rs` (Slime
 Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 
 ## 2 Andy's Neighborhood (`level2.rs`)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
+| Leaves falling from the tree (list 0, particle 0x37, 0x4190C0) | `leaves_fall_from_the_tree` | | reported missing |
 | See-saws (2) | `see_saws_lie_along_their_yaw`, `seesaw.rs` | | |
 | Sarge's five troops (token 1) | `sarge_wants_his_troops` | | |
 | Troop in the lawn holes: stomp six (2026-10-31 port) | `troop_in_the_holes_is_freed_by_stomping_six`, `stomping_away_from_the_hole_does_nothing` | | reported broken before the port |
@@ -31,6 +36,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## 3 Bombs Away (`level6.rs`, boss)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
+| Intro: banks round its length (creature roll is in its own frame, 0x4CD880 / 0x450C70) | `roll_comes_before_yaw` | intro frames 2026-11-01 | reported tumbling as if hit |
 | Fly-in look-at scene at x 0x31F9E | | | |
 | 600-tick cycle: hover, suck, drop bombs, fly off | | | |
 | Hits, invulnerable scene, death, level end | | | |
@@ -41,7 +47,8 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
 | Hanging platforms, path movers | `platforms_follow_their_paths` | | |
-| Presses, drawbridge stomp, buttons and lift | | | |
+| Presses, drawbridge stomp | | | |
+| Lift buttons (movers 0x16-0x18): any contact (0x48B640), tilted -0x180 like their specials | `every_stomp_switch_registers` | | |
 | Timed challenge (token 2), finder (token 1) | | | |
 | Drill boss (token 4) | `drill_challenge` | | |
 | Paint puzzle (token 3) | `construction_paint_*` (2) | | confirmed |
@@ -52,6 +59,8 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## 5 Alleys and Gullies (`level5.rs`)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
+| Live zip wires: sparks along list 62 every 0x14 ticks (particle 0x4C) | `sparks_run_along_the_zip_wires` | | reported missing |
+| Rain (0x44ED90 sprite 0x34) and splashes | `drops_fall_and_are_replaced` | | reported missing |
 | Gliding platforms | `platforms_glide` | | |
 | See-saws (2), trampoline | `continuation_audit` example (see-saws) | | |
 | Clown boss (token 4) | `clown_challenge_in_room_2` | | |
@@ -72,12 +81,14 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## 7 Al's Toy Barn (`level7.rs`)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
+| Rocket boots: flames on the heels (particles 0x2F, kind 0x15) and state 10 | `rocket_flames_ride_on_the_boots` | | reported no rocket or pose |
 | Path movers and locks shot | `paths_run` | | |
 | Spring, trampoline | | | |
 | Skateboards (movers 10 / 0xE): landing on one rolls it, throws Buzz at the end | `skateboard_one_rolls_when_landed_on`, `skateboard_two_rolls_and_returns` | | reported not working; ported, not yet reviewed in a shot |
 | Finder chicks (1), egg challenge (2), Potato Head boots, Hamm, hint | | | |
 | Dino boss (token 4) | `dino_fight` | | |
-| Not ported: bobbing platform race, rockets, chicks pushed by boxes, drips | | | |
+| "Ride the HayBale" (button mover 0xF, bale mover 0, 0x421340): 45 s countdown, bob, throw | `hay_bale_ride`, `every_stomp_switch_registers` | | reported stomp not working: was not ported |
+| Not ported: rockets, chicks pushed by boxes, drips | | | |
 
 ## 8 Al's Space Land (`level8.rs`)
 | Interaction | Sim | Shot | User |
@@ -92,13 +103,17 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## 9 Toy Barn Encounter (`level9.rs`, boss)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
+| Scene camera keeps looking at the burst pod (dead flail's last tip) | `minions_come_out_at_the_flail_tip` | | reported camera inside the boss |
 | Intro, flails, minion rounds, beam, death | `boss_rounds_end_the_level` | | |
+| Flail tips on animated node 1 (0x43C1C0), minions called up there; flails half a cycle apart; call animation and sparks | `minions_come_out_at_the_flail_tip` | | user: rest of the call-up looks good; "clips inside the boss for a second" after it, not reproduced |
+| Beam from the eye (node 0, (0, 0, -400), 0x43C1C0) | | | reported coming from the bottom |
 
 ## 10 Elevator Hop (`level10.rs`)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
 | Air shafts | `air_shaft_lifts_buzz` | | |
 | Wind, lifts, stomp markers | | | |
+| Vents 4 / 5 stomped open (any contact, 0x48B640) | `every_stomp_switch_registers` | | |
 | Runaway token (2) | `runaway_token` | | |
 | Spider (4) | `spider_fight` | | |
 | Mice finder (1), Potato Head hook, Hamm, hint | | | |
@@ -112,16 +127,20 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Turrets | `penthouse_turret_button_looks_then_wrecks_its_turret` | | |
 | Gunslinger (token 4) | `penthouse_gunslinger_intro_fight_and_token` | | |
 | Floats, doors, critter owner (1), horse challenge (2) | | | |
+| Far-set copies (0x50, 0x57, 0x40) follow in level units (were placed at a quarter) | | | |
 
 ## 12 The Evil Emperor Zurg (`level12.rs`, boss)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
 | Entrance, attacks, recovery, ring, death | `zurg_enters_fires_recovers_and_finishes` | | |
 | Entrance stays above the floor (target y) | `zurg_entrance_stays_above_the_floor` | `l12-zurg-intro-*.png` | reported sinking |
+| Entrance jittery: smooth tick to tick; the user's display is 144 Hz, so the viewer now draws between ticks (`Interp`), and snaps frame times on 60 Hz | `frame_times_snap_to_ticks` | consecutive frames compared 2026-11-01 | reported twice; interpolation unconfirmed |
+| Chase keeps 2000 from Buzz (0x4076F0 type 0x39), higher while retaliating | `zurg_keeps_his_distance_while_chasing` | | reported following Buzz constantly |
 
 ## 13 Airport Infiltration (`level13.rs`)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
+| Oil (surface type 5): little grip (0x436220 types 4-7) | `oil_is_slippery` | | reported not slippery |
 | Conveyors, belts, luggage, springs | `airport_platforms_move_and_stomp_springs_launch` | | |
 | Conveyor ends hold Buzz (boundary walls, swept push) | `airport_conveyor_ends_hold_buzz_inside_the_level` | `l13-belt-end.png` | reported clipping out |
 | Weights challenge | `airport_weights_challenge_times_out_and_can_be_won_on_retry` | | |
@@ -131,7 +150,8 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## 14 Tarmac Trouble (`level14.rs`)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
-| Three-press lamp puzzle | `tarmac_switch_sets_its_lamp_and_clears_the_previous_one` | | |
+| Rain (0x44ED90 sprite 0x33) and splashes | `drops_fall_and_are_replaced` | rain14.png 2026-11-01 | reported missing |
+| Three-press lamp puzzle | `tarmac_switch_sets_its_lamp_and_clears_the_previous_one`, `stomping_a_helicopter_button_presses_it` | button stomp 2026-11-01 | reported "stomps not working": not reproduced |
 | Rotating plane, propellers, Blacksmith | `tarmac_plane_turns_and_boss_intro_damage_and_reward` | | |
 | No damage from far creatures (i32 overflow fix) | `far_creatures_do_not_touch_buzz` | teleport grid 2026-10-31 | reported constant damage before fix |
 | Floating token, wing race, luggage | | | |
@@ -142,6 +162,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## 15 Prospector Showdown (`level15.rs`, boss)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
+| Sliding slope (floor type 0xD, 0x53C818) | `sliding_floors_carry_buzz_downhill` | | |
 | Intro, suitcases | `final_arena_lod_suitcases_stay_aligned_during_intro` | suitcases 2026-10-31 | |
 | Three bosses, rescue ending | `final_arena_*` (see later_levels.rs) | | |
 | Back closed by the boundary wall (kind 0x101) | `final_arena_back_is_closed_by_its_boundary_wall` | `l15-back-wall.png` | reported falling through |
@@ -157,6 +178,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## Cross-level
 | Item | Status |
 |---|---|
+| Disc launcher (ammo B): fire throws discs, homing (0x47) or straight (0x48), at most 6; the HUD's ammo count | `discs_replace_the_laser`, `homing_discs_hit_or_bounce`, `disc_count_shows_on_the_weapon_meter`; not played yet |
 | Specials by layer and distance (0x4CDDD0), all levels: no power-ups or helicopter through walls | `specials_of_each_layer_have_their_own_distance`; sweep `out/rv/sweep` |
 | Boundary walls (kind 0x101) in every level that has them | `final_arena_back_*`, `airport_conveyor_ends_*` |
 | Spawn snap (0x4863A0): only level 13 differed, now starts on the X-ray conveyor | `level_13_starts_on_the_conveyor_above_its_table_point`; `l13-start-orig.png` |

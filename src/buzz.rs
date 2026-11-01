@@ -14,6 +14,14 @@ pub mod state {
     /// Teetering on a ledge, facing the drop / with the drop behind (0x4011D0's probes).
     pub const TEETER_FRONT: u16 = 10;
     pub const TEETER_BACK: u16 = 11;
+    /// Riding the rocket boots (0x4011D0 with 0x53C5E0): the same row as teetering.
+    pub const ROCKET: u16 = 10;
+    /// Pulled along the grappling hook's rope (0x882950 = 2).
+    pub const GRAPPLE: u16 = 0x1E;
+    /// The hover boots running (0x882920).
+    pub const HOVER: u16 = 0x1F;
+    /// Sliding on a type-0xD floor (0x53C818).
+    pub const SLIDE: u16 = 0x20;
     /// Written directly by the airborne routine 0x4340D0. Overlay anim 22 spreads the wings
     /// (nodes 11/12 and 17/18), base anim 27 tucks the legs. Held until landing.
     pub const DOUBLE_JUMP: u16 = 8;

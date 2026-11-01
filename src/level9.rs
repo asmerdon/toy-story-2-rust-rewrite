@@ -3,8 +3,9 @@
 //! are the minions it calls up, dead at the start and never respawning by themselves.
 //!
 //! - It's kept within 0x1068 (later 0x1388) of the middle; everything bobs on a base height
-//!   (0x52FBCC + sin >> 3). The flails turn at 4 a tick, each knocking Buzz back from its
-//!   tip (local 0, 0x96, 0x5AA) within 0x4B × 256.
+//!   (0x52FBCC + sin >> 3). The flails turn at 4 a tick, their animations half a cycle
+//!   apart, each knocking Buzz back from its tip (0, 0x96, 0x5AA on its animated node 1,
+//!   0x43C1C0) within 0x4B × 256.
 //! - Buzz coming in past z −0x1BB58: a look-at scene (0x168 ticks) while it rises to its
 //!   height and taunts (0xD5), then the fight (speed 0x10).
 //! - Each hit (sound 0x83): its health goes back to 26 − round, it can't be hurt for 120 ticks
@@ -14,7 +15,7 @@
 //!   six it chases Buzz itself (state 3, turn 2, speed 0x14). Below 11 health it dies
 //!   (look-at 0xF0) and the level ends.
 //! - Every so often (when its cool-down allows) with Buzz within 400 × 256 it fires a beam
-//!   at the ground in front of it towards him (±0x200), sparks and sound 0x87 where it lands;
+//!   from its eye (node 0, 0x43C1C0) at the ground in front of it towards him (±0x200), sparks and sound 0x87 where it lands;
 //!   Buzz within 30 × 256 of that is hurt (0x84, taunt 0xD7).
 //! - The camera turns to the nearer live minion, else to the boss; its bar shows in the
 //!   fight ((health − 10) × 54 / 16).
@@ -66,6 +67,9 @@ pub struct Level9 {
     /// This round's flail has called its minions up / burst.
     called: bool,
     burst: bool,
+    /// Each flail's tip as last seen alive: a burst flail's slot is cleared, but the scene
+    /// still looks at where its pod was (the original keeps the dead slot's pose).
+    tips: [[i32; 3]; 7],
     common: Common,
 }
 
@@ -90,6 +94,7 @@ impl Level9 {
             started: false,
             called: false,
             burst: false,
+            tips: [[0; 3]; 7],
             common: Common::default(),
         }
     }
@@ -172,19 +177,45 @@ impl Script for Level9 {
             }
         }
         let at = cr.slots[BOSS].pos;
-        // The flails: round the boss, turning; their tips knock Buzz back.
-        let mut tips = [[0; 3]; 7];
+        // The flails: round the boss, turning, each half an animation cycle (0xC0000 of
+        // 0x180000) from the last while it plays its first animation; their tips knock Buzz
+        // back.
         let mut a = self.turn;
-        for (k, i) in FLAILS.enumerate() {
+        let mut time = self.phase_anim;
+        for i in FLAILS {
             let f = &mut cr.slots[i];
             f.pos[0] = at[0];
             f.pos[2] = at[2];
             f.angles[1] = a;
             f.target_facing = a;
+            if f.anim == 0 {
+                f.time = time as u32;
+            }
             a = (a + 0x2AB) & 0xFFF;
-            let s = (sin_table(f.angles[1] + 0x800), sin_table(f.angles[1] + 0xC00));
-            let tip = [f.pos[0] + (0x5AA * s.0 >> 14), f.pos[1] + 0x96, f.pos[2] + (0x5AA * s.1 >> 14)];
-            tips[k + 1] = tip;
+            time = if time + 0xC0000 > 0x17FFFF {
+                time - 0xC0000
+            } else {
+                time + 0xC0000
+            };
+        }
+        // 0x43C1C0: the tip is (0, 0x96, 0x5AA) on the flail's animated node 1, in model units.
+        // Without the animation, the same point turned by the facing alone.
+        for (k, i) in FLAILS.enumerate() {
+            let f = &cr.slots[i];
+            if f.id == 0 {
+                continue;
+            }
+            let s = (
+                sin_table(f.angles[1] + 0x800),
+                sin_table(f.angles[1] + 0xC00),
+            );
+            let rough = [
+                f.pos[0] + (0x5AA * 32 * s.0 >> 14),
+                f.pos[1] + 0x96 * 32,
+                f.pos[2] + (0x5AA * 32 * s.1 >> 14),
+            ];
+            let tip = cr.node_point(i, 1, [0.0, 150.0, 1450.0]).unwrap_or(rough);
+            self.tips[k + 1] = tip;
             if f.health == 1 && f.id != 0 && near(buzz, tip, 0x4B) {
                 cr.hurts.push((crate::boxes::angle12((buzz[0] - tip[0]) as f32, (buzz[2] - tip[2]) as f32), 1));
             }
@@ -298,14 +329,16 @@ impl Script for Level9 {
             } else {
                 self.cool = 200;
                 let flail = self.round.min(6);
-                let tip = tips[flail];
+                let tip = self.tips[flail];
                 if let Some(l) = self.look.as_mut() {
                     l.at = tip;
                     let f = cr.slots[flail].angles[1];
                     l.from = [tip[0] + sin_table(f + 0x400) * 3, tip[1], tip[2] + sin_table(f - 0x800) * 3];
                 }
-                if self.look_ticks() < 300 && !self.called {
+                if self.look_ticks() < 300 && cr.slots[flail].anim == 0 && !self.called {
                     self.called = true;
+                    // 0x405CF0: the flail plays its calling animation.
+                    cr.set_slot_anim(flail, 1, 0x17);
                     for m in [p0, p1] {
                         cr.restart(m);
                         let c = &mut cr.slots[m];
@@ -313,6 +346,26 @@ impl Script for Level9 {
                     }
                     let at = cr.slots[p0].pos;
                     self.common.sounds.push((0x86, at));
+                }
+                // Sparks off the flail (node 4, 0x43C1C0) every other tick while it calls: type
+                // 0x11 (mode 2) on the 4-tick beat, else type 4 (mode 4).
+                let t = self.look_ticks();
+                if t > 0xB9 && t < 300 && self.every(2) {
+                    let s = (
+                        sin_table(cr.slots[flail].angles[1] + 0x800),
+                        sin_table(cr.slots[flail].angles[1] + 0xC00),
+                    );
+                    let f = cr.slots[flail].pos;
+                    let rough = [
+                        f[0] + (0x4B0 * 32 * s.0 >> 14),
+                        f[1] + 400 * 32,
+                        f[2] + (0x4B0 * 32 * s.1 >> 14),
+                    ];
+                    let at = cr
+                        .node_point(flail, 4, [0.0, 400.0, 1200.0])
+                        .unwrap_or(rough);
+                    let (typ, mode) = if self.every(4) { (0x11, 2) } else { (4, 4) };
+                    self.common.spawns.push((at, typ, mode, 0, None));
                 }
                 if cr.slots[flail].health == 1 {
                     for m in [p0, p1] {
@@ -378,9 +431,17 @@ impl Script for Level9 {
         // The beam.
         if self.cool == 0 && self.phase >= 2 && self.phase < 4 && near(buzz, at, 400) {
             let c = &cr.slots[BOSS];
+            // 0x43C1C0: (0, 0, −400) on the animated node 0, the eye, in model units.
             let f = c.angles[1] + 0x800;
-            let from = [at[0] + (-400 * sin_table(f) >> 14), at[1], at[2] + (-400 * sin_table(f + 0x400) >> 14)];
-            let to_buzz = crate::boxes::angle12((buzz[0] - from[0]) as f32, (buzz[2] - from[2]) as f32);
+            let rough = [
+                at[0] + (-400 * 32 * sin_table(f) >> 14),
+                at[1],
+                at[2] + (-400 * 32 * sin_table(f + 0x400) >> 14),
+            ];
+            let from = cr.node_point(BOSS, 0, [0.0, 0.0, -400.0]).unwrap_or(rough);
+            let c = &cr.slots[BOSS];
+            let to_buzz =
+                crate::boxes::angle12((buzz[0] - from[0]) as f32, (buzz[2] - from[2]) as f32);
             let u = beam_heading(c.angles[1], to_buzz);
             let delta = [sin_table(u) << 2, 96000, sin_table(u + 0x400) << 2];
             let o = glam::Vec3::from(from.map(|v| v as f32 / 32.0));

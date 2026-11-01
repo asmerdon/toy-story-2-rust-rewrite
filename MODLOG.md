@@ -101,3 +101,42 @@ Dated history of the work, newest at the bottom. Current state is in HANDOFF.md;
 - Removed `MODDING_PLAN.md` (stale) and `docs/opents2-brief.md` (done; superseded by the design doc; in git history). The owner's recordings, screenshots and the old ChatGPT log moved to `local/` (git-ignored).
 - Checks: release build clean; 196 tests pass with TS2_GAME_DIR and TS2_DISC_IMAGE; installer rebuilt with the token icon and wizard pictures. The launcher window and installer pages were not opened by the agent.
 - Icon redone at the owner's request: the flat face-on picture of the token rotated 48° in 2D (`make_icon.py` `TILT`), instead of a 3D view.
+
+## 2026-11-01: playtest round 3 (stomps, level 9 boss, Zurg intro)
+
+- Level 7: "Ride the HayBale" ported from 0x421340 (it was listed as not ported, so the stomp switch right of the start did nothing): the button tips, a 45-second challenge countdown, the bale bobs and rocks, and standing on it throws Buzz towards the shelf. The egg challenge's clock pauses during a ride, as in the original.
+- Stomp buttons on movers use 0x48B640 (`Player::touching_mover`: floor or any contact) on levels 4, 7 and 10. Level 4's lift buttons now tilt their collision -0x180 like their specials (was a quarter).
+- New `tests/stomps.rs`: all 33 stomp switches landed on with Buzz's physics. New level 14 test: a real jump-and-stomp on a helicopter button takes a press. The user's level 14 report is not reproduced.
+- Levels 7 and 11: far-set special copies were placed at a quarter of their position (the exe's `>> 7` assumes 0x4CCE30's x4); now level units.
+- Level 9: flail tips on animated node 1 (0x43C1C0) in model units; the minions were called up inside the boss. Flails' animations half a cycle apart; the calling flail plays animation 1 (sequence 0x17) and throws sparks (node 4).
+- Viewer: frame times within 12% of a whole (or half) tick count as exactly that (`game::snap_frame_time`), so vsync jitter no longer runs 0 then 2 ticks; aimed at the jittery Zurg entrance, whose simulation is smooth tick to tick.
+- Token exit: the exe's victory (0x4A0F80) is an ordinary jump (state 2). Deviation at the owner's request: `Player::fly_off` spreads the wings (state 8) and climbs 0x400 a tick until the level ends (test `fly_off_spreads_the_wings_and_keeps_climbing`; not seen in a shot, the viewer was open).
+- Diagnostics: `floor_at`, `object_tris`; `zurgintro -v`.
+
+## 2026-11-01 (second pass): playtest round 3 follow-ups
+
+- Token exit: Deviation at the owner's request, Buzz spreads his wings and flies up until the level ends (`Player::fly_off`); the user confirmed it looks better.
+- Viewer: draws between ticks (Buzz, creatures, follow and scene cameras), so steady motion no longer judders on the user's 144 Hz display; the scene camera is refreshed after the scripts run. Aimed at the jittery boss entrances (levels 9 and 12).
+- Level 12: Zurg's chase case in 0x4076F0 (type 0x39) ported: he keeps 2000 from Buzz, higher while retaliating; he used to fly straight onto Buzz.
+- Level 9: the beam comes from the eye (node 0, (0, 0, -400)), not the base.
+- Level 13: floor types 4-7 (the oil, type 5) have little grip (0x436220).
+- Not reproduced: level 9's "clips inside the boss for a second" after a call-up.
+- Checks: workspace release build clean; 204 tests pass (193 engine + 11 launcher).
+
+## 2026-11-01 (third pass): playtest round 4
+
+- Level 9: the scene camera kept following the burst flail's tip after its slot was cleared, so it jumped into the boss; the tips are kept as last seen alive.
+- Level 3 (Bombs Away): creature matrices now turn Z first (0x4CD880 / 0x450C70), so the plane banks round its length in its intro instead of pitching like a hit.
+- Gadgets: the animation states for the rocket boots (10), hover boots (0x1F) and grapple pull (0x1E); the rocket boots' flames (particles 0x2F, kind 0x15) ride on Buzz's heels with exhaust for the whole boost.
+- Sliding floors (type 0xD, levels 11 and 15) ported: slide downhill, slow turning, state 0x20. Buzz's vertical floor probe now reports the floor's surface type and normal too.
+- Level 2: leaves fall from the tree (list 0, particle 0x37).
+- Level 5: sparks run along the zip wires (list 62, particle 0x4C every 0x14 ticks), hurting Buzz unless he spins.
+- Levels 5 and 14: rain (0x44ED90 / 0x44F010) and its splashes (`src/rain.rs`).
+- Not done: the disc launcher and the HUD ammo count (ammo is collected but discs can't be fired); level 14's lightning.
+- Checks: workspace release build clean; 210 tests pass (199 engine + 11 launcher).
+
+## 2026-11-01 (fourth pass): disc launcher
+
+- The disc launcher ported (0x434990, 0x4A4910, 0x4A4960, particle kinds 0x1D / 0x1E): with ammo B the fire button throws discs, homing on the nearest creature (or the first-person target) or flying straight, at most 6 in flight; homing discs hit (HitCreature kind 4) or bounce off creatures that can't be hurt. The HUD's weapon meter shows the disc or hook count (0x49FD40).
+- A `cargo fmt` run reformatted the whole workspace by mistake; it was undone (untouched files restored from git, edited files re-merged onto their original layout; a few edited spots keep rustfmt's layout).
+- Checks: workspace release build clean; 213 tests pass (202 engine + 11 launcher).

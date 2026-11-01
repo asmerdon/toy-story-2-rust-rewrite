@@ -161,6 +161,7 @@ A few things are deliberately different, mostly to fix what looked wrong when dr
 - The PS1 background picture is drawn behind windows and the sky (the PC version only used two colours from it).
 - Faces stored pure black in otherwise lit objects take the object's light, and fully transparent-textured glass (the kitchen jars) is drawn as green glass.
 - Level 1's garage drill bits move and hurt, matched to the original by eye.
+- Leaving a level after a Pizza Planet token, Buzz spreads his wings and flies up until the level ends (the PC original does an ordinary jump).
 - Saves go to `%APPDATA%/ts2-rust` (or `TS2_SAVE_DIR`) instead of beside the game, which is usually read-only. They use the original's `Toy2NN.sav` format, so saves copied between the two work.
 
 ## Running the tests
@@ -172,7 +173,7 @@ set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
 
-The suite (185 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
+The suite (213 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
 
 ## Tools for development
 

@@ -59,7 +59,9 @@ impl Place {
         Place::turned(offset, [0.0, yaw, 0.0])
     }
 
-    /// Turned about X, then the vertical, then Z (the root matrix of 0x4CD880), radians.
+    /// Turned about Z (roll, in the model's own frame), then the vertical, then X, radians:
+    /// the root matrix of 0x4CD880, whose rotate helpers (0x4A9AA0 X, then Y, then Z)
+    /// multiply on the left, as 0x450C70 builds it for attachments.
     fn turned(offset: [f32; 3], [ax, ay, az]: [f32; 3]) -> Place {
         let (sx, cx) = ax.sin_cos();
         let (sy, cy) = ay.sin_cos();
@@ -67,8 +69,15 @@ impl Place {
         let rx = [[1.0, 0.0, 0.0], [0.0, cx, sx], [0.0, -sx, cx]];
         let ry = [[cy, 0.0, -sy], [0.0, 1.0, 0.0], [sy, 0.0, cy]];
         let rz = [[cz, sz, 0.0], [-sz, cz, 0.0], [0.0, 0.0, 1.0]];
-        let mul = |a: [[f32; 3]; 3], b: [[f32; 3]; 3]| std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()));
-        Place { offset, m: mul(mul(rx, ry), rz) }
+        let mul = |a: [[f32; 3]; 3], b: [[f32; 3]; 3]| {
+            std::array::from_fn(|i| {
+                std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum())
+            })
+        };
+        Place {
+            offset,
+            m: mul(mul(rz, ry), rx),
+        }
     }
 
     fn apply(&self, p: [f32; 3]) -> [f32; 3] {
@@ -631,4 +640,21 @@ pub fn instance_centre(mesh: &Mesh, inst: &crate::formats::ngn::Instance) -> [f3
     let m = instance_matrix(inst);
     let t = transform(Some(&m), c);
     [0, 1, 2].map(|k| t[k] + inst.pos[k])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 0x4CD880 / 0x450C70: a creature's roll (Z) turns it in its own frame before its yaw.
+    /// A banking plane flying sideways must roll round its length, not pitch.
+    #[test]
+    fn roll_comes_before_yaw() {
+        let h = std::f32::consts::FRAC_PI_2;
+        let p = Place::turned([0.0; 3], [0.0, h, h]).apply([1.0, 0.0, 0.0]);
+        assert!(
+            (p[0]).abs() < 1e-5 && (p[1] - 1.0).abs() < 1e-5 && p[2].abs() < 1e-5,
+            "{p:?}"
+        );
+    }
 }

@@ -63,6 +63,8 @@ const K: i32 = 2;
 const GRAVITY: i32 = 0x100 / (K * K);
 const TERMINAL_FALL: i32 = 0x800;
 const DOUBLE_JUMP_MAX_RISE: i32 = -0x400;
+/// Deviation: the token exit's climb, object units a tick (`Player::fly_off`).
+const FLY_OFF_SPEED: i32 = 0x400;
 const DOUBLE_JUMP_APEX: i32 = 0x6A80;
 const COYOTE_TICKS: i32 = 6;
 
@@ -88,6 +90,21 @@ fn sin12(a: i32) -> i32 {
 
 fn cos12(a: i32) -> i32 {
     sin12(a + 0x400)
+}
+
+/// A frame's length snapped to the tick rate: within 12% of a whole number of ticks (or of
+/// half a tick, as on a 120 Hz display) it counts as exactly that. Vsync jitter otherwise
+/// leaves some frames a hair short of a tick and the next a hair over, so they run 0 and 2
+/// ticks, and anything moving steadily (a scene's camera, a mover) visibly stutters.
+pub fn snap_frame_time(dt: f32) -> f32 {
+    let t = dt * TICKS;
+    let step = if t < 0.75 { 0.5 } else { 1.0 };
+    let n = (t / step).round() * step;
+    if n > 0.0 && (t - n).abs() < 0.12 * n {
+        n / TICKS
+    } else {
+        dt
+    }
 }
 
 /// Object units → level units.
@@ -492,24 +509,40 @@ impl World {
 
     /// As `floor_below`, with the mover id (link − 1) of the floor, if it belongs to one.
     pub fn floor_below_obj(&self, x: f32, z: f32, from_y: f32) -> Option<(f32, Option<i32>)> {
+        self.floor_below_full(x, z, from_y)
+            .map(|(y, m, _, _)| (y, m))
+    }
+
+    /// As `floor_below_obj`, with the floor's surface type (as `Hit::surface`) and normal.
+    pub fn floor_below_full(
+        &self,
+        x: f32,
+        z: f32,
+        from_y: f32,
+    ) -> Option<(f32, Option<i32>, Option<u8>, Vec3)> {
         let p = Vec3::new(x, from_y, z);
         let lo = Vec3::new(x, f32::MIN, z);
         let hi = Vec3::new(x, f32::MAX, z);
-        let mut best: Option<(f32, u16)> = None;
+        let mut best: Option<(f32, u16, Vec3)> = None;
         for t in self.candidates(lo, hi) {
             if t.n.y > FLOOR_NY {
                 continue;
             }
             if let Some(y) = height_on(&t, p.x, p.z)
                 && y >= from_y
-                && best.is_none_or(|(b, _)| y < b)
+                && best.is_none_or(|(b, _, _)| y < b)
             {
-                best = Some((y, t.obj));
+                best = Some((y, t.obj, t.n));
             }
         }
-        best.map(|(y, o)| {
-            let link = self.objects.get(o as usize).map(|o| o.link as i32).filter(|&l| l != 0).map(|l| l - 1);
-            (y, link)
+        best.map(|(y, o, n)| {
+            let info = self.objects.get(o as usize);
+            let link = info
+                .map(|o| o.link as i32)
+                .filter(|&l| l != 0)
+                .map(|l| l - 1);
+            let surface = info.map(|o| o.flags as u8).filter(|&f| f != 0xFF);
+            (y, link, surface, n)
         })
     }
 
@@ -931,6 +964,17 @@ pub struct Player {
     /// Flag 0x40 of +0x40: thrown by something (room 3's spring). Until he lands, no friction
     /// and speeds up to 0xB80 each way (0x436220's profile).
     pub launched: bool,
+    /// The rocket boots just started: the viewer lights their flames.
+    pub rocket_lit: bool,
+    /// 0x53C818: sliding (2) since landing on a type-0xD floor, until landing on another;
+    /// 0x53C814 the slide's direction (downhill on the floor under him); this tick's push
+    /// along the facing (1, or -1 facing uphill) and turn cap (0x4346C0's +0x18).
+    pub slip: u8,
+    slide_dir: i32,
+    slide: i32,
+    turn_cap: i32,
+    /// The normal of the floor he last stood on.
+    floor_normal: Option<Vec3>,
     /// 0x53C5E0: rocket boots ticks left (250 from the pickup, 0x4A4D60). He charges forward
     /// on his own at up to 0x800, steering without skids, and jumps at −0x640.
     pub rocket: i32,
@@ -948,6 +992,11 @@ pub struct Player {
     grapple_t: i32,
     grapple_len: i32,
     pub hook_ammo: i32,
+    /// 0x882964: discs for the disc launcher (ammo B). With any, the fire button throws discs
+    /// instead of the laser; the viewer makes them (0x4A4960) and spends them.
+    pub disc_ammo: i32,
+    /// Discs asked for this update (yaw, pitch, the shot's origin, first person).
+    pub disc_shots: Vec<Shot>,
     pub hook_target: Option<[i32; 3]>,
     /// The rope to draw this tick (from the hand to its end), object units.
     pub rope: Option<([i32; 3], [i32; 3])>,
@@ -1052,6 +1101,12 @@ impl Player {
             power: 0,
             frozen: false,
             launched: false,
+            rocket_lit: false,
+            slip: 0,
+            slide_dir: 0,
+            slide: 0,
+            turn_cap: TURN_CAP,
+            floor_normal: None,
             water: (0, 0),
             in_water: false,
             floating: false,
@@ -1063,6 +1118,8 @@ impl Player {
             grapple_t: 0,
             grapple_len: 0,
             hook_ammo: 0,
+            disc_ammo: 0,
+            disc_shots: Vec::new(),
             hook_target: None,
             rope: None,
             accel_now: ACCEL,
@@ -1114,6 +1171,33 @@ impl Player {
     /// The pole Buzz is on or has just let go of (0x53C5E4 / 6 while 0x53C668 ≠ 0).
     pub fn pole_held(&self) -> Option<usize> {
         (self.climb != 0).then_some(self.pole)
+    }
+
+    /// Deviation: the token exit's flight. The original's victory (0x4A0F80 state 3) is an
+    /// ordinary jump (0x434090(−0xC00, 5), state 2); at the owner's request Buzz spreads his
+    /// wings (state 8, the double jump's overlay) and climbs steadily until the level ends.
+    /// Called each tick of the exit: the first call starts it (sound 0x10), later ones hold
+    /// the climb against gravity.
+    pub fn fly_off(&mut self) {
+        if self.state != state::DOUBLE_JUMP {
+            self.start_jump(-FLY_OFF_SPEED, JumpPhase::Double);
+            self.sound(0x10);
+        }
+        self.state = state::DOUBLE_JUMP;
+        self.jump = JumpPhase::Double;
+        self.vel[1] = -FLY_OFF_SPEED;
+    }
+
+    /// Standing on a low-grip floor: surface types 4–7 (0x436220), level 13's oil.
+    pub fn slick(&self) -> bool {
+        self.on_floor && self.surface.is_some_and(|s| s & 0xFC == 4)
+    }
+
+    /// 0x48B640: Buzz touches mover `m`: it is the floor under him (0x4863A0 sets its flags
+    /// 0x12) or his sweep hit it anywhere (0x482A00 sets 2). Scripts' stomp buttons ask this.
+    pub fn touching_mover(&self, m: i32) -> bool {
+        self.floor_mover.is_some_and(|(f, _)| f == m)
+            || self.wall_mover.is_some_and(|(w, _)| w == m)
     }
 
     /// Thrown up at `vy` heading `heading` at full speed (room 3's spring): a jump, facing
@@ -1362,9 +1446,8 @@ impl Player {
     pub fn start_rocket(&mut self) {
         self.clear_moves();
         self.rocket = 0xFA;
-        let at = self.pos_obj();
-        self.effects.push((at, 0x2F, 2, -0x20));
-        self.effects.push((at, 0x2F, 2, 0x20));
+        // The flames on his boots (two type-0x2F particles, `Particles::rocket_flames`).
+        self.rocket_lit = true;
         self.sound(0x4C);
     }
 
@@ -1552,6 +1635,12 @@ impl Player {
         ticks
     }
 
+    /// How far the next tick has come (0..1): the time left over after the last update's
+    /// ticks. The viewer draws that far between the last two ticks.
+    pub fn tick_fraction(&self) -> f32 {
+        self.accum.clamp(0.0, 1.0)
+    }
+
     /// One game tick (no d-pad, jump press = held).
     pub fn tick(&mut self, world: &World, stick: [f32; 2], jump_held: bool, stomp_pressed: bool) {
         self.tick_pad(world, stick, 0, jump_held, jump_held, stomp_pressed);
@@ -1613,6 +1702,35 @@ impl Player {
         // (modes 2 / 3) only 0x100.
         let mut top = MAX_SPEED;
         self.accel_now = ACCEL;
+        // Floor types 4–7 (level 13's oil): little grip (0x436220 with (0x52B81C & ~3) == 4).
+        // Slow to get going and slow to stop, so he slides.
+        if self.slick() {
+            side_decel = 0x10;
+            friction = 8;
+            self.accel_now = 0x14;
+        }
+        // Sliding (0x436220 with 0x53C818): almost no grip; he keeps pushing along his facing,
+        // forwards facing downhill (10), backwards facing uphill (2). With no direction held
+        // he swings round towards downhill by an eighth a tick and can't turn; held, he
+        // turns slowly (cap 0x100).
+        self.slide = 0;
+        self.turn_cap = TURN_CAP;
+        if self.slip != 0 {
+            side_decel = 4;
+            friction = 4;
+            let d = (self.slide_dir - self.facing) & 0xFFF;
+            let downhill = (d + 0x400) & 0xFFF < 0x801;
+            self.accel_now = if downhill { 10 } else { 2 };
+            self.slide = if downhill { 1 } else { -1 };
+            if !pushing {
+                let d = if d > 0x800 { d - 0x1000 } else { d };
+                self.facing = (self.facing + (d >> 3)) & 0xFFF;
+                self.target = self.facing;
+                self.turn_cap = 0;
+            } else {
+                self.turn_cap = 0x100;
+            }
+        }
         if self.pushing {
             top = 0x180;
         }
@@ -1768,6 +1886,23 @@ impl Player {
             self.coyote = COYOTE_TICKS;
         } else if self.coyote > 0 {
             self.coyote -= 1;
+        }
+        // 0x434550: a type-0xD floor starts a slide; landing on anything else ends it. Then
+        // (0x436220) on the floor its direction is downhill there (0x4520D0 of the floor
+        // normal's x / z; straight along +z on the flat).
+        // (The exe asks its coyote counter; here a tick of contact, since a steep slope's
+        // contact comes and goes from tick to tick.)
+        if self.slip != 0 && self.surface != Some(0xD) && self.on_floor {
+            self.slip = 0;
+        }
+        if self.surface == Some(0xD) && self.on_floor {
+            self.slip = 2;
+        }
+        if self.slip != 0
+            && self.on_floor
+            && let Some(n) = self.floor_normal
+        {
+            self.slide_dir = crate::boxes::angle12(n.x, n.z);
         }
         self.fall_bookkeeping();
 
@@ -2084,9 +2219,13 @@ impl Player {
             }
         }
         let diff = (self.facing - self.target) & 0xFFF;
-        let (amount, sign) = if diff <= 0x800 { (diff, -1) } else { (0x1000 - diff, 1) };
-        if amount < SNAP_TURN {
-            self.facing += sign * amount.min(TURN_CAP) / 8;
+        let (amount, sign) = if diff <= 0x800 {
+            (diff, -1)
+        } else {
+            (0x1000 - diff, 1)
+        };
+        if amount < SNAP_TURN || self.slip != 0 {
+            self.facing += sign * amount.min(self.turn_cap) / 8;
         } else {
             // Sharp reversal: snap round; on the ground, skid (sound 0x12).
             self.facing = self.target;
@@ -2127,8 +2266,16 @@ impl Player {
         let toward_zero = |v: i32, by: i32| if v < 0 { (v + by).min(0) } else { (v - by).max(0) };
         let side = toward_zero((vx * c - vz * s) / 4096, side_decel).clamp(-max, max);
         let mut fwd = toward_zero((vz * c + vx * s) / 4096, friction);
-        if pushing && fwd < max {
+        // Sliding pushes along the facing by itself, backwards when facing uphill.
+        let dir = if self.slide != 0 {
+            self.slide
+        } else {
+            pushing as i32
+        };
+        if dir > 0 && fwd < max {
             fwd += accel + friction;
+        } else if dir < 0 && fwd > -max {
+            fwd -= accel + friction;
         }
         let fwd = fwd.clamp(-fwd_max, fwd_max);
         self.forward = fwd;
@@ -2177,6 +2324,7 @@ impl Player {
             v -= n * v.dot(n).min(0.0);
             if n.y < FLOOR_NY {
                 floor = true;
+                self.floor_normal = Some(n);
                 self.surface = h.surface.or(self.surface);
                 if let Some(m) = h.mover {
                     self.floor_mover = Some((m, n));
@@ -2208,11 +2356,14 @@ impl Player {
         // catches starts too deep inside a face, seams, and floors that moved up into Buzz.
         let (old_bottom, new_bottom) = (start.y - BODY_LIFT, c.y + BODY_RADIUS);
         if new_bottom > old_bottom
-            && let Some((fy, m)) = world.floor_below_obj(c.x, c.z, old_bottom - FLOOR_PROBE_UP)
+            && let Some((fy, m, surface, n)) =
+                world.floor_below_full(c.x, c.z, old_bottom - FLOOR_PROBE_UP)
             && fy < new_bottom - 1.0
         {
             c.y = fy - BODY_RADIUS - SKIN;
             floor = true;
+            self.surface = surface.or(self.surface);
+            self.floor_normal = Some(n);
             if let Some(m) = m {
                 self.floor_mover = Some((m, Vec3::NEG_Y));
             }
@@ -2340,8 +2491,24 @@ impl Player {
                 if self.laser_charge == 0x40 {
                     fire = 2;
                 }
-                // Powered up, the next press fires at once.
-                self.laser_charge = if self.power != 0 { 6 } else { 0 };
+                // Powered up, or with discs, the next press fires at once.
+                self.laser_charge = if self.disc_ammo != 0 {
+                    0xE
+                } else if self.power != 0 {
+                    6
+                } else {
+                    0
+                };
+            } else if self.disc_ammo != 0 {
+                // Discs (0x434990 with 0x882964): one every 14 ticks while held.
+                self.laser_charge += 1;
+                if self.laser_charge > 0xD {
+                    fire = 1;
+                    self.laser_charge = 0;
+                }
+                if self.laser > 0x33 {
+                    self.laser -= 0x28;
+                }
             } else if self.power != 0 {
                 // Rapid fire: a shot every 6 ticks while held.
                 self.laser_charge += 1;
@@ -2389,11 +2556,33 @@ impl Player {
             self.fire_grapple(world, point);
             return;
         }
-        self.sound(if fire == 1 { 2 } else { 6 });
         let p = self.pos_obj();
         let fp = self.first_person == 4;
-        let (yaw, pitch) = if fp { (self.look[1], -self.look[0]) } else { (self.facing, 0) };
-        self.shots.push(Shot { kind: fire, yaw, pitch, origin: [p[0], p[1] - 0x2C00, p[2]], first_person: fp });
+        if self.disc_ammo != 0 {
+            // 0x4A4960: the viewer throws it (aimed in first person: the view's pitch).
+            let pitch = if fp { -self.look[0] } else { 0 };
+            self.disc_shots.push(Shot {
+                kind: 0x47,
+                yaw: self.facing,
+                pitch,
+                origin: [p[0], p[1] - 0x2C00, p[2]],
+                first_person: fp,
+            });
+            return;
+        }
+        self.sound(if fire == 1 { 2 } else { 6 });
+        let (yaw, pitch) = if fp {
+            (self.look[1], -self.look[0])
+        } else {
+            (self.facing, 0)
+        };
+        self.shots.push(Shot {
+            kind: fire,
+            yaw,
+            pitch,
+            origin: [p[0], p[1] - 0x2C00, p[2]],
+            first_person: fp,
+        });
     }
 
     /// The laser's arm pose (0x4011D0): animation 0x1A on the upper body, at frame
@@ -2481,6 +2670,8 @@ impl Player {
         self.hurt_timer = 0x5A;
         self.pos = at;
         self.vel = [0; 3];
+        // 0x433D50 clears the slide (0x53C818).
+        self.slip = 0;
         self.set_facing(facing);
         self.stomp = 0;
         self.spin = 0;
@@ -2575,6 +2766,17 @@ impl Player {
         if self.zip == 2 {
             self.state = state::ZIP;
         }
+        // Gadgets (0x4011D0): pulled along the grappling hook's rope (0x882950 = 2, past its
+        // first 10 units), hover boots running (0x882920).
+        if self.grapple == 2 && self.grapple_t > 9 {
+            self.state = state::GRAPPLE;
+        }
+        if self.hover > 0 {
+            self.state = state::HOVER;
+        }
+        if self.slip != 0 && (self.coyote != 0 || self.state == state::RUN) {
+            self.state = state::SLIDE;
+        }
         if self.charge < 0 {
             self.state = if self.super_spinning() { state::SUPER_SPIN } else { state::DIZZY };
         }
@@ -2598,6 +2800,10 @@ impl Player {
         }
         if self.fall_timer < 0 {
             self.state = state::FALL_RECOVER;
+        }
+        // Rocket boots (0x53C5E0) ride in their own pose.
+        if self.rocket > 0 {
+            self.state = state::ROCKET;
         }
         if self.hurt_timer >= 0x44 {
             self.state = state::HURT;
@@ -3195,6 +3401,67 @@ mod tests {
         p.tick(&w, [0.0; 2], true, false);
         assert_eq!(p.jump, JumpPhase::Spent);
         assert_eq!(p.vel[1], vy + GRAVITY);
+    }
+
+    #[test]
+    fn fly_off_spreads_the_wings_and_keeps_climbing() {
+        let world = World::from_triangles(vec![
+            [
+                Vec3::new(-1e4, 0.0, -1e4),
+                Vec3::new(1e4, 0.0, 1e4),
+                Vec3::new(1e4, 0.0, -1e4),
+            ],
+            [
+                Vec3::new(-1e4, 0.0, -1e4),
+                Vec3::new(-1e4, 0.0, 1e4),
+                Vec3::new(1e4, 0.0, 1e4),
+            ],
+        ]);
+        let mut p = Player::new(Vec3::ZERO);
+        p.frozen = true;
+        let start = p.pos.y;
+        let mut last = start;
+        for _ in 0..0x44 {
+            p.fly_off();
+            p.update(&world, Input::default(), 1.0 / TICKS);
+            assert_eq!(p.state, state::DOUBLE_JUMP, "wings out");
+            assert!(p.pos.y < last, "still climbing");
+            last = p.pos.y;
+        }
+        assert!(start - last > 1500.0, "flew {}", start - last);
+    }
+
+    /// 0x434990 with discs (0x882964): fire throws discs instead of the laser, one when the
+    /// arm is up and then one every 14 ticks while held.
+    #[test]
+    fn discs_replace_the_laser() {
+        let world = World::from_triangles(vec![[Vec3::new(-1e4, 0.0, -1e4), Vec3::new(1e4, 0.0, 1e4), Vec3::new(1e4, 0.0, -1e4)], [Vec3::new(-1e4, 0.0, -1e4), Vec3::new(-1e4, 0.0, 1e4), Vec3::new(1e4, 0.0, 1e4)]]);
+        let mut p = Player::new(Vec3::ZERO);
+        p.disc_ammo = 10;
+        for _ in 0..10 {
+            p.update(&world, Input::default(), 1.0 / TICKS);
+        }
+        let mut thrown = 0;
+        for t in 0..60 {
+            p.update(&world, Input { fire: t == 0, fire_held: true, ..Default::default() }, 1.0 / TICKS);
+            thrown += p.disc_shots.drain(..).count();
+            assert!(p.shots.is_empty(), "no laser");
+        }
+        // Up at tick 12, then every 14: 12, 26, 40, 54.
+        assert_eq!(thrown, 4);
+    }
+
+    #[test]
+    fn frame_times_snap_to_ticks() {
+        // 60 Hz with jitter: every frame is exactly one tick.
+        for ms in [16.0, 16.67, 17.4] {
+            assert_eq!(snap_frame_time(ms / 1000.0), 1.0 / TICKS);
+        }
+        assert_eq!(snap_frame_time(0.0081), 0.5 / TICKS);
+        assert_eq!(snap_frame_time(0.034), 2.0 / TICKS);
+        // 144 Hz and slow frames keep their own length.
+        assert_eq!(snap_frame_time(1.0 / 144.0), 1.0 / 144.0);
+        assert_eq!(snap_frame_time(0.025), 0.025);
     }
 
     #[test]

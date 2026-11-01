@@ -299,6 +299,18 @@ struct Camera {
 }
 
 impl Camera {
+    /// `self` (the last tick's camera) moved `t` of the way to `to`; yaw the short way round.
+    fn lerp(&self, to: &Camera, t: f32) -> Camera {
+        let tau = std::f32::consts::TAU;
+        let dyaw =
+            (to.yaw - self.yaw + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
+        Camera {
+            pos: self.pos.lerp(to.pos, t),
+            yaw: self.yaw + dyaw * t,
+            pitch: self.pitch + (to.pitch - self.pitch) * t,
+        }
+    }
+
     fn forward(&self) -> Vec3 {
         Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), -self.yaw.cos() * self.pitch.cos())
     }
@@ -358,6 +370,13 @@ struct Viewer {
     anims: Vec<Vec<anim::Animation>>,
     gfx: Option<Gfx>,
     cam: Camera,
+    /// The rocket boots were running last frame (their flames go when they stop).
+    rocket_on: bool,
+    /// The level's rain, if it has any (`Script::rain`).
+    rain: Option<ts2::rain::Rain>,
+    /// Drawing between ticks (the game runs at 60 ticks a second; a faster display would
+    /// otherwise show each tick for an uneven 2 or 3 frames, so steady motion judders).
+    interp: Interp,
     /// The original follow camera (play mode) and whether it drives the view (V toggles).
     orig_cam: Option<ts2::camera::Camera>,
     /// The abilities the level's gates were last set up for (0x4A2080).
@@ -633,6 +652,59 @@ fn special_in_view(ngn: &ngn::Ngn, s: &ts2::specials::Special, rooms: u64, eye: 
     let placed = ngn::Instance { pos: s.pos, rot: s.angles, scale: s.scale, ..*inst };
     let d2 = Vec3::from(scene::instance_centre(mesh, &placed)).distance_squared(eye);
     if s.layer == 0 { d2 < NEAR_CULL * NEAR_CULL } else { d2 > FAR_SKIP * FAR_SKIP }
+}
+
+/// The camera a script's look-at scene (0x4020F0) or conversation holds, if one is on.
+fn scene_camera(script: Option<&dyn ts2::script::Script>) -> Option<Camera> {
+    let l = script?;
+    let (from, at) = match (l.look, l.cutscene.as_ref()) {
+        (Some(lk), _) => (lk.from, lk.at),
+        (None, Some(c)) => c.camera(),
+        (None, None) => return None,
+    };
+    let p = Vec3::from(from.map(|v| v as f32 / 32.0));
+    let q = Vec3::from(at.map(|v| v as f32 / 32.0));
+    let g = (q - p).normalize_or_zero();
+    let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
+    Some(Camera {
+        pos: game_to_world(p.to_array()),
+        yaw: w.x.atan2(-w.z),
+        pitch: w.y.clamp(-1.0, 1.0).asin(),
+    })
+}
+
+/// Drawing between game ticks: where things were at the previous tick, and how far (0..1)
+/// the next tick has come. Moves longer than a jump (a teleport, a respawn) aren't blended.
+#[derive(Default)]
+struct Interp {
+    alpha: f32,
+    buzz_prev: Option<Vec3>,
+    creatures_prev: Vec<[i32; 3]>,
+    /// The camera at the previous and the latest tick.
+    cam: Option<(Camera, Camera)>,
+}
+
+impl Interp {
+    /// Level units.
+    fn buzz(&self, now: Vec3) -> Vec3 {
+        match self.buzz_prev {
+            Some(p) if p.distance(now) < 256.0 => p.lerp(now, self.alpha),
+            _ => now,
+        }
+    }
+
+    /// Slot `i` at `now` (object units), in level units.
+    fn creature(&self, i: usize, now: [i32; 3]) -> [f32; 3] {
+        let now_f = Vec3::from(now.map(|v| v as f32 / 32.0));
+        match self
+            .creatures_prev
+            .get(i)
+            .map(|p| Vec3::from(p.map(|v| v as f32 / 32.0)))
+        {
+            Some(p) if p.distance(now_f) < 256.0 => p.lerp(now_f, self.alpha).to_array(),
+            _ => now_f.to_array(),
+        }
+    }
 }
 
 fn upload(device: &wgpu::Device, batches: &[Batch], white: usize) -> Vec<GpuBatch> {
@@ -1167,6 +1239,7 @@ impl Viewer {
             // Boxes and the level script run inside each tick, just before Buzz moves (0x433700
             // is called from 0x436220 there).
             let (boxes, specials, script) = (&mut self.boxes, &mut self.specials, &mut self.script);
+            let buzz_before = player.pos;
             let ticks = player.update_with(&self.world, input, dt, &mut |p, w| {
                 if let Some(b) = boxes.as_mut() {
                     b.tick(p, w, specials);
@@ -1175,6 +1248,9 @@ impl Viewer {
                     }
                 }
             });
+            if ticks > 0 {
+                self.interp.buzz_prev = Some(buzz_before);
+            }
             // First person (0x4038E0) runs in place of the follow camera. Presses wait for a
             // frame that runs a tick, so a fast frame can't swallow them.
             let leaving_l1 = self.look_pressed && player.first_person == 4 && ticks > 0;
@@ -1243,27 +1319,12 @@ impl Viewer {
             }
             // Follow camera: orbit behind the player at chest height.
             let target = game_to_world(player.pos.to_array()) + Vec3::Y * 1.2;
-            match self.orig_cam.as_ref().filter(|_| self.use_orig_cam && player.first_person == 0) {
-                _ if self.script.as_ref().is_some_and(|l| l.look.is_some()) => {
-                    let lk = self.script.as_ref().and_then(|l| l.look).unwrap();
-                    let p = Vec3::from(lk.from.map(|v| v as f32 / 32.0));
-                    let q = Vec3::from(lk.at.map(|v| v as f32 / 32.0));
-                    self.cam.pos = game_to_world(p.to_array());
-                    let g = (q - p).normalize_or_zero();
-                    let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
-                    self.cam.yaw = w.x.atan2(-w.z);
-                    self.cam.pitch = w.y.clamp(-1.0, 1.0).asin();
-                }
-                _ if self.script.as_ref().is_some_and(|l| l.cutscene.is_some()) => {
-                    let (pos, look) = self.script.as_ref().and_then(|l| l.cutscene.as_ref()).map(|c| c.camera()).unwrap();
-                    let p = Vec3::from(pos.map(|v| v as f32 / 32.0));
-                    let q = Vec3::from(look.map(|v| v as f32 / 32.0));
-                    self.cam.pos = game_to_world(p.to_array());
-                    let g = (q - p).normalize_or_zero();
-                    let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
-                    self.cam.yaw = w.x.atan2(-w.z);
-                    self.cam.pitch = w.y.clamp(-1.0, 1.0).asin();
-                }
+            match self
+                .orig_cam
+                .as_ref()
+                .filter(|_| self.use_orig_cam && player.first_person == 0)
+            {
+                _ if let Some(c) = scene_camera(self.script.as_deref()) => self.cam = c,
                 _ if player.first_person != 0 => {
                     let e = ts2::look::FirstPerson::eye(player);
                     self.cam.pos = game_to_world(e.map(|v| v as f32 / 32.0));
@@ -1324,6 +1385,48 @@ impl Viewer {
                         }
                     }
                 }
+                // Discs (0x4A4960): at most 6 in flight (0x4A4910). Homing (0x47) at the
+                // nearest creature it can hit within 4096 units, or in first person the one
+                // targeted; else straight (0x48) at a third of full speed along the aim.
+                let disc_shots: Vec<game::Shot> = player.disc_shots.drain(..).collect();
+                for shot in disc_shots {
+                    if self.particles.discs_in_flight() >= 6 {
+                        continue;
+                    }
+                    let a = shot.yaw as f32 / 4096.0 * std::f32::consts::TAU;
+                    let muzzle = [
+                        shot.origin[0] + (a.sin() * 90.0 * 32.0) as i32,
+                        shot.origin[1],
+                        shot.origin[2] + (a.cos() * 90.0 * 32.0) as i32,
+                    ];
+                    let target = if shot.first_person {
+                        self.look.target
+                    } else {
+                        cr.disc_target(player.pos_obj())
+                    };
+                    let sin = |x: i32| ts2::script::sin_table(x);
+                    match target {
+                        Some(t) => {
+                            if let Some(k) =
+                                self.particles
+                                    .create(muzzle, [0, -2, 0], shot.yaw << 2, 0, 0, 0x47)
+                            {
+                                self.particles.slots[k].target = Some(t);
+                            }
+                        }
+                        None => {
+                            let flat = sin(shot.pitch + 0x400);
+                            let vel = [
+                                (sin(shot.yaw) * flat >> 14) / 3,
+                                -sin(shot.pitch) / 3,
+                                (sin(shot.yaw + 0x400) * flat >> 14) / 3,
+                            ];
+                            self.particles.create(muzzle, vel, 0, 0, 0, 0x48);
+                        }
+                    }
+                    sounds.push((0x54, player.pos_obj()));
+                    player.disc_ammo -= 1;
+                }
                 cr.sounds.extend(sounds);
             }
             for (at, t, m, angle) in player.effects.drain(..) {
@@ -1331,10 +1434,41 @@ impl Viewer {
                     self.particles.slots[k].angle = angle & 0xFFF;
                 }
             }
+            if std::mem::take(&mut player.rocket_lit) {
+                self.particles
+                    .rocket_flames(player.pos_obj(), player.rocket);
+            }
+            if player.rocket == 0 && std::mem::replace(&mut self.rocket_on, false) {
+                self.particles.end_rocket_flames();
+            }
+            self.rocket_on |= player.rocket > 0;
+            self.particles.buzz_vel = player.vel;
             self.particles.camera = cam_game.map(|v| (v * 32.0) as i32);
             for _ in 0..ticks {
-                self.particles.tick(&self.world, (player.pos_obj(), player.facing));
-                self.rewards.tick(self.particles.camera, &mut self.particles);
+                if let Some(cr) = self.creatures.as_ref() {
+                    self.particles.aims = cr.aims();
+                }
+                self.particles
+                    .tick(&self.world, (player.pos_obj(), player.facing));
+                if let Some(sprite) = self.script.as_ref().and_then(|l| l.rain) {
+                    let rain = self
+                        .rain
+                        .get_or_insert_with(|| ts2::rain::Rain::new(sprite));
+                    let f = self.cam.forward();
+                    let yaw = ts2::boxes::angle12(f.x, -f.z);
+                    let water = (player.water.0 != 0).then_some(player.water.1);
+                    let cam = self.particles.camera;
+                    rain.tick(
+                        &self.world,
+                        &mut self.particles,
+                        cam,
+                        yaw,
+                        player.vel[1],
+                        water,
+                    );
+                }
+                self.rewards
+                    .tick(self.particles.camera, &mut self.particles);
                 if let Some(b) = self.boxes.as_mut() {
                     for k in b.put_out.drain(..) {
                         self.rewards.put_out(k, 0, &mut self.particles);
@@ -1382,6 +1516,8 @@ impl Viewer {
                     laser: player.laser,
                     laser_charge: player.laser_charge,
                     power: player.power,
+                    discs: player.disc_ammo,
+                    hooks: player.hook_ammo,
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                     race: self.script.as_ref().map_or(0, |l| l.race),
                     laps: self.script.as_ref().map_or(0, |l| l.laps),
@@ -1405,6 +1541,9 @@ impl Viewer {
             // Creatures (0x4086F0) near the camera.
             if let Some(cr) = self.creatures.as_mut() {
                 let cam_obj = cam_game.map(|v| (v * 32.0) as i32);
+                if ticks > 0 {
+                    self.interp.creatures_prev = cr.slots.iter().map(|c| c.pos).collect();
+                }
                 for _ in 0..ticks {
                     cr.tick(&self.world, cam_obj, player.pos_obj());
                     cr.contact(player);
@@ -1430,6 +1569,20 @@ impl Viewer {
                 if let Some(l) = self.script.as_mut() {
                     for r in l.particles.drain(..) {
                         self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);
+                    }
+                    for (r, life) in l.lasting.drain(..) {
+                        if let Some(k) = self
+                            .particles
+                            .create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ)
+                        {
+                            self.particles.slots[k].life = life;
+                        }
+                    }
+                    for (at, t, m, spin, floor) in l.drops.drain(..) {
+                        if let Some(k) = self.particles.spawn(at, t, m) {
+                            self.particles.slots[k].spin = spin;
+                            self.particles.slots[k].floor = Some(floor);
+                        }
                     }
                     for (at, t, m, spin, life) in l.spawns.drain(..) {
                         if let Some(k) = self.particles.spawn(at, t, m) {
@@ -1641,6 +1794,11 @@ impl Viewer {
                         let b = player.pos_obj();
                         player.hurt(ts2::boxes::angle12((b[0] - at[0]) as f32, (b[2] - at[2]) as f32), 3);
                     }
+                    ts2::particles::Event::HitCreature { slot, angle } => {
+                        if let Some(cr) = self.creatures.as_mut() {
+                            cr.hit(slot, angle, 4);
+                        }
+                    }
                 }
             }
             if let Some(a) = self.audio.as_mut() {
@@ -1666,6 +1824,7 @@ impl Viewer {
                     }
                     // Hooks (0x882938) are spent by Buzz and picked up here.
                     pk.ammo_a = player.hook_ammo;
+                    pk.ammo_b = player.disc_ammo;
                     let evs = pk.tick(player.pos.to_array(), cam_game);
                     let speed = (player.vel[0] as f32).hypot(player.vel[2] as f32) as i32;
                     pk.follow_shield(player.pos_obj(), cam_game.map(|v| (v * 32.0) as i32), player.facing, speed);
@@ -1675,6 +1834,7 @@ impl Viewer {
                     player.lives = pk.lives;
                     player.shield = pk.shield;
                     player.hook_ammo = pk.ammo_a;
+                    player.disc_ammo = pk.ammo_b;
                     for ev in evs {
                         match ev {
                             ts2::pickups::Event::TokenBurst(at) => {
@@ -1852,9 +2012,8 @@ impl Viewer {
                         // The victory: he turns to the camera, then jumps for joy.
                         self.token_timer -= 1;
                         if self.token_timer < 0x37A {
-                            player.frozen = false;
-                            player.start_jump(-0xC00, game::JumpPhase::DoubleReleased);
-                            player.frozen = true;
+                            // Deviation (owner's request): wings out and away, not the exe's jump.
+                            player.fly_off();
                             if let Some(a) = self.audio.as_mut() {
                                 a.play_flat(0x33);
                             }
@@ -1863,6 +2022,7 @@ impl Viewer {
                         }
                     }
                     4 => {
+                        player.fly_off();
                         self.token_timer -= 1;
                         if self.token_timer < 0 && self.front.is_some() {
                             // The level is over (0x52B7DC): the front end takes it from here.
@@ -1879,6 +2039,35 @@ impl Viewer {
                         }
                     }
                     _ => {}
+                }
+            }
+            // The scripts have run: a scene's camera as they left it this tick.
+            if let Some(c) = scene_camera(self.script.as_deref()) {
+                self.cam = c;
+            }
+            // Draw between the last two ticks: the follow and scene cameras only (the free
+            // camera, first person and the mouse-orbited camera move per frame already).
+            let blend = player.first_person == 0
+                && (self.use_orig_cam || scene_camera(self.script.as_deref()).is_some());
+            self.interp.alpha = player.tick_fraction();
+            if !blend {
+                self.interp.cam = None;
+            } else {
+                let now = self.cam;
+                let prev = match self.interp.cam {
+                    Some((p, n)) => {
+                        if ticks > 0 {
+                            n
+                        } else {
+                            p
+                        }
+                    }
+                    None => now,
+                };
+                self.interp.cam = Some((prev, now));
+                // A cut (a new scene, a respawn) doesn't blend.
+                if prev.pos.distance(now.pos) < 256.0 * WORLD_SCALE {
+                    self.cam = prev.lerp(&now, self.interp.alpha);
                 }
             }
         } else if self.front.is_none() {
@@ -1913,9 +2102,21 @@ impl Viewer {
                 // Play mode: the creatures as their scripts move and animate them.
                 (Some(cr), true) => {
                     let cam = Vec3::from(world_to_game(self.cam.pos));
-                    for c in cr.slots.iter().filter(|c| c.id != 0 && c.health > 0) {
-                        let Some(ci) = self.ngn.creatures.iter().position(|n| n.id == c.id as usize) else { continue };
-                        let pos = c.pos.map(|v| v as f32 / 32.0);
+                    for (i, c) in cr
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| c.id != 0 && c.health > 0)
+                    {
+                        let Some(ci) = self
+                            .ngn
+                            .creatures
+                            .iter()
+                            .position(|n| n.id == c.id as usize)
+                        else {
+                            continue;
+                        };
+                        let pos = self.interp.creature(i, c.pos);
                         if (Vec3::from(pos) - cam).length() > 10176.0 {
                             continue;
                         }
@@ -1967,7 +2168,14 @@ impl Viewer {
                     }
                     scene::merge(
                         &mut batches,
-                        scene::creature_batches_layered(&self.ngn, c, p.pos.to_array(), yaw, layer(pose.base), layer(overlay)),
+                        scene::creature_batches_layered(
+                            &self.ngn,
+                            c,
+                            self.interp.buzz(p.pos).to_array(),
+                            yaw,
+                            layer(pose.base),
+                            layer(overlay),
+                        ),
                     );
                 }
                 (preview, _) => placed.push((ci, p.pos.to_array(), yaw, preview.unwrap_or(0))),
@@ -2004,7 +2212,22 @@ impl Viewer {
             let r = f.cross(Vec3::Y).normalize_or_zero();
             let u = r.cross(f).normalize_or_zero();
             let g = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
-            scene::merge(&mut batches, self.particles.batches(&self.hud_sprites, &texture, g(r), g(u)));
+            scene::merge(
+                &mut batches,
+                self.particles
+                    .batches(&self.hud_sprites, &texture, g(r), g(u)),
+            );
+            // Only on a level that rains (a level change keeps the old drops otherwise).
+            if let Some(rain) = self
+                .rain
+                .as_ref()
+                .filter(|r| self.script.as_ref().and_then(|l| l.rain) == Some(r.sprite))
+            {
+                scene::merge(
+                    &mut batches,
+                    rain.batches(&self.hud_sprites, &texture, g(r), g(u)),
+                );
+            }
         }
         // Laser beams.
         scene::merge(&mut batches, self.lasers.beams_batches(Vec3::from(world_to_game(self.cam.pos)), self.beam_sprite));
@@ -2042,6 +2265,8 @@ impl Viewer {
                     laser: p.laser,
                     laser_charge: p.laser_charge,
                     power: p.power,
+                    discs: p.disc_ammo,
+                    hooks: p.hook_ammo,
                     sheep: self.creatures.as_ref().map_or(0, |c| c.sheep),
                     race: self.script.as_ref().map_or(0, |l| l.race),
                     laps: self.script.as_ref().map_or(0, |l| l.laps),
@@ -2340,7 +2565,7 @@ impl Viewer {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
-                let dt = (now - self.last).as_secs_f32().min(0.1);
+                let dt = ts2::game::snap_frame_time((now - self.last).as_secs_f32().min(0.1));
                 self.last = now;
                 self.update(dt);
                 self.sync_cursor();
@@ -3164,7 +3389,14 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         ngn,
         anims,
         gfx: None,
-        cam: Camera { pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0 },
+        cam: Camera {
+            pos: Vec3::ZERO,
+            yaw: 0.0,
+            pitch: 0.0,
+        },
+        interp: Interp::default(),
+        rocket_on: false,
+        rain: None,
         orig_cam: None,
         abilities_shown: u8::MAX,
         use_orig_cam: true,

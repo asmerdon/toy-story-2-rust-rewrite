@@ -180,6 +180,7 @@ impl Script for Level12 {
                     cr.animate_slot(0, 1, 2, [-32; 2]);
                 }
             }
+            cr.boss.retaliating = self.retaliating;
             let previous = self.cycle;
             self.cycle -= 1;
             if self.cycle < 0 {

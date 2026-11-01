@@ -61,6 +61,13 @@ pub struct Common {
     /// Particles the script makes: by type and mode (0x40FDF0) with a spin and a life, and
     /// fully specified (0x40FAE0).
     pub spawns: Vec<([i32; 3], u8, usize, i32, Option<i32>)>,
+    /// Particles that settle on a floor the script picked: where, type, mode, spin, floor
+    /// (object units).
+    pub drops: Vec<([i32; 3], u8, usize, i32, i32)>,
+    /// Fully specified particles (0x40FAE0) given their own life (+0x24).
+    pub lasting: Vec<(ParticleRequest, i32)>,
+    /// It rains here, drawn with this sprite (0x44ED90's third argument).
+    pub rain: Option<u8>,
     pub particles: Vec<ParticleRequest>,
     /// Reward sparkles to put out (0x49FAB0: index, group).
     pub put_out: Vec<(usize, usize)>,

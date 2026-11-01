@@ -107,3 +107,23 @@ fn bones_all_collectable() {
     }
     assert_eq!(pk.collectables, 5);
 }
+
+/// 0x41E880: the zip wires are live. A spark (particle 0x4C, life 0x80) sets off along the
+/// next wire every 0x14 + 1 ticks, at a 64th of the wire a tick (halved when made).
+#[test]
+fn sparks_run_along_the_zip_wires() {
+    let Some(mut l) = load() else { return };
+    let p = Player::new(Vec3::ZERO);
+    let mut sparks = Vec::new();
+    for _ in 0..105 {
+        l.script
+            .step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+        sparks.extend(l.script.lasting.drain(..));
+    }
+    assert_eq!(sparks.len(), 5, "one every 21 ticks");
+    assert!(
+        sparks
+            .iter()
+            .all(|(r, life)| r.typ == 0x4C && *life == 0x80 && r.vel != [0; 3])
+    );
+}
