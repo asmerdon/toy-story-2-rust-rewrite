@@ -129,3 +129,185 @@ fn paint_room_seen_only_through_its_portals() {
     // Inside, facing the back wall: the yard isn't drawn.
     assert_eq!(rooms(2, [9500.0, -4000.0, 19050.0], 0.0, 0.0), 0b101);
 }
+
+/// The hanging platforms (movers 1–4) sway as Buzz lands, stomps and hops about on them,
+/// and run their paths when he's off; the shuttles (0xE–0x11) run theirs all the time.
+/// With the real script moving them (inside the tick and between ticks), he never ends a
+/// tick under the top of one he's over.
+#[test]
+fn buzz_stays_on_the_moving_platforms() {
+    let Some(mut l) = load() else { return };
+    let dt = 1.0 / 60.0;
+    let mut failed = Vec::new();
+    let mut ticks = 0;
+    let mut on = [0; 0x12];
+    for m in [1, 2, 3, 4, 0xE, 0xF, 0x10, 0x11] {
+        let Some(at) = l.world.mover_pos(m) else { continue };
+        // The highest floor of mover m under (x, z).
+        let top = |w: &World, x: f32, z: f32| {
+            let mut from = -1.0e9;
+            while let Some((y, o)) = w.floor_below_obj(x, z, from) {
+                if o == Some(m) {
+                    return Some(y);
+                }
+                from = y + 1.0;
+            }
+            None
+        };
+        // A point on its top near where it hangs from.
+        let spot = (0..12).flat_map(|k| [0.0, 200.0, 400.0, 700.0, 1000.0].map(move |r| (k as f32 / 12.0 * std::f32::consts::TAU, r))).find_map(|(a, r)| {
+            let (x, z) = (at.x + a.sin() * r, at.z + a.cos() * r);
+            top(&l.world, x, z).map(|y| Vec3::new(x, y, z))
+        });
+        let Some(spot) = spot else {
+            failed.push(format!("platform {m}: no top found"));
+            continue;
+        };
+        let mut p = Player::new(spot - Vec3::Y * 300.0);
+        for t in 0..900 {
+            // Standing for 600 ticks, then hopping every 40 and stomping on the way down
+            // every other hop.
+            let hop = t >= 600;
+            let input = ts2::game::Input {
+                jump: hop && t % 40 == 0,
+                jump_held: hop && t % 40 < 8,
+                stomp: hop && t % 80 == 20,
+                ..Default::default()
+            };
+            let (script, specials, boxes) = (&mut l.script, &mut l.specials, &l.boxes);
+            p.update_with(&l.world, input, dt, &mut |pl, w| script.step(w, specials, pl, boxes));
+            l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
+            ticks += 1;
+            if p.on_floor && p.floor_mover.is_some_and(|(o, _)| o == m) {
+                on[m as usize] += 1;
+            }
+            if let Some(f) = top(&l.world, p.pos.x, p.pos.z)
+                && p.pos.y > f + 20.0
+                && p.pos.y < f + 400.0
+            {
+                failed.push(format!("platform {m} tick {t}: feet {:.0} under its top {f:.0}", p.pos.y));
+                break;
+            }
+        }
+    }
+    eprintln!("ticks standing on each: {on:?}");
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert!(ticks > 1000, "{ticks} ticks");
+}
+
+/// Diagnostic (ignored): the shuttles' paths, every 20 ticks.
+#[test]
+#[ignore]
+fn print_shuttle_paths() {
+    let Some(mut l) = load() else { return };
+    let mut p = Player::new(Vec3::new(0.0, -100000.0, 0.0));
+    for t in 0..600 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        if t % 20 == 0 {
+            let ps: Vec<String> = [0xE, 0xF, 0x10, 0x11].iter().map(|&m| format!("{:.0?}", l.world.mover_pos(m).unwrap())).collect();
+            eprintln!("{t:4} {}", ps.join(" "));
+        }
+    }
+}
+
+/// Diagnostic (ignored): level 4's creature slots.
+#[test]
+#[ignore]
+fn print_creatures() {
+    let Some(l) = load() else { return };
+    for (i, c) in l.cr.slots.iter().enumerate().filter(|(_, c)| c.id != 0) {
+        eprintln!("slot {i:#x} id {:#x} pos {:?}", c.id, c.pos.map(|v| v >> 5));
+    }
+}
+
+/// Diagnostic (ignored): each hanging platform's drawn box against its collision's, as the
+/// script leaves them after a while.
+#[test]
+#[ignore]
+fn print_platform_fit() {
+    let Some(mut l) = load() else { return };
+    let game = env::var_os("TS2_GAME_DIR").map(PathBuf::from).unwrap();
+    let n = ngn::parse(&fs::read(game.join("data/level04/level.ngn")).unwrap()).unwrap();
+    let mut p = Player::new(Vec3::new(0.0, -100000.0, 0.0));
+    for _ in 0..200 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    }
+    for m in 1..=4 {
+        let s = l.specials.get(m - 1).unwrap().clone();
+        let mut bb = Vec::new();
+        let b = ts2::scene::special_batches(&n, &s, &mut bb);
+        let pts: Vec<Vec3> = b.iter().flat_map(|b| b.vertices.iter().map(|v| Vec3::from(v.pos))).collect();
+        let lo = pts.iter().fold(Vec3::MAX, |a, p| a.min(*p));
+        let hi = pts.iter().fold(Vec3::MIN, |a, p| a.max(*p));
+        let at = l.world.mover_pos(m).unwrap();
+        // Collision: floors of mover m under a grid over the drawn box.
+        let mut top = f32::MAX;
+        let mut cover = 0;
+        for i in 0..=20 {
+            for k in 0..=20 {
+                let (x, z) = (lo.x + (hi.x - lo.x) * i as f32 / 20.0, lo.z + (hi.z - lo.z) * k as f32 / 20.0);
+                let mut from = lo.y - 500.0;
+                while let Some((y, o)) = l.world.floor_below_obj(x, z, from) {
+                    if y > hi.y + 500.0 { break; }
+                    if o == Some(m) { top = top.min(y); cover += 1; break; }
+                    from = y + 1.0;
+                }
+            }
+        }
+        eprintln!("platform {m}: drawn {lo:.0}..{hi:.0}, angles {:x?}; mover at {at:.0}, turn {:?}; collision top {top:.0} over {cover}/441 of the drawn box", s.angles, l.world.mover_turn(m));
+    }
+}
+
+/// Diagnostic (ignored): the drawbridge scoop (mover 0x1A, specials 0x1C / 0x1D) drawn
+/// against its collision as it turns: at a few angles, the gap between the drawn top surface
+/// and the collision floor over a grid.
+#[test]
+#[ignore]
+fn print_drawbridge_fit() {
+    let Some(mut l) = load() else { return };
+    let game = env::var_os("TS2_GAME_DIR").map(PathBuf::from).unwrap();
+    let n = ngn::parse(&fs::read(game.join("data/level04/level.ngn")).unwrap()).unwrap();
+    for z in [0, -0x80, -0x130, -0x1C0, -0x266] {
+        l.world.turn_mover(0x1A, [0, 0, z]);
+        for id in [0x1C, 0x1D] {
+            l.specials.turn_from_own(id, [0, 0, z + 0x266]);
+        }
+        let mut tris = Vec::new();
+        for id in [0x1C] {
+            let s = l.specials.get(id).unwrap().clone();
+            let mut bb = Vec::new();
+            for b in ts2::scene::special_batches(&n, &s, &mut bb) {
+                for t in b.vertices.chunks_exact(3) {
+                    tris.push([0, 1, 2].map(|k| Vec3::from(t[k].pos)));
+                }
+            }
+        }
+        let lo = tris.iter().flatten().fold(Vec3::MAX, |a, p| a.min(*p));
+        let hi = tris.iter().flatten().fold(Vec3::MIN, |a, p| a.max(*p));
+        let mut gaps = Vec::new();
+        for i in 1..10 {
+            for k in 1..10 {
+                let (x, zz) = (lo.x + (hi.x - lo.x) * i as f32 / 10.0, lo.z + (hi.z - lo.z) * k as f32 / 10.0);
+                let drawn = tris.iter().filter_map(|t| {
+                    let [a, b, c] = *t;
+                    let d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
+                    if d.abs() < 1e-6 { return None; }
+                    let u = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (zz - c.z)) / d;
+                    let w = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (zz - c.z)) / d;
+                    (u >= 0.0 && w >= 0.0 && u + w <= 1.0).then(|| u * a.y + w * b.y + (1.0 - u - w) * c.y)
+                }).fold(f32::MAX, f32::min);
+                let mut from = lo.y - 3000.0;
+                let mut col = None;
+                while let Some((y, o)) = l.world.floor_below_obj(x, zz, from) {
+                    if o == Some(0x1A) { col = Some(y); break; }
+                    from = y + 1.0;
+                }
+                if drawn < f32::MAX && let Some(c) = col {
+                    gaps.push((c - drawn) as i32);
+                }
+            }
+        }
+        gaps.sort();
+        eprintln!("z {z:#x}: drawn {lo:.0}..{hi:.0}; collision − drawn top over {} points: min {:?} median {:?} max {:?}", gaps.len(), gaps.first(), gaps.get(gaps.len() / 2), gaps.last());
+    }
+}

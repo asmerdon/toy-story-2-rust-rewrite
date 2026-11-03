@@ -20,6 +20,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## 2 Andy's Neighborhood (`level2.rs`)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
+| Conkers fall and splat (spawn modes to 0x1C, kind 0x17, death action 2) | `conkers_fall_and_splat` | | reported floating |
 | Leaves falling from the tree (list 0, particle 0x37, 0x4190C0) | `leaves_fall_from_the_tree` | | reported missing |
 | See-saws (2) | `see_saws_lie_along_their_yaw`, `seesaw.rs` | | |
 | Sarge's five troops (token 1) | `sarge_wants_his_troops` | | |
@@ -111,6 +112,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## 10 Elevator Hop (`level10.rs`)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
+| Grappling hook: lock (X) survives mouse jitter, throws and pulls; every level 10 climb (hook points on screen, on their floors) | `every_hook_climb_on_level_10_reaches_the_next_ledge`, `hook_points_are_drawn` | | reported: hooks invisible, stuck after the first |
 | Air shafts | `air_shaft_lifts_buzz` | | |
 | Wind, lifts, stomp markers | | | |
 | Vents 4 / 5 stomped open (any contact, 0x48B640) | `every_stomp_switch_registers` | | |
@@ -178,6 +180,9 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## Cross-level
 | Item | Status |
 |---|---|
+| Moving platforms carry Buzz however they're moved (levels 4, 7, 10: every flat-topped mover, rising in and between ticks) | `rising_platforms_carry_buzz`; user reported falling through the level 4 claw and level 10 lifts |
+| A platform rising into a jumping or falling Buzz puts him on it (levels 2, 4, 7, 10); planks tipping up lift him; level 4's platforms and shuttles under the real script | `a_rising_platform_meeting_buzz_puts_him_on_it`, `a_tipping_plank_lifts_buzz`, `a_mover_coming_sideways_pushes_buzz`, `buzz_stays_on_the_moving_platforms`, `rocket_double_jump_spreads_the_wings`; user reported the level 2 float, level 4 claw and iron bar |
+| Level tester: every ability given, gadget cages open | |
 | Disc launcher (ammo B): fire throws discs, homing (0x47) or straight (0x48), at most 6; the HUD's ammo count | `discs_replace_the_laser`, `homing_discs_hit_or_bounce`, `disc_count_shows_on_the_weapon_meter`; not played yet |
 | Specials by layer and distance (0x4CDDD0), all levels: no power-ups or helicopter through walls | `specials_of_each_layer_have_their_own_distance`; sweep `out/rv/sweep` |
 | Boundary walls (kind 0x101) in every level that has them | `final_arena_back_*`, `airport_conveyor_ends_*` |

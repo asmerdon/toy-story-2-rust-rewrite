@@ -106,7 +106,7 @@ The numbers follow the campaign order, so 3 is Bombs Away and 6 is Slime Time. `
 
 While you play, the mouse cursor is hidden and kept inside the window.
 
-When a level is opened with `--level`, F toggles between playing and a free camera, and Escape closes the window.
+When a level is opened with `--level`, F toggles between playing and a free camera, and Escape closes the window. A level opened this way (or from the launcher's Level Tester) starts with every ability Mr Potato Head gives (rocket boots, hooks, discs and the rest), so the gadget pickups' cages are open.
 
 ## What's in
 
@@ -162,6 +162,9 @@ A few things are deliberately different, mostly to fix what looked wrong when dr
 - Faces stored pure black in otherwise lit objects take the object's light, and fully transparent-textured glass (the kitchen jars) is drawn as green glass.
 - Level 1's garage drill bits move and hurt, matched to the original by eye.
 - Leaving a level after a Pizza Planet token, Buzz spreads his wings and flies up until the level ends (the PC original does an ordinary jump).
+- A double jump with the rocket boots lit shows the wings (the original keeps the rocket pose).
+- Blended level faces that are fully opaque (level 2's tree leaves and bushes) are drawn alpha-tested with depth writes, so a bush's near side always shows over its far side.
+- Special objects (lifts, platforms) are drawn between game ticks like Buzz and the camera, so a lift doesn't judder on a fast display.
 - Saves go to `%APPDATA%/ts2-rust` (or `TS2_SAVE_DIR`) instead of beside the game, which is usually read-only. They use the original's `Toy2NN.sav` format, so saves copied between the two work.
 
 ## Running the tests
@@ -173,7 +176,7 @@ set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
 
-The suite (213 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
+The suite (222 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
 
 ## Tools for development
 

@@ -138,6 +138,9 @@ pub enum Event {
     /// A token appearing bursts (0x4A0F80: sound 0x33 and 16 sparkles 0x2B from the table
     /// 0x5039C4), level units.
     TokenBurst([i32; 3]),
+    /// A collected power-up came back within 6144 units of the camera (0x4A0F80: sparkles
+    /// 0x410410 with 0x32), level units.
+    Returned([i32; 3]),
 }
 
 /// Draw distance (`0x54BEF0`, set to 0x680 by 0x43E6E0); sprites fade over the last part.
@@ -522,18 +525,25 @@ impl Pickups {
                 }
             }
         }
-        // 0x4A0F80: a collected power-up returns after 400 ticks.
+        // 0x4A0F80: a collected power-up returns after 400 ticks, sparkling if the camera is
+        // near: ((camera − it) × 32 >> 8)² < 0x90000.
+        let mut returned = None;
         if let Some((i, t)) = self.respawn {
             if t <= 1 {
                 self.restore(i);
                 self.respawn = None;
+                let at = self.items[i].pos;
+                let d = [0, 1, 2].map(|k| ((camera[k] as i64 - at[k] as i64) * 32) >> 8);
+                if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 0x90000 {
+                    returned = Some(at);
+                }
             } else {
                 self.respawn = Some((i, t - 1));
             }
         }
         // Collection: around a point 230 units above Buzz's feet, in steps of 8 units.
         let b = buzz.map(|v| v.floor() as i32);
-        let mut events = Vec::new();
+        let mut events: Vec<Event> = returned.map(Event::Returned).into_iter().collect();
         self.tick_appearing(&mut events);
         for i in 0..self.items.len() {
             let p = &self.items[i];
@@ -679,6 +689,30 @@ impl Pickups {
                 let uv = [[96.0 / sw, 96.0 / sh], [127.0 / sw, 127.0 / sh]];
                 scene::sprite(&mut out, Some(stex), [pos[0], floor as f32 - 10.0, pos[2]], 80.0, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], uv, [0x88, 0, 0, 0]);
             }
+        }
+        out
+    }
+
+    /// 0x440F70: the hook points (`level.dat` list 59, level units, on their floors) as
+    /// camera-facing sprites (0x1E), 300 across and 500 tall, standing on the point; drawn
+    /// within a quarter of the draw distance (× 32: 13312 units) of the camera.
+    pub fn hook_batches(&self, ngn: &Ngn, hooks: &[[i32; 3]], camera: [f32; 3], right: [f32; 3], up: [f32; 3]) -> Vec<Batch> {
+        let mut out = Vec::new();
+        let Some(def) = self.sprites.get(0x1E).and_then(|d| d.as_ref()) else { return out };
+        let name = format!("tex{:02}", def.texture);
+        let Some(tex) = ngn.textures.iter().position(|t| t.name.eq_ignore_ascii_case(&name)) else { return out };
+        let Some((w, h, _)) = ngn.textures[tex].dimensions() else { return out };
+        let (tw, th) = ((w as f32).abs(), (h as f32).abs());
+        let [u, v] = def.cells.first().copied().unwrap_or([0, 0]);
+        let uv = [[u as f32 / tw, v as f32 / th], [(u as f32 + def.size[0] as f32) / tw, (v as f32 + def.size[1] as f32) / th]];
+        let reach = (DRAW_DISTANCE / 4 * 32) as f32;
+        for h in hooks {
+            let pos = [h[0] as f32, (h[1] - crate::look::HOOK_LIFT) as f32, h[2] as f32];
+            let d = [0, 1, 2].map(|k| pos[k] - camera[k]);
+            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] >= reach * reach {
+                continue;
+            }
+            scene::sprite_blend(&mut out, Some(tex), scene::Blend::Opaque, pos, 1.0, right.map(|v| v * 150.0), up.map(|v| v * 250.0), uv, [0xFF, 0x80, 0x80, 0x80]);
         }
         out
     }

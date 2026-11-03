@@ -37,6 +37,9 @@ pub struct Pad {
     pub mouse: [i32; 2],
 }
 
+/// Mouse movement (pixels, summed) that breaks a target lock.
+const MOUSE_UNLOCK: i32 = 40;
+
 #[derive(Debug, Clone, Default)]
 pub struct FirstPerson {
     /// Turn and tilt speeds (0x50A130 / 0x50A138).
@@ -50,6 +53,8 @@ pub struct FirstPerson {
     /// Targeted creature slot (0x50A4FC), R1 lock (0x50A540), "just changed" (0x50A14C).
     pub target: Option<usize>,
     lock: bool,
+    /// Mouse movement since the lock was taken (mouse look is a deviation; see `look`).
+    drift: i32,
     fresh: bool,
     /// The marker and dot particles (0x50A4DC / 0x50A538).
     marker: Option<usize>,
@@ -67,6 +72,8 @@ pub struct FirstPerson {
 
 /// Targets from here on are hook points (0x50A4FC ≥ 1000).
 const HOOK: usize = 1000;
+/// A hook point's sprite stands this far up from it (half its 500-unit height).
+pub const HOOK_LIFT: i32 = 0xFA;
 
 fn sin14(a: i32) -> i32 {
     ((a & 0xFFF) as f64 / 4096.0 * std::f64::consts::TAU).sin().mul_add(16384.0, 0.0).round() as i32
@@ -148,10 +155,39 @@ impl FirstPerson {
         }
     }
 
+    /// 0x447DB0: each hook point sits on the floor under it (probed from 10 units above).
+    pub fn settle_hooks(&mut self, world: &World) {
+        for h in &mut self.hooks {
+            if let Some(f) = world.floor_below(h[0] as f32, h[2] as f32, (h[1] - 10) as f32) {
+                h[1] = f as i32;
+            }
+        }
+    }
+
+    /// Whether hook point `k` can be targeted from `eye` (object units): within 8192 units
+    /// (0x440F70: distance² / 1024 < 0x10000) and on screen (0x4BA1F0 with mask 0x55555575:
+    /// the sprite's 250-unit sphere wholly in front of the eye and not wholly outside a side
+    /// of the view). The view here is 60° tall at 4:3, as the viewer draws it.
+    fn hook_in_view(&self, eye: [i32; 3], k: usize) -> bool {
+        const R: f32 = 250.0;
+        let Some(h) = self.hooks.get(k) else { return false };
+        let d = Vec3::new((h[0] * 32 - eye[0]) as f32, ((h[1] - HOOK_LIFT) * 32 - eye[1]) as f32, (h[2] * 32 - eye[2]) as f32) / 32.0;
+        if d.length_squared() >= 8192.0 * 8192.0 {
+            return false;
+        }
+        let f = self.forward();
+        let right = f.cross(Vec3::Y).normalize_or_zero();
+        let up = right.cross(f);
+        let (x, y, z) = (d.dot(right).abs(), d.dot(up).abs(), d.dot(f));
+        let (tv, th) = (30f32.to_radians(), (30f32.to_radians().tan() * 4.0 / 3.0).atan());
+        z > R && x * th.cos() - z * th.sin() < R && y * tv.cos() - z * tv.sin() < R
+    }
+
     /// Where target `t` is (object units): a creature's middle or a hook point.
     fn target_at(&self, creatures: &Creatures, t: usize) -> [i32; 3] {
         match t.checked_sub(HOOK) {
-            Some(k) => self.hooks.get(k).map_or([0; 3], |h| h.map(|v| v * 32)),
+            // 0x4038E0: 0xD0 above the point.
+            Some(k) => self.hooks.get(k).map_or([0; 3], |h| [h[0] * 32, (h[1] - 0xD0) * 32, h[2] * 32]),
             None => creatures.ellipsoid_at(t).0,
         }
     }
@@ -163,8 +199,10 @@ impl FirstPerson {
             let d = [0, 1, 2].map(|k| ((at[k] - eye[k]) >> 5) as i64);
             d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 0x100_0000
         };
-        // With hooks in hand, the hook points in reach too.
-        let hooks: Vec<usize> = if p.hook_ammo > 0 { (0..self.hooks.len()).filter(|&k| within(self.hooks[k].map(|v| v * 32))).map(|k| HOOK + k).collect() } else { Vec::new() };
+        // With hooks in hand, the hook points in view too (0x440F70 lists them as it draws
+        // them: within 8192 units of the camera and on screen, a 250-unit sphere about the
+        // sprite's middle).
+        let hooks: Vec<usize> = if p.hook_ammo > 0 { (0..self.hooks.len()).filter(|&k| self.hook_in_view(eye, k)).map(|k| HOOK + k).collect() } else { Vec::new() };
         // The creatures that can be targeted.
         let mut list: Vec<usize> = (0..creatures.slots.len())
             .filter(|&i| {
@@ -235,6 +273,7 @@ impl FirstPerson {
         accel(&mut self.pitch_speed, pad.dpad & crate::game::pad::DOWN != 0, pad.dpad & crate::game::pad::UP != 0);
         if !self.lock && pad.r1 {
             self.lock = true;
+            self.drift = 0;
         }
         let (mut turn, mut tilt) = (self.yaw_speed, self.pitch_speed);
         if pad.dpad & 0xF0 == 0 {
@@ -257,9 +296,17 @@ impl FirstPerson {
             self.fresh = false;
         }
         if pad.mouse != [0; 2] {
-            self.lock = false;
-            turn += pad.mouse[0] * 16;
-            tilt += pad.mouse[1] * 16;
+            // Deviation (mouse look): a deliberate look away breaks the lock, as the d-pad
+            // does; the jitter of a hand on the mouse doesn't, or the hook (which needs the
+            // lock, 0x434990) could never be thrown.
+            self.drift += pad.mouse[0].abs() + pad.mouse[1].abs();
+            if self.drift > MOUSE_UNLOCK {
+                self.lock = false;
+            }
+            if !self.lock {
+                turn += pad.mouse[0] * 16;
+                tilt += pad.mouse[1] * 16;
+            }
         }
         p.facing = (p.facing + turn / 16) & 0xFFF;
         let mut v = (self.pitch + 0x400 & 0xFFF) + tilt / 16;

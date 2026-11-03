@@ -329,6 +329,12 @@ impl Level4 {
                 world.move_mover(low, Vec3::from(to.map(|v| v as f32)) - at);
             }
         }
+        // The platform's far-set copy (s + 4) with its position and angles (the exe's >> 2
+        // after >> 5, × 4 in 0x4CCE30; level units here).
+        specials.set_pos(s + 4, p.map(|v| v >> 5));
+        if let Some(a) = specials.angles(s) {
+            specials.set_angles(s + 4, a);
+        }
     }
 
     /// 0x41BC20: a press near Buzz (0x480 × 256): rising over 50 ticks (its collision off for
@@ -346,11 +352,11 @@ impl Level4 {
         *n += 1;
         let y = if *n < 0x32 {
             world.set_mover(mover, *n < 5);
-            home[1] - *n * 0x400
+            Some(home[1] - *n * 0x400)
         } else if *n < 0x96 {
             *v = 0;
             *drop = 0;
-            home[1] - 0xC800
+            Some(home[1] - 0xC800)
         } else if *n < 0xFA {
             *v += 0x180;
             *drop += *v;
@@ -368,23 +374,29 @@ impl Level4 {
                 *v = -(*v / 4);
             }
             world.set_mover(mover, *drop >= 0xB401);
-            home[1] - 0xC800 + *drop
+            Some(home[1] - 0xC800 + *drop)
         } else {
             if *n > cycle {
                 *n = 0;
                 self.common.sounds.push((0x6A, home));
             }
-            return;
+            None
         };
-        specials.set_pos(id, [home[0] >> 5, y >> 5, home[2] >> 5]);
-        if let Some(m) = world.mover_pos(mover) {
-            world.move_mover(mover, Vec3::new(m.x, (y >> 5) as f32, m.z) - m);
+        if let Some(y) = y {
+            specials.set_pos(id, [home[0] >> 5, y >> 5, home[2] >> 5]);
+            if let Some(m) = world.mover_pos(mover) {
+                world.move_mover(mover, Vec3::new(m.x, (y >> 5) as f32, m.z) - m);
+            }
+        }
+        // Its far-set copy (id + 0x12) goes where it is (the exe's >> 7, × 4 in 0x4CCE30).
+        if let Some(q) = specials.pos_obj(id) {
+            specials.set_pos(id + 0x12, q.map(|v| v >> 5));
         }
     }
 
     /// The drawbridge (mover 0x1A): stomping surface 0x24 lowers it (sound 0x6E while it moves,
     /// 0x6D at the ends) to −0x998, it stays for 240 ticks, then rises back.
-    fn drawbridge(&mut self, world: &World, specials: &mut Specials, player: &Player) {
+    fn drawbridge(&mut self, world: &World, specials: &mut Specials, player: &mut Player) {
         let at = player.pos_obj();
         if self.bridge == 0 {
             if player.on_floor && player.stomp != 0 && player.surface == Some(0x24) {
@@ -424,6 +436,10 @@ impl Level4 {
         }
         let a = [0, 0, z + dz];
         world.turn_mover(0x1A, a);
+        // Standing on it, he turns with it (0x4896A0).
+        if dz != 0 && player.on_floor && player.floor_mover.is_some_and(|(m, _)| m == 0x1A) {
+            player.pos = world.ride_turn(0x1A, [0, 0, z], a, player.pos);
+        }
         let tilt = (z + dz) * 4 / 4 + 0x266;
         specials.turn_from_own(0x1C, [0, 0, tilt]);
         specials.turn_from_own(0x1D, [0, 0, tilt]);
@@ -599,6 +615,10 @@ impl std::ops::DerefMut for Level4 {
 impl Script for Level4 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
+        // Special 0xD, the far-set copy of 0xC, goes where it is.
+        if let Some(p) = specials.pos_obj(0xC) {
+            specials.set_pos(0xD, p.map(|v| v >> 5));
+        }
         self.hatch(specials, player.pos_obj());
         let lists = std::mem::take(&mut self.common.story.lists);
         let on = player.floor_mover.filter(|_| player.on_floor).map(|(m, _)| m);

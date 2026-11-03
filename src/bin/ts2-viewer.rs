@@ -600,8 +600,30 @@ fn level_sets_in(ngn: &ngn::Ngn, specials: &ts2::specials::Specials, room: Optio
     let (decal, decal_two, mut decal_bb) = parts(&|l, i| l == 0 && i.flags & DECAL != 0);
     let (far, far_two_sided, far_bb) = parts(&|l, _| l > 0);
     scene::merge(&mut two_sided, decal_two);
+    let [near, two_sided, decal, far, far_two_sided] = [near, two_sided, decal, far, far_two_sided].map(solid_blends);
     near_bb.append(&mut decal_bb);
     LevelSets { near, two_sided, decal, far, far_two_sided, near_bb, far_bb }
+}
+
+/// Blended (mode 0x02) level triangles that are wholly opaque, vertex alpha 0xFF over a
+/// colour-keyed texture (the level-2 tree's leaves and bushes), drawn as alpha-tested
+/// opaque ones that write depth. Unsorted and without depth writes, whichever face of a
+/// two-sided bush was drawn last showed, its back over its front and a far bush over a near
+/// one, where the original shows the near faces. Triangles with any see-through vertex stay
+/// blended.
+fn solid_blends(batches: Vec<Batch>) -> Vec<Batch> {
+    let mut out = Vec::new();
+    for b in batches {
+        if b.blend != scene::Blend::Alpha {
+            scene::merge(&mut out, vec![b]);
+            continue;
+        }
+        for t in b.vertices.chunks_exact(3) {
+            let solid = t.iter().all(|v| v.color[0] == 0xFF);
+            scene::push(&mut out, b.texture, if solid { scene::Blend::Opaque } else { b.blend }, [t[0], t[1], t[2]]);
+        }
+    }
+    out
 }
 
 /// Instance flag 0x80000 (meaning unknown; 288 ordinary instances in level 1). They're kept in
@@ -680,6 +702,9 @@ struct Interp {
     alpha: f32,
     buzz_prev: Option<Vec3>,
     creatures_prev: Vec<[i32; 3]>,
+    /// Special objects' positions (level units) at the previous tick: a lift drawn where the
+    /// last tick left it judders against the camera, which is drawn between ticks.
+    specials_prev: std::collections::HashMap<u16, [f32; 3]>,
     /// The camera at the previous and the latest tick.
     cam: Option<(Camera, Camera)>,
 }
@@ -689,6 +714,15 @@ impl Interp {
     fn buzz(&self, now: Vec3) -> Vec3 {
         match self.buzz_prev {
             Some(p) if p.distance(now) < 256.0 => p.lerp(now, self.alpha),
+            _ => now,
+        }
+    }
+
+    /// Special `id` at `now` (level units).
+    fn special(&self, id: u16, now: [f32; 3]) -> [f32; 3] {
+        let now_v = Vec3::from(now);
+        match self.specials_prev.get(&id).map(|p| Vec3::from(*p)) {
+            Some(p) if p.distance(now_v) < 256.0 => p.lerp(now_v, self.alpha).to_array(),
             _ => now,
         }
     }
@@ -1240,6 +1274,7 @@ impl Viewer {
             // is called from 0x436220 there).
             let (boxes, specials, script) = (&mut self.boxes, &mut self.specials, &mut self.script);
             let buzz_before = player.pos;
+            let specials_before: std::collections::HashMap<u16, [f32; 3]> = specials.objects.iter().map(|(&id, s)| (id, s.pos)).collect();
             let ticks = player.update_with(&self.world, input, dt, &mut |p, w| {
                 if let Some(b) = boxes.as_mut() {
                     b.tick(p, w, specials);
@@ -1250,6 +1285,7 @@ impl Viewer {
             });
             if ticks > 0 {
                 self.interp.buzz_prev = Some(buzz_before);
+                self.interp.specials_prev = specials_before;
             }
             // First person (0x4038E0) runs in place of the follow camera. Presses wait for a
             // frame that runs a tick, so a fast frame can't swallow them.
@@ -1578,6 +1614,12 @@ impl Viewer {
                             self.particles.slots[k].life = life;
                         }
                     }
+                    for (at, t, m, vel, spin) in l.kicked.drain(..) {
+                        if let Some(k) = self.particles.spawn(at, t, m) {
+                            self.particles.slots[k].vel = vel;
+                            self.particles.slots[k].spin = spin;
+                        }
+                    }
                     for (at, t, m, spin, floor) in l.drops.drain(..) {
                         if let Some(k) = self.particles.spawn(at, t, m) {
                             self.particles.slots[k].spin = spin;
@@ -1840,6 +1882,16 @@ impl Viewer {
                             ts2::pickups::Event::TokenBurst(at) => {
                                 let at = at.map(|v| v * 32);
                                 bursts.push(at);
+                            }
+                            // 0x410410 (0x32): five sparkles bursting from it.
+                            ts2::pickups::Event::Returned(at) => {
+                                for _ in 0..5 {
+                                    let o = ((self.particles.rand() as i32 & 0x3F) - 0x20) * 0x32 * 2;
+                                    let spin = self.particles.rand() as i32 - 0x80;
+                                    if let Some(k) = self.particles.spawn(at.map(|v| v * 32 + o), 0x29, 0xF) {
+                                        self.particles.slots[k].spin = spin;
+                                    }
+                                }
                             }
                             ts2::pickups::Event::Collected { index, kind, pos } => {
                                 // Info pickups stay; touching one plays its scene (0x402610), and
@@ -2193,6 +2245,7 @@ impl Viewer {
             let r = f.cross(Vec3::Y).normalize_or_zero();
             let u = r.cross(f).normalize_or_zero();
             scene::merge(&mut batches, pk.sprite_batches(&self.ngn, world_to_game(self.cam.pos), to_game(r), to_game(u)));
+            scene::merge(&mut batches, pk.hook_batches(&self.ngn, &self.look.hooks, world_to_game(self.cam.pos), to_game(r), to_game(u)));
             pk.apply(&mut self.specials);
             if pk.summary() != self.hud {
                 self.hud = pk.summary();
@@ -2239,13 +2292,15 @@ impl Viewer {
         let rooms = update_rooms(&mut self.cull, &self.world, &self.cam, gfx.config.width as f32 / gfx.config.height as f32);
         gfx.rooms = rooms;
         let eye = Vec3::from(world_to_game(self.cam.pos));
-        for s in self.specials.objects.values() {
+        for (&id, s) in &self.specials.objects {
             if !special_in_view(&self.ngn, s, if self.cull.is_some() { rooms } else { u64::MAX }, eye) {
                 continue;
             }
             let far = s.layer != 0;
             let out = if far { &mut special_far } else { &mut special_near };
-            scene::merge(out, scene::special_batches(&self.ngn, s, &mut special_bb[far as usize]));
+            let mut s = s.clone();
+            s.pos = self.interp.special(id, s.pos);
+            scene::merge(out, scene::special_batches(&self.ngn, &s, &mut special_bb[far as usize]));
         }
         gfx.specials = [upload(&gfx.device, &special_near, gfx.texture_bgs.len() - 1), upload(&gfx.device, &special_far, gfx.texture_bgs.len() - 1)];
         if self.show_collision
@@ -2655,6 +2710,7 @@ impl Viewer {
                         p.vel = [0; 3];
                         if let Some(f) = facing {
                             p.facing = *f;
+                            p.target = *f;
                         }
                     }
                 }
@@ -3150,10 +3206,17 @@ fn main() {
         process::exit(2);
     };
     let viewer = load(path, args.get(2).map(String::as_str));
-    let viewer = viewer.unwrap_or_else(|e| {
+    let mut viewer = viewer.unwrap_or_else(|e| {
         eprintln!("{e}");
         process::exit(1);
     });
+    // A level opened on its own (the level tester): every ability Mr Potato Head gives is
+    // already Buzz's (0x52F2D8), so the gadgets' cages are open from the start.
+    if let Some(l) = viewer.script.as_mut() {
+        l.abilities = 0xFF;
+        // (Unset is marked 0xFF too; this makes the first tick open the gates.)
+        viewer.abilities_shown = 0;
+    }
     run(viewer, shot);
 }
 
@@ -3354,12 +3417,20 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
     });
     let laser_pose = game_exe.as_ref().and_then(|e| e.at(0x4DF294, 32).ok()).map(|b| b.to_vec()).unwrap_or_default();
     let lasers = ts2::laser::Lasers::new(random_table.clone().unwrap_or_default());
-    let particles = ts2::particles::Particles::new(game_exe.as_ref(), random_table.clone().unwrap_or_default());
+    let mut particles = ts2::particles::Particles::new(game_exe.as_ref(), random_table.clone().unwrap_or_default());
+    particles.level = level_no.unwrap_or(0);
     let hud_sprites = game_exe.as_ref().zip(exe::level_number(level_path)).map(|(e, lv)| ts2::hud::sprite_table(e, lv)).unwrap_or_default();
     match start {
         Some(s) => println!("player start {:?}, facing {:.0} degrees (F to play, Shift+F to drop at camera)", s.pos, s.yaw_radians().to_degrees()),
         None => println!("no player start found (toy2.exe not next to data\\, or not a main level file)"),
     }
+    // Hook points (level.dat list 59) for the grappling hook's targets, on their floors.
+    let look = {
+        let mut fp = ts2::look::FirstPerson::default();
+        fp.hooks = dat_lists.iter().find(|l| l.kind == 59).map(|l| l.points.clone()).unwrap_or_default();
+        fp.settle_hooks(&world);
+        fp
+    };
     let mut viewer = Viewer {
         backdrop,
         backdrop_image,
@@ -3432,12 +3503,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         hud_last: [0; 3],
         particles,
         rewards: ts2::rewards::Rewards::new(&level_lists),
-        // Hook points (level.dat list 59) for the grappling hook's targets.
-        look: {
-            let mut fp = ts2::look::FirstPerson::default();
-            fp.hooks = dat_lists.iter().find(|l| l.kind == 59).map(|l| l.points.clone()).unwrap_or_default();
-            fp
-        },
+        look,
         look_pressed: false,
         r1_pressed: false,
         talk_jump: false,

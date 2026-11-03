@@ -66,6 +66,9 @@ pub struct Common {
     pub drops: Vec<([i32; 3], u8, usize, i32, i32)>,
     /// Fully specified particles (0x40FAE0) given their own life (+0x24).
     pub lasting: Vec<(ParticleRequest, i32)>,
+    /// Particles by type and mode (0x40FDF0) then given a velocity (+0x0C, stored as is)
+    /// and spin (+0x36): where, type, mode, velocity, spin.
+    pub kicked: Vec<([i32; 3], u8, usize, [i32; 3], i32)>,
     /// It rains here, drawn with this sprite (0x44ED90's third argument).
     pub rain: Option<u8>,
     pub particles: Vec<ParticleRequest>,
@@ -613,6 +616,8 @@ pub fn for_level(level: usize, world: &World, specials: &mut Specials, exe: Opti
         15 => Box::new(crate::level15::Level15::new(specials)),
         13 => Box::new(crate::level13::Level13::new(world, specials, lists, exe)),
         10 => {
+            // 0x488E10: on level 10 every mover stands still while Buzz climbs onto one.
+            world.hold_all.set(true);
             let mut l = crate::level10::Level10::new(exe);
             if let Some(e) = exe {
                 l.set_story(e, lists);

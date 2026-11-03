@@ -29,7 +29,8 @@ const SLOTS: usize = 64;
 const TYPES: u32 = 0x4EC160;
 const TYPE_COUNT: usize = 126;
 const MODES: u32 = 0x4EC948;
-const MODE_COUNT: usize = 18;
+/// 0x4EC948 holds 29 spawn modes (0..0x1C); text follows them.
+const MODE_COUNT: usize = 0x1D;
 
 /// A particle type (0x4EC160).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -127,6 +128,8 @@ pub struct Particles {
     pub aims: Vec<Option<Aim>>,
     /// Ticks run (for the every-n-ticks effects).
     ticks: u32,
+    /// The level (0x88278C), for the splat's sound.
+    pub level: usize,
     pub events: Vec<Event>,
 }
 
@@ -185,6 +188,7 @@ impl Particles {
             buzz_vel: [0; 3],
             aims: Vec::new(),
             ticks: 0,
+            level: 0,
             events: Vec::new(),
         }
     }
@@ -630,6 +634,17 @@ impl Particles {
                 p.size[0] = (sin14((p.life & 0x3F) * 0x40) / grow.max(1)).abs();
                 0
             }
+            0x17 => {
+                // Falls onto the floor it was given and ends there (its death action then:
+                // the conker's splat). Its shadow (0x54F098) isn't drawn.
+                if let Some(f) = p.floor
+                    && f < p.size[1] * 0x20 + p.pos[1]
+                {
+                    p.life = 0;
+                    p.pos[1] = f - p.size[1] * 0x20;
+                }
+                0
+            }
             0x1D | 0x1E => {
                 // Discs (0x410F40). Homing (0x1D): a whirr (0x55) every 8 ticks; within 128 of
                 // its creature's centre it hits it (0x408A60, kind 4) and goes, or bounces off
@@ -652,11 +667,13 @@ impl Particles {
                                     [sin14(angle + 0x800) >> 4, -0x400, sin14(angle + 0xC00) >> 4];
                                 p.gravity = 0x30;
                                 p.life = 0x32;
-                                p.death = 0x1E;
+                                // +0x2F, its kind: now a plain disc (0x1E).
+                                p.kind = 0x1E;
                                 self.events.push(Event::Sound(7, p.pos));
                             } else {
                                 self.events.push(Event::HitCreature { slot: t, angle });
                                 p.life = 0;
+                                p.death = 8;
                             }
                         }
                     }
@@ -790,18 +807,26 @@ impl Particles {
     }
 
     /// 0x410B80: what a particle leaves behind when it ends.
+    /// 0x410B80: what a particle leaves when it ends (+0x2E). Negative: one particle of that
+    /// type (mode 2).
     fn death(&mut self, p: &Particle) {
-        match p.death {
-            3 => {
-                // Burst into dust on the floor.
-                let y = p.size[1] * 0x20 + p.pos[1];
-                for _ in 0..5 {
-                    if let Some(k) = self.spawn([p.pos[0], y, p.pos[2]], 0x25, 0x11) {
-                        let r = self.rand() as i32;
-                        self.slots[k].life = (r & 7) * 2 + 0x20;
-                    }
+        let floor_y = p.size[1] * 0x20 + p.pos[1];
+        let dust = |s: &mut Self, n: usize| {
+            for _ in 0..n {
+                if let Some(k) = s.spawn([p.pos[0], floor_y, p.pos[2]], 0x25, 0x11) {
+                    let r = s.rand() as i32;
+                    s.slots[k].life = (r & 7) * 2 + 0x20;
                 }
-                self.spawn([p.pos[0], y, p.pos[2]], 0x28, 2);
+            }
+        };
+        match p.death as i8 {
+            1 => self.splat(p, 0),
+            2 => self.splat(p, 1),
+            4 => self.splat(p, 2),
+            3 => {
+                // Burst into dust on the floor (and a light, not drawn).
+                dust(self, 5);
+                self.spawn([p.pos[0], floor_y, p.pos[2]], 0x28, 2);
                 self.events.push(Event::Sound(0xB, p.pos));
             }
             5 => {
@@ -817,7 +842,66 @@ impl Particles {
                     }
                 }
             }
+            6 => self.droplets(p.pos, 0x3E),
+            7 => {
+                dust(self, 3);
+                self.events.push(Event::Sound(0xB, p.pos));
+            }
+            8 => {
+                dust(self, 5);
+                self.events.push(Event::Sound(0xB, p.pos));
+            }
+            9 => {
+                for _ in 0..3 {
+                    if let Some(k) = self.spawn(p.pos, 0x11, 4) {
+                        let (a, b) = (self.rand() as i32, self.rand() as i32);
+                        let q = &mut self.slots[k];
+                        q.size = [0xFA, 0xFA];
+                        q.spin = a - 0x40;
+                        q.life = (b & 7) * 2 + 0x20;
+                    }
+                }
+                self.events.push(Event::Sound(0xB, p.pos));
+            }
+            0xA => {
+                self.spawn([p.pos[0], floor_y, p.pos[2]], 0x78, 2);
+            }
+            0xB => {
+                if let Some(k) = self.spawn(p.pos, 0x75, 0x1C) {
+                    let r = self.rand() as i32;
+                    self.slots[k].spin = r - 0x80;
+                }
+            }
+            d if d < 0 => {
+                self.spawn(p.pos, (-(d as i32)) as u8, 2);
+            }
             _ => {}
+        }
+    }
+
+    /// 0x410850: a splat where it lies. Bit 1 of `how`: the green one (drops 0x1E, a 0x38
+    /// puff, sound 0x4A), else drops 0xD and a 0xE puff (sound 0xC on level 1, 100 elsewhere);
+    /// bit 2: no puff.
+    fn splat(&mut self, p: &Particle, how: u8) {
+        let y = p.size[1] * 0x20 + p.pos[1];
+        let (puff, drop, sound) = if how & 1 != 0 { (0x38, 0x1E, 0x4A) } else { (0xE, 0xD, if self.level == 1 { 0xC } else { 100 }) };
+        self.events.push(Event::Sound(sound, p.pos));
+        self.droplets([p.pos[0], y, p.pos[2]], drop);
+        if how & 2 == 0 {
+            self.spawn([p.pos[0], y, p.pos[2]], puff, 2);
+        }
+    }
+
+    /// Five drops of `typ` (mode 9), each living 5 frames of a random 6–12 tick period.
+    fn droplets(&mut self, at: [i32; 3], typ: u8) {
+        for _ in 0..5 {
+            if let Some(k) = self.spawn(at, typ, 9) {
+                let r = self.rand() as i32;
+                let period = ((r & 3) + 3) * 2;
+                let q = &mut self.slots[k];
+                q.period = period;
+                q.life = period * 5;
+            }
         }
     }
 

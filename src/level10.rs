@@ -108,6 +108,15 @@ pub struct Level10 {
     beat: i32,
     third: usize,
     wobble: i32,
+    /// The electricity in rooms 7 and 12: the list-60 sparks' clock and point (0x52FC2C /
+    /// 0x52FC58), the arcs along list 12's pairs (0x52FC64 / 0x52FC74) and the sparks rising
+    /// from list 11 (0x52FC60 / 0x52FC70).
+    zap_in: i32,
+    zap: usize,
+    arc_in: i32,
+    arc: usize,
+    rise_in: i32,
+    rise: usize,
     /// The switches' markers (0x52FC50 / 0x52FC30 / 0x52FCD8), the stomp latch (0x52FC24,
     /// later the lights' blink) and the barrier's height (0x52FC3C).
     marks: [usize; 3],
@@ -142,6 +151,12 @@ impl Level10 {
             beat: 0,
             third: 0,
             wobble: 0,
+            zap_in: 0,
+            zap: 0,
+            arc_in: 0,
+            arc: 0,
+            rise_in: 0,
+            rise: 0,
             marks: [0, 2, 0],
             latch: 1,
             barrier: 0x1000,
@@ -299,6 +314,63 @@ impl Level10 {
                 let life = (self.common.rand() & 0xF) + 0x20;
                 self.common.spawns.push((at, 0x44, mode, 0, Some(life)));
             }
+        }
+    }
+
+    /// 0x425F60, with the camera in room 7 or 12 (0x5D2A8C; here Buzz's room): the
+    /// electricity there, all particle 0x4C with sound 0x8D.
+    /// - List 60, one point after another (8): a spark (mode 2), alternately falling (vy
+    ///   −0x600, spin −0x20, next in 0x1C ticks) and rising (0x600, 0x20, next in 100). The
+    ///   original spawns these at the list's level-unit values taken as object units, so near
+    ///   the middle of the level; kept as it does.
+    /// - List 12's pairs, the next every 0x32 ticks: an arc crossing from the first point to
+    ///   the second in 0x40 ticks (velocity (b − a) × 32 >> 5, random spin).
+    /// - List 11, the next point every 0x32 ticks: a spark rising (velocity −0xA00) for 0x40
+    ///   ticks.
+    fn electricity(&mut self, room: Option<u8>) {
+        if !matches!(room, Some(7) | Some(12)) {
+            return;
+        }
+        self.zap_in -= 1;
+        if self.zap_in < 0 {
+            self.zap = (self.zap + 1) % 8;
+            if let Some(&at) = self.list(60).get(self.zap) {
+                let (vy, spin, next) = if self.zap & 1 == 0 { (-0x600, -0x20, 0x1C) } else { (0x600, 0x20, 100) };
+                self.common.kicked.push((at, 0x4C, 2, [0, vy, 0], spin));
+                self.common.sounds.push((0x8D, at));
+                self.zap_in = next;
+            }
+        }
+        self.arc_in -= 1;
+        if self.arc_in < 0 {
+            let pts = self.list(12);
+            self.arc += 2;
+            if self.arc >= pts.len() {
+                self.arc = 0;
+            }
+            if let (Some(a), Some(b)) = (pts.get(self.arc), pts.get(self.arc + 1)) {
+                let at = a.map(|v| v * 32);
+                let vel = [0, 1, 2].map(|k| (b[k] * 32 - at[k]) >> 5);
+                let spin = (self.common.rand() & 0xFF) - 0x80;
+                self.common.lasting.push((ParticleRequest { pos: at, vel, gravity: 0, angle: 0, spin, typ: 0x4C }, 0x40));
+                self.common.sounds.push((0x8D, at));
+            }
+            self.arc_in = 0x32;
+        }
+        self.rise_in -= 1;
+        if self.rise_in < 0 {
+            let pts = self.list(11);
+            self.rise += 1;
+            if self.rise >= pts.len() {
+                self.rise = 0;
+            }
+            if let Some(a) = pts.get(self.rise) {
+                let at = a.map(|v| v * 32);
+                let spin = (self.common.rand() & 0xFF) - 0x80;
+                self.common.lasting.push((ParticleRequest { pos: at, vel: [0, -0xA00, 0], gravity: 0, angle: 0, spin, typ: 0x4C }, 0x40));
+                self.common.sounds.push((0x8D, at));
+            }
+            self.rise_in = 0x32;
         }
     }
 
@@ -606,6 +678,7 @@ impl Script for Level10 {
         }
         self.clock = self.clock.wrapping_add(1);
         self.sparks(player.pos_obj());
+        self.electricity(world.room_at(player.pos));
         self.spinners(specials);
         self.fans(player);
         if self.opened & 1 != 0 {
@@ -617,7 +690,10 @@ impl Script for Level10 {
         self.shafts(player, 0);
         self.winds(player);
         self.switches(world, specials, player);
-        self.lifts(world, specials);
+        // 0x425F60 runs the lifts once the switches are solved (0x52FC14 & 4).
+        if self.opened & 4 != 0 {
+            self.lifts(world, specials);
+        }
         self.vents(world, specials, player);
     }
 

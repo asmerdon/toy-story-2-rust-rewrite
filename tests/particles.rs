@@ -118,3 +118,28 @@ fn zurg_projectiles_home_bounce_and_end_in_the_hole() {
     parts.tick(&world, (buzz, 0));
     assert_eq!(parts.slots[hole].life, 0, "central hole consumes shots");
 }
+
+/// Level 2's conkers (particle 0x37, spawn mode 0x13: modes run to 0x1C, 0x4EC948) fall
+/// under gravity, stop on the floor they were given (kind 0x17) and splat (death action 2,
+/// 0x410850: green drops 0x1E and a 0x38 puff, sound 0x4A).
+#[test]
+fn conkers_fall_and_splat() {
+    let Some(game) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else { return };
+    let e = ts2::formats::exe::Exe::parse(std::fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let mut p = ts2::particles::Particles::new(Some(&e), vec![0x80; 64]);
+    let w = ts2::game::World::from_triangles(vec![]);
+    let k = p.spawn([0, 0, 0], 0x37, 0x13).unwrap();
+    p.slots[k].floor = Some(80000);
+    let mut landed = None;
+    for t in 0..200 {
+        p.tick(&w, ([0x100000, 0, 0], 0));
+        if p.slots[k].typ != 0x37 || p.slots[k].life == 0 {
+            landed = Some(t);
+            break;
+        }
+    }
+    let t = landed.expect("it landed");
+    assert!(t > 40, "fell for a while first: {t}");
+    assert!(p.slots.iter().any(|q| q.life > 0 && q.typ == 0x1E), "green drops");
+    assert!(p.events.iter().any(|e| matches!(e, ts2::particles::Event::Sound(0x4A, _))), "the splat");
+}

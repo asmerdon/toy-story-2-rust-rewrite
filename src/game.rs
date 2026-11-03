@@ -31,6 +31,12 @@ const WALL_PUSH: f32 = 3.0;
 const STICK_DOWN: f32 = 64.0;
 /// How far above the body's bottom a floor still counts as one it was standing on.
 const FLOOR_PROBE_UP: f32 = 16.0;
+/// How far a mover's floor can have come up past Buzz's feet in a tick and still pick him up
+/// (level units).
+const MOVER_PICKUP: f32 = 64.0;
+/// How far (level units) Buzz's carried start may be from where he ends a tick for a mover's
+/// floor to be checked against it: further means a script moved him (a teleport).
+const MOVER_REACH: f32 = 1500.0;
 /// Teeter (0x4011D0): a drop counts when the floor is more than 0x1000 object units below; the
 /// probes are 0x1000 object units ahead and behind (sine table >> 2).
 const TEETER_DROP: f32 = 128.0;
@@ -157,6 +163,32 @@ struct ObjectInfo {
     /// How far it moved this tick (its velocity, mover table +0x34), level units: what
     /// carries Buzz standing on it.
     moved: std::cell::Cell<Vec3>,
+    /// Where it was (offset, turn) before its first move or turn this tick.
+    before: std::cell::Cell<Option<(Vec3, [i32; 3])>>,
+}
+
+impl ObjectInfo {
+    /// Remembers where it is before its first change this tick.
+    fn mark(&self) {
+        if self.before.get().is_none() {
+            self.before.set(Some((self.offset.get(), self.turn.get())));
+        }
+    }
+}
+
+/// A mover that moved or turned this tick: its object and where it was before.
+#[derive(Debug, Clone, Copy)]
+pub struct Motion {
+    obj: usize,
+    offset: Vec3,
+    turn: [i32; 3],
+}
+
+impl Motion {
+    /// Its mover id (link − 1).
+    fn id(&self, world: &World) -> i32 {
+        world.objects.get(self.obj).map_or(-1, |o| o.link as i32 - 1)
+    }
 }
 
 /// The rotation of 12-bit angles about Z, then Y, then X (the order `scene` draws specials
@@ -215,6 +247,10 @@ pub struct World {
     /// Boundary walls (kind-0x101 lists, `formats::terrain::BOUNDARY_KIND`): segments a→b in
     /// x/z, level units. Vertical walls of unlimited height, solid on one side only.
     bounds: Vec<[[f32; 2]; 2]>,
+    /// 0x559E80: the mover Buzz is climbing onto (the mantle), which stands still meanwhile
+    /// (0x488E10 zeroes its velocity); with `hold_all` (level 10) every mover does.
+    hold: std::cell::Cell<Option<i32>>,
+    pub hold_all: std::cell::Cell<bool>,
 }
 
 fn cell(v: f32) -> i32 {
@@ -247,6 +283,7 @@ impl World {
                 offset: std::cell::Cell::new(Vec3::ZERO),
                 turn: std::cell::Cell::new([0; 3]),
                 moved: std::cell::Cell::new(Vec3::ZERO),
+                before: std::cell::Cell::new(None),
             });
             let to = if o.flags & 0x400 != 0 {
                 &mut rooms
@@ -303,18 +340,37 @@ impl World {
     /// was loaded (the object's stored position).
     pub fn place_mover(&self, id: i32, pos: Vec3) {
         if let Some(i) = self.mover(id) {
-            self.objects[i].offset.set(pos - self.mover_home[i]);
+            let o = &self.objects[i];
+            o.mark();
+            let to = pos - self.mover_home[i];
+            // What stands on it goes with it, as with `move_mover`.
+            o.moved.set(o.moved.get() + to - o.offset.get());
+            o.offset.set(to);
         }
     }
 
     /// A mover moving by `d` (level units) this tick: its velocity (0x48ACC0 sets mover
     /// table +0x34 and the collision code moves it).
     pub fn move_mover(&self, id: i32, d: Vec3) {
+        if self.held(id) {
+            return;
+        }
         if let Some(i) = self.mover(id) {
             let o = &self.objects[i];
+            o.mark();
             o.offset.set(o.offset.get() + d);
             o.moved.set(o.moved.get() + d);
         }
+    }
+
+    /// Whether mover `id` is held still while Buzz climbs onto a mover (see `hold`).
+    pub fn held(&self, id: i32) -> bool {
+        self.hold.get().is_some_and(|h| h == id || self.hold_all.get())
+    }
+
+    /// Sets the mover Buzz is climbing onto (None when he isn't).
+    pub fn set_hold(&self, id: Option<i32>) {
+        self.hold.set(id);
     }
 
     /// A mover's angles (12-bit), as `turn_mover` left them.
@@ -336,13 +392,57 @@ impl World {
     pub fn clear_motion(&self) {
         for o in &self.objects {
             o.moved.set(Vec3::ZERO);
+            o.before.set(None);
         }
+    }
+
+    /// The movers that moved or turned since `clear_motion`, with where they were.
+    pub fn motions(&self) -> Vec<Motion> {
+        self.objects
+            .iter()
+            .enumerate()
+            .filter_map(|(obj, o)| {
+                let (offset, turn) = o.before.get()?;
+                (offset != o.offset.get() || turn != o.turn.get()).then_some(Motion { obj, offset, turn })
+            })
+            .collect()
+    }
+
+    /// Where `p`, fixed to the mover of `m` as it was, is now.
+    fn carried(&self, m: &Motion, p: Vec3) -> Vec3 {
+        let o = &self.objects[m.obj];
+        let home = self.mover_home[m.obj];
+        let (m0, m1) = (turn_matrix(m.turn), turn_matrix(o.turn.get()));
+        let t = [[m0[0][0], m0[1][0], m0[2][0]], [m0[0][1], m0[1][1], m0[2][1]], [m0[0][2], m0[1][2], m0[2][2]]];
+        let local = home + turn_by(&t, p - m.offset - home);
+        home + turn_by(&m1, local - home) + o.offset.get()
+    }
+
+    /// As `floor_below_full`, for one object's floors only.
+    fn object_floor_below(&self, obj: usize, x: f32, z: f32, from_y: f32) -> Option<(f32, Option<u8>, Vec3)> {
+        let lo = Vec3::new(x, f32::MIN, z);
+        let hi = Vec3::new(x, f32::MAX, z);
+        let mut best: Option<(f32, Vec3)> = None;
+        for t in self.candidates(lo, hi) {
+            if t.obj as usize != obj || t.n.y > FLOOR_NY {
+                continue;
+            }
+            if let Some(y) = height_on(&t, x, z)
+                && y >= from_y
+                && best.is_none_or(|(b, _)| y < b)
+            {
+                best = Some((y, t.n));
+            }
+        }
+        let surface = self.objects.get(obj).map(|o| o.flags as u8).filter(|&f| f != 0xFF);
+        best.map(|(y, n)| (y, surface, n))
     }
 
     /// 0x488AA0 / 0x487970: turn a mover to `a` (12-bit angles about X, Y, Z) about where it
     /// was loaded; its collision turns with it.
     pub fn turn_mover(&self, id: i32, a: [i32; 3]) {
         if let Some(i) = self.mover(id) {
+            self.objects[i].mark();
             self.objects[i].turn.set(a);
         }
     }
@@ -454,7 +554,7 @@ impl World {
                 }
             }
         }
-        World { tris, grid, lo, hi, objects: Vec::new(), always: Vec::new(), rooms: Vec::new(), mover_home: Vec::new(), lowest: hi.y, bounds: Vec::new() }
+        World { tris, grid, lo, hi, objects: Vec::new(), always: Vec::new(), rooms: Vec::new(), mover_home: Vec::new(), lowest: hi.y, bounds: Vec::new(), hold: Default::default(), hold_all: Default::default() }
     }
 
     /// Triangles whose grid cells overlap the box around `lo..hi` (x/z).
@@ -549,6 +649,11 @@ impl World {
     /// Earliest contact of a sphere of radius `r` moving from `p0` by `d` (the sweep 0x481FB0
     /// runs for each polygon: its face, then its edges as cylinders and corners as spheres).
     pub fn sweep(&self, p0: Vec3, d: Vec3, r: f32) -> Option<Hit> {
+        self.sweep_in(p0, d, r, None)
+    }
+
+    /// As `sweep`, against one object's triangles only (no boundary walls) when `only`.
+    fn sweep_in(&self, p0: Vec3, d: Vec3, r: f32, only: Option<usize>) -> Option<Hit> {
         let p1 = p0 + d;
         let reach = Vec3::splat(r + 2.0);
         let mut best: Option<Hit> = None;
@@ -560,6 +665,9 @@ impl World {
             }
         };
         for t in self.candidates(p0.min(p1) - reach, p0.max(p1) + reach) {
+            if only.is_some_and(|o| o != t.obj as usize) {
+                continue;
+            }
             let mover = self.mover_of(&t);
             let surface = self.objects.get(t.obj as usize).map(|o| o.flags as u8).filter(|&f| f != 0xFF);
             let lo = t.a.min(t.b).min(t.c) - reach;
@@ -593,7 +701,7 @@ impl World {
             }
         }
         let (lo, hi) = (p0.min(p1) - reach, p0.max(p1) + reach);
-        for &[a, b] in &self.bounds {
+        for &[a, b] in self.bounds.iter().filter(|_| only.is_none()) {
             if a[0].max(b[0]) < lo.x || a[0].min(b[0]) > hi.x || a[1].max(b[1]) < lo.z || a[1].min(b[1]) > hi.z {
                 continue;
             }
@@ -924,6 +1032,8 @@ pub struct Player {
     ledge_facing: i32,
     /// 0x53C660: climbing onto a ledge after the mantle (0x52 down).
     pub mantle: i32,
+    /// 0x559E80: the mover under the ledge he's climbing onto (0x48E1D0 at the mantle).
+    pub mantle_mover: Option<i32>,
     /// 0x53C618: zip line state (1 dropping onto it, 2 riding), its index (0x53C610), speed or
     /// height (0x53C604), direction (0x53C638, 4096 = 1), length and position along it
     /// (0x53C5D8 / 0x53C614), and the re-grab lock (0x53C600).
@@ -1088,6 +1198,7 @@ impl Player {
             ledge_at: [0; 3],
             ledge_facing: 0,
             mantle: 0,
+            mantle_mover: None,
             zip: 0,
             zip_idx: 0,
             zip_v: 0,
@@ -1663,6 +1774,13 @@ impl Player {
         // The pad mask (0x49DFE0) while flag 4 is set; in first person (0x4038E0 takes the
         // buttons) Buzz can't jump or spin either.
         let locked = self.input_locked();
+        // Where he was before this tick's movers moved (the creature-side scripts after the
+        // last tick, this tick's script in `pre_move`).
+        let tick_start = self.pos;
+        if self.mantle == 0 {
+            self.mantle_mover = None;
+        }
+        world.set_hold(self.mantle_mover);
         let (stick, dpad) = if locked { ([0.0; 2], 0) } else { (stick, dpad) };
         let still = locked || self.first_person != 0;
         let (jump_held, jump_pressed, stomp_pressed) = if still { (false, false, false) } else { (jump_held, jump_pressed, stomp_pressed) };
@@ -1864,14 +1982,16 @@ impl Player {
             self.vel[0] = 0;
             self.vel[2] = 0;
         }
-        world.clear_motion();
         pre_move(self, world);
-        // Standing on a mover that moved this tick: carried with it (0x488E10).
+        // Standing on a mover that moved since the last tick (this tick's script, or the
+        // creature-side scripts after the last one): carried with it (0x488E10).
         if self.on_floor
             && let Some((m, _)) = self.floor_mover
         {
             self.pos += world.mover_motion(m);
         }
+        let motions = world.motions();
+        world.clear_motion();
         if self.floating {
             if self.on_floor {
                 self.floating = false;
@@ -1880,7 +2000,7 @@ impl Player {
             }
         }
         self.last_pos = self.pos;
-        self.move_and_collide(world);
+        self.move_and_collide(world, tick_start, &motions);
 
         if self.on_floor {
             self.coyote = COYOTE_TICKS;
@@ -2286,7 +2406,7 @@ impl Player {
 
     /// Move and collide (0x434550 → 0x484380): sweep Buzz's sphere, slide along what it hits;
     /// floor-like contacts (slopes up to 60°) set floor contact.
-    fn move_and_collide(&mut self, world: &World) {
+    fn move_and_collide(&mut self, world: &World, tick_start: Vec3, motions: &[Motion]) {
         let lift = Vec3::Y * (BODY_LIFT + BODY_RADIUS);
         let mut c = self.pos - lift;
         let mut v = Vec3::new(self.vel[0] as f32, self.vel[1] as f32, self.vel[2] as f32);
@@ -2366,6 +2486,99 @@ impl Player {
             self.floor_normal = Some(n);
             if let Some(m) = m {
                 self.floor_mover = Some((m, Vec3::NEG_Y));
+            }
+        }
+        // A mover that rose (or tipped up) into him this tick picks him up, as 0x488E10
+        // carries what it meets: with its top surface up to MOVER_PICKUP above his feet he's
+        // put on it. Without this a lift whose carry he missed for a tick (contact comes and
+        // goes) slid up past his feet, and the one-sided collision let him drop through it.
+        if v.y >= 0.0 {
+            let bottom = c.y + BODY_RADIUS;
+            if let Some((fy, Some(m), surface, n)) = world.floor_below_full(c.x, c.z, bottom - MOVER_PICKUP)
+                && fy < bottom - 1.0
+            {
+                c.y = fy - BODY_RADIUS - SKIN;
+                floor = true;
+                self.floor_mover = Some((m, n));
+                self.floor_normal = Some(n);
+                self.surface = surface.or(self.surface);
+            }
+        }
+        // A mover that came at him this tick, seen from the mover. Where he was at the start
+        // of the tick, carried as the mover moved or turned, to where he ends: swept against
+        // that mover alone, a face it pushed through him stops him there, on its front (on
+        // it, for a floor; shoved along, for a wall). Then, for floors, a vertical probe: his
+        // carried feet were over its floor and now they're under it. The sweep tests movers
+        // where they are now and only from their front, so a lift or a tipping plank rising
+        // into him, a swinging girder or a lift wall coming at him, or a bobbing float he
+        // stomps on, the two closing faster than the probes reach, let him through.
+        for m in motions {
+            let from = world.carried(m, tick_start - lift);
+            if (from - c).length_squared() > MOVER_REACH * MOVER_REACH {
+                continue;
+            }
+            // Sliding along its faces as the main sweep does. Taken only when the mover moved
+            // him (he ends more than 2 units from where the main sweep left him).
+            let (mut at, mut rest, mut nv) = (from, c - from, v);
+            let (mut on, mut wall) = (None, None);
+            for _ in 0..PASSES {
+                let len = rest.length();
+                if len < 1e-3 {
+                    break;
+                }
+                let Some(h) = world.sweep_in(at, rest, BODY_RADIUS, Some(m.obj)) else {
+                    at += rest;
+                    break;
+                };
+                let s = (h.t - SKIN / len).max(0.0);
+                at += rest * s;
+                let n = h.normal;
+                if h.depth > 0.0 {
+                    at += n * (h.depth + SKIN);
+                }
+                let left = rest * (1.0 - s);
+                rest = left - n * left.dot(n).min(0.0);
+                nv -= n * nv.dot(n).min(0.0);
+                if n.y < FLOOR_NY {
+                    on = Some((h, n));
+                } else {
+                    wall = Some((h, n));
+                }
+            }
+            if (at - c).length_squared() > 4.0 {
+                // What else is in the way (walls, the level's bounds) still stops him.
+                let d = at - c;
+                c = match world.sweep(c, d, BODY_RADIUS).filter(|h| h.mover != Some(m.id(world))) {
+                    Some(h) => c + d * (h.t - SKIN / d.length().max(1e-3)).max(0.0),
+                    None => at,
+                };
+                v = nv;
+                if let Some((h, n)) = on {
+                    floor = true;
+                    self.floor_normal = Some(n);
+                    self.surface = h.surface.or(self.surface);
+                    if let Some(id) = h.mover {
+                        self.floor_mover = Some((id, n));
+                    }
+                }
+                if let Some((h, n)) = wall
+                    && let Some(id) = h.mover
+                {
+                    self.wall_mover = Some((id, n));
+                }
+            }
+            let feet = world.carried(m, tick_start - Vec3::Y * BODY_LIFT);
+            let bottom = c.y + BODY_RADIUS;
+            if let Some((fy, surface, n)) = world.object_floor_below(m.obj, c.x, c.z, feet.y - FLOOR_PROBE_UP)
+                && fy < bottom - 1.0
+            {
+                c.y = fy - BODY_RADIUS - SKIN;
+                floor = true;
+                self.floor_normal = Some(n);
+                self.surface = surface.or(self.surface);
+                if let Some(id) = world.objects.get(m.obj).map(|o| o.link as i32).filter(|&l| l != 0) {
+                    self.floor_mover = Some((id - 1, n));
+                }
             }
         }
         if floor && v.y > 0.0 {
@@ -2801,8 +3014,9 @@ impl Player {
         if self.fall_timer < 0 {
             self.state = state::FALL_RECOVER;
         }
-        // Rocket boots (0x53C5E0) ride in their own pose.
-        if self.rocket > 0 {
+        // Rocket boots (0x53C5E0) ride in their own pose. Deviation (owner's request): a
+        // double jump on them keeps its wings (state 8); the exe's override takes them away.
+        if self.rocket > 0 && self.state != state::DOUBLE_JUMP {
             self.state = state::ROCKET;
         }
         if self.hurt_timer >= 0x44 {
@@ -2837,6 +3051,7 @@ impl Player {
                             self.sound(0x17);
                             self.pos = Vec3::new((feet[0] + ax) as f32 / 32.0, top as f32 / 32.0, (feet[2] + az) as f32 / 32.0);
                             self.mantle = 0x52;
+                            self.mantle_mover = world.floor_below_obj(self.pos.x, self.pos.z, self.pos.y - 10.0).and_then(|(_, m)| m);
                             if let Some(h) = world.sweep(Vec3::new(base.x, top as f32 / 32.0, base.z), across, BODY_RADIUS) {
                                 self.target = (crate::boxes::angle12(h.normal.x, h.normal.z) - 0x800) & 0xFFF;
                             }
@@ -3383,6 +3598,37 @@ mod tests {
             peak = peak.min(p.pos.y - BODY_LIFT);
         }
         assert!((peak + DOUBLE_JUMP_APEX as f32 / 32.0).abs() < 40.0, "double jump peak {peak}");
+    }
+
+    /// Deviation (owner's request): with the rocket boots lit, a double jump shows its wings
+    /// (state 8) until he lands, then the rocket pose (state 10) is back.
+    #[test]
+    fn rocket_double_jump_spreads_the_wings() {
+        let w = room();
+        let mut p = landed(&w);
+        p.start_rocket();
+        p.tick(&w, [0.0; 2], false, false);
+        assert_eq!(p.state, state::ROCKET);
+        for _ in 0..23 {
+            p.tick(&w, [0.0; 2], true, false);
+        }
+        p.tick(&w, [0.0; 2], false, false);
+        p.tick(&w, [0.0; 2], true, false);
+        assert_eq!(p.jump, JumpPhase::Double);
+        for _ in 0..10 {
+            p.tick(&w, [0.0; 2], true, false);
+            assert_eq!(p.state, state::DOUBLE_JUMP, "wings out");
+        }
+        for _ in 0..200 {
+            p.tick(&w, [0.0; 2], false, false);
+            if p.on_floor && p.rocket > 0 {
+                break;
+            }
+        }
+        p.tick(&w, [0.0; 2], false, false);
+        if p.rocket > 0 {
+            assert_eq!(p.state, state::ROCKET);
+        }
     }
 
     #[test]

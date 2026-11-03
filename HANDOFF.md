@@ -31,7 +31,7 @@ exe functions) and `docs/formats/*.md`.
 - **Level 1:** signed off by the user.
 - **Levels 2–15:** the user played through them in two rounds of reports; every reproduced report has been fixed (see the list below).
 - **Not done:** no level other than 1 has a full sign-off.
-- **Tests:** 213 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (202 engine + 11 launcher), 2026-11-01. `cargo build --release` builds the viewer, tool and launcher without warnings.
+- **Tests:** 222 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (211 engine + 11 launcher), 2026-11-03. `cargo build --release` builds the viewer, tool and launcher without warnings.
 - **Git:** work is on `dev` (local `master` tracks `origin/dev`). The user asks before each push.
 
 ### Fixed from the user's playtests
@@ -80,7 +80,7 @@ Every fix below comes from the original's code, has a regression test, and was m
 
 **Collision**
 - If the body starts slightly inside an edge cylinder, it ignores that edge (`sweep_edge` / `sweep_point`). A naive fix broke the boundary walls.
-- The mover carry is not swept.
+- The mover carry is not swept, but a mover whose floor comes up to 64 units past Buzz's feet in a tick now picks him up (`MOVER_PICKUP`); motion is cleared after the carry, so movers moved by `step_creatures` carry too, and `place_mover` records motion.
 - Creature rays don't test boundary walls.
 - The camera against boundary walls is unverified.
 - Open edges in L5/7/8/10, found by `examples/clipsweep.rs`, are unverified against the original.
@@ -102,6 +102,8 @@ Every fix below comes from the original's code, has a regression test, and was m
 
 **Missing features**
 - The hook's icon on the HUD's weapon meter (0x493DC0 draws a model there).
+- Level 10's lights (list 13, 0x44F200) and its lifts' group re-alignment (0x52FCA0 offsets from the first group mover Buzz isn't touching).
+- Level 4's camera shake when a press lands near Buzz (0x50A510 in 0x41BC20).
 - Lightning on level 14 (0x42E790, 0x52FFA8).
 - The countdown tick sound (0x5E in 0x49FD40).
 - Pause menu.

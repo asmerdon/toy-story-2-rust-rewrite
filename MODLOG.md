@@ -140,3 +140,35 @@ Dated history of the work, newest at the bottom. Current state is in HANDOFF.md;
 - The disc launcher ported (0x434990, 0x4A4910, 0x4A4960, particle kinds 0x1D / 0x1E): with ammo B the fire button throws discs, homing on the nearest creature (or the first-person target) or flying straight, at most 6 in flight; homing discs hit (HitCreature kind 4) or bounce off creatures that can't be hurt. The HUD's weapon meter shows the disc or hook count (0x49FD40).
 - A `cargo fmt` run reformatted the whole workspace by mistake; it was undone (untouched files restored from git, edited files re-merged onto their original layout; a few edited spots keep rustfmt's layout).
 - Checks: workspace release build clean; 213 tests pass (202 engine + 11 launcher).
+
+## 2026-11-03 (evening): playtest round 7
+
+- Level 2 leaves and bushes: their faces are blended (mode 0x02) but wholly opaque, drawn unsorted without depth writes, so a bush's back or a far bush showed over the near one. Such faces are now drawn alpha-tested with depth writes (deviation, README).
+- Movers, from the mover's frame: Buzz's start-of-tick position, carried with each mover that moved, is swept to where he ends against that mover alone (sliding as the main sweep does, then clamped by everything else); taken when it moves him more than 2 units. With the floor probe from round 6.
+- Mantle onto a mover (0x435F30 sets 0x559E80; 0x488E10): that mover stands still while he climbs, and on level 10 every mover does (`World::set_hold`, `hold_all`).
+- Level 10's lifts run only once the three switches are solved (0x425F60 tests 0x52FC14 & 4).
+- Level 4's scoop (drawbridge, mover 0x1A): Buzz standing on it turns with it (0x4896A0).
+- Viewer: special objects are drawn between ticks (`Interp::special`), so lifts no longer judder against the interpolated camera.
+- Deviation (owner's request): a double jump on the rocket boots keeps its wings.
+- Checked, not changed: power-ups come back 400 ticks (6.7 s) after being taken, one at a time (0x4A0F80); the pool float's collision is the data's flat slab under its back (its top within 10 of the drawn back; the head has none).
+- Checks: workspace release build clean; 222 tests pass.
+
+## 2026-11-03 (later): playtest round 6
+
+- Movers: each mover remembers where it was before its first move or turn in a tick (`World::motions`). After the sweep, Buzz's start-of-tick feet are carried with each mover that moved; if they were over its floor and now his feet are under it, he's put on top. A platform rising into a jumping or bouncing Buzz (level 2's pool float, level 4's platforms, every mover in levels 2, 4, 7 and 10) used to pass straight through him.
+- Level 10's hook points: drawn as sprite 0x1E (300 × 500, standing on the point, within 13312 of the camera; 0x440F70); dropped onto the floor under them at load (0x447DB0); targetable within 8192 and only on screen (0x4BA1F0, which also rules out the one under Buzz's feet); the marker sits 0xD0 above the point (0x4038E0). Test: every climb on level 10.
+- Level 10's electricity in rooms 7 and 12 (0x425F60): arcs along list 12's pairs, sparks rising from list 11, and list 60's sparks (at the list's raw values, as the original spawns them).
+- Level 4: the far-set copies follow what they copy: the presses (+0x12, 0x41BC20), the hanging platforms (+4, with their angles, 0x41BEE0) and special 0xD (0xC). They stayed at their start when the camera was more than 1000 away, so a press showed where it wasn't.
+- Pickups: a power-up coming back after its 400 ticks sparkles if the camera is near (0x4A0F80). The 400-tick timer is the same for hooks, discs and hover boots; rocket boots come back when they run out.
+- Viewer: `--shot` teleports keep the facing given.
+- Checked, not changed: the rocket pose overrides the double jump's wings in the original too (0x4011D0 sets state 10 while 0x53C5E0 runs, after 0x4340D0 writes 8).
+- Not reproduced: level 2's missing leaf section (every leaf platform with a coin on it is drawn where its collision is; the fern near the far fence has open fronds over solid collision, as in the data).
+- Checks: workspace release build clean; 220 tests pass.
+
+## 2026-11-03: playtest round 5
+
+- Particles: the spawn-mode table has 29 entries (0..0x1C), not 18; everything spawned with modes 0x12–0x1C (level 2's conkers, mode 0x13) had no velocity or gravity. Kind 0x17 lands on its floor; the death actions of 0x410B80 ported (splats, dust, drops). Fixed the disc's bounce (it switches to kind 0x1E) and hit (death action 8).
+- Moving platforms: a mover whose floor comes up past Buzz's feet (up to 64 a tick) picks him up; motion is cleared after the carry, so movers moved after the tick carry too; `place_mover` records motion. Test: every flat-topped mover in levels 4, 7 and 10.
+- Grappling hook: in first person the target lock no longer breaks on any mouse movement (40 pixels of movement does), so the hook can be thrown with a hand on the mouse.
+- Level tester: levels opened on their own start with every ability, so gadget cages are open.
+- Checks: workspace release build clean; 216 tests pass.
