@@ -16,14 +16,17 @@ It is packaged for players as **OpenTS2**, an open engine in the spirit of OpenM
 | [docs/opents2-design.md](docs/opents2-design.md) | OpenTS2's design: launcher, installer, planned mods and editor |
 | [docs/formats/](docs/formats/), [docs/re/](docs/re/) | File formats; the original exe's functions; the asset audit |
 
-## Status — 2026-10-31
+## Status — 2026-11-07
 
 All 15 campaign levels, the front end, saves, music and movies are in.
 - **Level 1** is signed off by the project's playtester.
-- **Levels 2–15** have been through two rounds of playtest reports. Every report that could be reproduced is fixed:
+- **Levels 2–15** have been through seven rounds of playtest reports. Every report that could be reproduced is fixed:
   - collision walls and conveyor ends;
+  - moving platforms, lifts and tipping planks;
   - boss attacks, checked against the original's code;
-  - drawing order;
+  - drawing order, including the tree's leaves;
+  - gadgets: the disc launcher, rocket boots and the grappling hook with its hook points;
+  - particles (falling conkers, sparks, rain);
   - challenge countdowns;
   - the Etch A Sketch level select;
   - level-specific scripts.

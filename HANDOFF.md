@@ -1,6 +1,6 @@
 # Handover: Toy Story 2 Rust rewrite
 
-Last updated 2026-10-31. This file is the resume point: current state first, then the open
+Last updated 2026-11-07. This file is the resume point: current state first, then the open
 issues and next direction, then reference sections (§1–§10). Dated history lives in
 [MODLOG.md](MODLOG.md) and git. Per-interaction test coverage lives in
 [docs/coverage.md](docs/coverage.md); keep it there, not here.
@@ -25,14 +25,14 @@ exe functions) and `docs/formats/*.md`.
 
 ---
 
-## Current state (2026-10-31)
+## Current state (2026-11-07)
 
 - **Campaign:** all 15 levels and the front end are ported and playable in `ts2-viewer`.
 - **Level 1:** signed off by the user.
-- **Levels 2–15:** the user played through them in two rounds of reports; every reproduced report has been fixed (see the list below).
+- **Levels 2–15:** the user has sent seven rounds of playtest reports (the latest on levels 2, 4 and 10); every reproduced report has been fixed (see the list below and MODLOG). Rounds 5–7 are pushed (commit 199b9d8) but not yet re-played.
 - **Not done:** no level other than 1 has a full sign-off.
 - **Tests:** 222 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (211 engine + 11 launcher), 2026-11-03. `cargo build --release` builds the viewer, tool and launcher without warnings.
-- **Git:** work is on `dev` (local `master` tracks `origin/dev`). The user asks before each push.
+- **Git:** work is on `dev` (local `master` tracks `origin/dev`); last push 199b9d8. The user asks before each push.
 
 ### Fixed from the user's playtests
 Every fix below comes from the original's code, has a regression test, and was mostly checked with offscreen shots. The user has only re-played the first round's fixes.
@@ -67,6 +67,14 @@ Every fix below comes from the original's code, has a regression test, and was m
 - Challenge countdowns: HUD element 6 from 100 up (0x49FD40) shows seconds and the collected count.
 - The slime level's laser power-up (special 0x32, `Kind::Timer`) appears from the third round, as in the original.
 
+**Rounds 5–7 (2026-11-03, not yet re-played; details in MODLOG)**
+- Particles: the full 29-entry spawn-mode table and 0x410B80's death actions (level 2's conkers fall and splat).
+- Movers: each mover remembers its start-of-tick place (`World::motions`); Buzz's start, carried with the mover, is swept against it and probed for its floor, so platforms rising, tipping or pushing into him (level 2's float, level 4's platforms and scoop, level 10's lifts) no longer pass through. Mantling onto a mover holds it still (0x559E80; all movers on level 10). Level 4's scoop carries Buzz as it turns; level 4's far-set copies follow their specials.
+- Level 10: hook points drawn and targetable as the original does them (0x440F70 / 0x447DB0); electricity in rooms 7 and 12; lifts only after the switches.
+- Grappling hook lock survives mouse jitter; the level tester starts with every ability; power-ups sparkle on return.
+- Drawing: opaque blended faces (level 2's leaves) alpha-tested with depth; special objects drawn between ticks (no lift judder).
+- Deviation (owner's request): rocket-boot double jump shows the wings.
+
 **Front end and viewer**
 - The level select sits inside the Etch A Sketch (0x494130, map variant 1), and the map cars' heading is fixed.
 - The cursor is held while playing.
@@ -77,10 +85,15 @@ Every fix below comes from the original's code, has a regression test, and was m
 **Reported but not reproduced**
 - Level 1: fell out at the living-room windowsill. Needs the user's spot.
 - Level 14: helicopter buttons "not working". Physics, the script and a `--shot` all take the press (`stomping_a_helicopter_button_presses_it`). Needs the user's steps.
+- Level 4: Buzz clipping through the hanging iron bar and the digger's scoop. Fixes went in (mover sweep, scoop ride) but no test reproduced the original report; ask the user after they replay.
+
+**Reported, checked, kept as the original**
+- Level 2's pool float (duck): its collision is the data's flat slab under the back; the head has none in the original either. The user may want a head blocker as a deviation.
+- Power-ups return 400 ticks (6.7 s) after being taken, one at a time (0x4A0F80); the user thought hooks came back too fast.
 
 **Collision**
 - If the body starts slightly inside an edge cylinder, it ignores that edge (`sweep_edge` / `sweep_point`). A naive fix broke the boundary walls.
-- The mover carry is not swept, but a mover whose floor comes up to 64 units past Buzz's feet in a tick now picks him up (`MOVER_PICKUP`); motion is cleared after the carry, so movers moved by `step_creatures` carry too, and `place_mover` records motion.
+- The mover carry (`pos += mover_motion`) is still not swept against static walls; the mover-frame sweep after `move_and_collide`'s main pass is. Turning movers carry Buzz only where a script calls `ride_turn` (tilts, level 4's scoop, level 14's plane), not generally as 0x4896A0 does.
 - Creature rays don't test boundary walls.
 - The camera against boundary walls is unverified.
 - Open edges in L5/7/8/10, found by `examples/clipsweep.rs`, are unverified against the original.
@@ -117,7 +130,7 @@ Every fix below comes from the original's code, has a regression test, and was m
 - Shield slowing Buzz.
 
 **Unconfirmed**
-- Level 14's "things not animated": the user didn't say which. Rain and lightning aren't ported.
+- Level 14's "things not animated": the user didn't say which. Rain is ported (round 4); lightning isn't.
 
 ### OpenTS2 (phase 1 done: launcher and installer)
 The project is distributed as **OpenTS2**, modelled on OpenMW. Design, OpenMW research and the data model for phases 2–3: [docs/opents2-design.md](docs/opents2-design.md). (The original brief is in git history: `docs/opents2-brief.md` at commit 3d75407.) The owner is going back to polishing the port; OpenTS2's next phases wait until levels 2–15 settle.
