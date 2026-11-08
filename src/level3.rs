@@ -13,7 +13,7 @@
 //!   size / 16); its script's timer fires blobs (particle 0x3F, sound 0xD). The bar shows
 //!   the rounds left.
 //!
-//! Not ported: the light and fog effects, the dripping, the camera shake.
+//! Not ported: the light and fog effects, the dripping.
 
 use crate::boxes::Boxes;
 use crate::creatures::{Creatures, ParticleRequest};
@@ -64,7 +64,8 @@ impl Level3 {
             drop: (0, 0),
             wobble: 0,
             started: false,
-            common: Common::default(),
+            // 0x41AA10: rain (sprite 0x32) and lightning (0x52F708 = 200 at the start).
+            common: Common { rain: Some(0x32), flash: 200, thunder: 20000, ..Default::default() },
         }
     }
 
@@ -98,11 +99,13 @@ impl std::ops::DerefMut for Level3 {
 impl Script for Level3 {
     fn step(&mut self, _world: &World, _specials: &mut Specials, _player: &mut Player, _boxes: &Boxes) {}
 
-    fn step_creatures(&mut self, _world: &World, specials: &mut Specials, player: &Player, cr: &mut Creatures, _coins: i32) {
+    fn step_creatures(&mut self, world: &World, specials: &mut Specials, player: &Player, cr: &mut Creatures, _coins: i32) {
         if !std::mem::replace(&mut self.started, true) {
             self.start(specials, cr);
         }
         self.clock = self.clock.wrapping_add(1);
+        self.common.lightning();
+        self.common.rain_splash(world, true, None);
         if cr.slots.get(SLIME).is_none_or(|c| c.id != 0x10) && self.phase < 1000 {
             return;
         }
@@ -202,6 +205,9 @@ impl Script for Level3 {
                     // word: the heading a flag-8 shot homes from, vy −2 meaning Buzz), angle 0.
                     cr.particles.push(ParticleRequest { pos: [c.pos[0], c.pos[1] - 10000, c.pos[2]], vel: [0, -2, 0], gravity: c.angles[1] << 2, angle: 0, spin: 0x80, typ: 0x3F });
                     cr.sounds.push((0xD, c.pos));
+                }
+                if c.timer == 3 {
+                    world.shake.set(0x28);
                 }
                 c.timer = 0;
             }

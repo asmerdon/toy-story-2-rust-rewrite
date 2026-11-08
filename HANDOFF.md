@@ -1,6 +1,6 @@
 # Handover: Toy Story 2 Rust rewrite
 
-Last updated 2026-11-07. This file is the resume point: current state first, then the open
+Last updated 2026-11-08. This file is the resume point: current state first, then the open
 issues and next direction, then reference sections (§1–§10). Dated history lives in
 [MODLOG.md](MODLOG.md) and git. Per-interaction test coverage lives in
 [docs/coverage.md](docs/coverage.md); keep it there, not here.
@@ -31,7 +31,7 @@ exe functions) and `docs/formats/*.md`.
 - **Level 1:** signed off by the user.
 - **Levels 2–15:** the user has sent seven rounds of playtest reports (the latest on levels 2, 4 and 10); every reproduced report has been fixed (see the list below and MODLOG). Rounds 5–7 are pushed (commit 199b9d8) but not yet re-played.
 - **Not done:** no level other than 1 has a full sign-off.
-- **Tests:** 222 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (211 engine + 11 launcher), 2026-11-03. `cargo build --release` builds the viewer, tool and launcher without warnings.
+- **Tests:** 257 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (246 engine + 11 launcher), 2026-11-08; on the last run the launcher exe was locked, so its 3 end-to-end tests were not re-run. `cargo build --release` builds the viewer, tool and launcher without warnings.
 - **Git:** work is on `dev` (local `master` tracks `origin/dev`); last push 199b9d8. The user asks before each push.
 
 ### Fixed from the user's playtests
@@ -75,6 +75,16 @@ Every fix below comes from the original's code, has a regression test, and was m
 - Drawing: opaque blended faces (level 2's leaves) alpha-tested with depth; special objects drawn between ticks (no lift judder).
 - Deviation (owner's request): rocket-boot double jump shows the wings.
 
+**Open-issue pass (2026-11-07, uncommitted, not played; details in MODLOG)**
+- Camera shake (0x50A510, `World::shake`): stomps, level 4's presses and drill, the dino, the slime.
+- The countdown's tick sound (0x5E).
+- Level 11's side shooters: shots end at the first wall (0x406A90).
+
+**Round 8 (2026-11-08, uncommitted, not played; details in MODLOG)**
+- The follow camera's collision is the original's (`camera.rs`): rays skip objects flagged 0x200, whiskers, the moving pull-in, the mover height pull. Fixes the lift judder (user's "Level 11" is level 10: the mice and lifts are there).
+- Frames running several ticks blend from the last tick.
+- Level 10's wall mice (0x425A80). Level 4's side lift shuttles; its hanging platforms travel with Buzz on them.
+
 **Front end and viewer**
 - The level select sits inside the Etch A Sketch (0x494130, map variant 1), and the map cars' heading is fixed.
 - The cursor is held while playing.
@@ -86,6 +96,7 @@ Every fix below comes from the original's code, has a regression test, and was m
 - Level 1: fell out at the living-room windowsill. Needs the user's spot.
 - Level 14: helicopter buttons "not working". Physics, the script and a `--shot` all take the press (`stomping_a_helicopter_button_presses_it`). Needs the user's steps.
 - Level 4: Buzz clipping through the hanging iron bar and the digger's scoop. Fixes went in (mover sweep, scoop ride) but no test reproduced the original report; ask the user after they replay.
+- Level 13: oily footprints. They are ported and appear on ordinary floor after the oil; the user reported none. Needs the spot (the conveyor floor, surface 33, gets none in the exe either).
 
 **Reported, checked, kept as the original**
 - Level 2's pool float (duck): its collision is the data's flat slab under the back; the head has none in the original either. The user may want a head blocker as a deviation.
@@ -93,9 +104,7 @@ Every fix below comes from the original's code, has a regression test, and was m
 
 **Collision**
 - If the body starts slightly inside an edge cylinder, it ignores that edge (`sweep_edge` / `sweep_point`). A naive fix broke the boundary walls.
-- The mover carry (`pos += mover_motion`) is still not swept against static walls; the mover-frame sweep after `move_and_collide`'s main pass is. Turning movers carry Buzz only where a script calls `ride_turn` (tilts, level 4's scoop, level 14's plane), not generally as 0x4896A0 does.
-- Creature rays don't test boundary walls.
-- The camera against boundary walls is unverified.
+- The mover carry (`pos += mover_motion`) is not swept against static walls, as in the original (0x488E10 adds the motion to 0x52F300 directly). Turning movers carry Buzz only where a script calls `ride_turn` (tilts, level 4's scoop, level 14's plane), not generally as 0x4896A0 does.
 - Open edges in L5/7/8/10, found by `examples/clipsweep.rs`, are unverified against the original.
 
 **Drawing**
@@ -103,33 +112,29 @@ Every fix below comes from the original's code, has a regression test, and was m
 - Creatures and pickups are not room-gated (0x447BD0, creature room byte +0x6C).
 - The far set's near clip of 10000 is not applied.
 - Creatures are drawn within 10176 rather than from the original's active list.
-- The Level 13 follow camera can end up inside Buzz's head.
+- The follow camera's aim (0x405623): the exe's pitch target is atan2(−|dy|·dy, L²), L = 0x4B0 less (400 − distance) × 2 when closer than 400; the port uses the true angle to Buzz's chest. The exe's looks flatter, about 4° down instead of 14°, with Buzz lower on the screen. Unchanged, pending the user's decision.
+- The Level 13 follow camera ending up inside Buzz's head may be fixed by the camera port; unconfirmed.
 
 **Bosses**
 - Shared kill (0x405D20) death sounds per type.
-- The drill's state 5 / weapon check.
 - Level 9: lights, and the camera's every-0x1E-tick pick.
 - Level 15: swing outside phase 2, and boss 3's hurt voice.
 - The dino fires from a fixed offset, not node 1.
 - Campaign 3's dust uses the boss's height, not the floor height.
 
 **Missing features**
-- The hook's icon on the HUD's weapon meter (0x493DC0 draws a model there).
-- Level 10's lights (list 13, 0x44F200) and its lifts' group re-alignment (0x52FCA0 offsets from the first group mover Buzz isn't touching).
-- Level 4's camera shake when a press lands near Buzz (0x50A510 in 0x41BC20).
-- Lightning on level 14 (0x42E790, 0x52FFA8).
-- The countdown tick sound (0x5E in 0x49FD40).
-- Pause menu.
-- Options (0x4371B0).
-- Movie viewer (0x453FA0).
-- Credits.
-- Loading pictures.
-- Attract demo.
-- Level 8 electric arcs and cannon.
-- Drips, dynamic lights and floor shadows.
+- The camera shake isn't cleared when the camera is reset (0x403450); it lasts at most 40 ticks.
+- The moving lights on models (0x49EE50, 0x49EEE0, applied by 0x4CE6C0 with three fixed white lights set up in 0x4CE910): how the original lights models hasn't been worked out, so nothing draws them.
+- Passive camera: the pause menu stores it (0x52F0CC bit 0x40), `camera.rs` doesn't use it.
+- Control remapping (0x49C420): the options page lists the keys only. Detail, gamma and animated textures are shown, not applied.
+- Level 4's pipe flows (0x52F83C / 0x52F850) and lamps (list 6, tied to the crane puzzle).
+- Level 8's claw shadow (0x423200), level 9's boss shadow (0x424490), level 12's lobbed shots' (0x42B090).
+- Room culling beyond level 4 and creature room gating: the user asked to leave these alone for now.
 - Shield slowing Buzz.
 
 **Unconfirmed**
+- Level 8's "cannon": the exe's list 16 points lob a yellow particle (type 0x60, sprite 0x34) at Buzz; the arcs (0x422D20) are the bolts. The user thinks there are lasers in a section of the map and will check the original; not signed off.
+- The new menus, flares, shadows and the demo haven't been played.
 - Level 14's "things not animated": the user didn't say which. Rain is ported (round 4); lightning isn't.
 
 ### OpenTS2 (phase 1 done: launcher and installer)

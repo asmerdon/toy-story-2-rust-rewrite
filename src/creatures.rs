@@ -229,8 +229,16 @@ pub struct Creatures {
     pub events: Vec<Event>,
     /// Owned sounds (looping while played each tick) with the slot that owns them.
     pub owned_sounds: Vec<(u16, [i32; 3], usize)>,
+    /// 0x882968 ≠ 6: Buzz has discs and at least one is in flight (0x4A4910).
+    pub discs_out: bool,
+    /// 0x53C620 ≠ 0: his laser arm is up (script op 0x22).
+    pub buzz_firing: bool,
+    /// Level 10: slots 1-5 may crawl on walls and ceilings (0x425A80).
+    pub wall_mice: bool,
     /// Particles the type routines made this tick.
     pub particles: Vec<ParticleRequest>,
+    /// Particles made with a life of their own (the routine wrote +0x24 after 0x40FAE0).
+    pub lasting: Vec<(ParticleRequest, i32)>,
     /// Particles to spawn by type and mode (0x40FDF0), with a spin.
     pub spawns: Vec<([i32; 3], u8, usize, i32)>,
     /// Bo Peep's sheep found (0x52B7D8; −1 once she has them back).
@@ -257,6 +265,8 @@ pub struct Creatures {
     default_shape: HitShapes,
     /// Hit kinds (0x4E066C): (type, knock-back ticks, damage).
     hits: Vec<[i16; 3]>,
+    /// 0x4E05EE: each creature type's shadow half size (0: none).
+    shadow_sizes: Vec<i16>,
     death_script: Option<Vec<i16>>,
 }
 
@@ -313,7 +323,28 @@ pub fn sequences(exe: &Exe) -> Vec<Vec<u8>> {
     out
 }
 
+/// Each creature type's shadow half size (0x4E05EE, i16).
+const SHADOW_SIZES: u32 = 0x4E05EE;
+
 impl Creatures {
+    /// 0x4076F0's shadows: on the floor below (0x486280 from 0x1900 above), or flat at the
+    /// height the creature keeps to (+0x60) when it does so (flag 0x20, not 0x40 if hovering).
+    pub fn shadows(&self, world: &World, out: &mut Vec<crate::shadows::Shadow>) {
+        for c in self.slots.iter().filter(|c| c.id != 0 && c.health > 0 && c.active) {
+            let size = self.shadow_sizes.get(c.id as usize).copied().unwrap_or(0) as i32;
+            if size == 0 {
+                continue;
+            }
+            let flat = if c.flags & 0x10 == 0 { c.flags & 0x20 != 0 } else { c.flags & 0x20 != 0 && c.flags & 0x40 == 0 };
+            if flat {
+                crate::shadows::flat(out, [c.pos[0], c.target[1], c.pos[2]], size);
+            } else if let Some((y, _, _, n)) = world.floor_below_full(c.pos[0] as f32 / 32.0, c.pos[2] as f32 / 32.0, (c.pos[1] - 0x1900) as f32 / 32.0) {
+                let n = n.to_array().map(|v| (v * 16384.0) as i32);
+                crate::shadows::on_floor(out, [c.pos[0], (y * 32.0) as i32, c.pos[2]], size, c.pos[1], n);
+            }
+        }
+    }
+
     pub fn new(spawns: &[Spawn], exe: Option<&Exe>, random: Vec<u8>) -> Creatures {
         let scripts = (0..=255u32)
             .map(|b| {
@@ -330,6 +361,7 @@ impl Creatures {
             .and_then(|e| e.at(HITS, 36).ok())
             .map(|b| (0..6).map(|k| [0, 1, 2].map(|j| i16::from_le_bytes([b[6 * k + 2 * j], b[6 * k + 2 * j + 1]]))).collect())
             .unwrap_or_else(|| vec![[0, 0, 0], [1, 30, 2], [2, 4, 1], [2, 4, 4], [3, 4, 2], [1, 30, 2]]);
+        let shadow_sizes = (0..256u32).map(|k| exe.and_then(|e| e.at(SHADOW_SIZES + 2 * k, 2).ok()).map_or(0, |b| i16::from_le_bytes([b[0], b[1]]))).collect();
         let death_script = exe.and_then(|e| {
             let p = u32::from_le_bytes(e.at(DEATH_SCRIPT, 4).ok()?.try_into().ok()?);
             Some((0..64u32).map_while(|k| e.at(p + 2 * k, 2).ok().map(|w| i16::from_le_bytes([w[0], w[1]]))).collect())
@@ -344,7 +376,11 @@ impl Creatures {
             sounds: Vec::new(),
             events: Vec::new(),
             owned_sounds: Vec::new(),
+            discs_out: false,
+            buzz_firing: false,
+            wall_mice: false,
             particles: Vec::new(),
+            lasting: Vec::new(),
             spawns: Vec::new(),
             sheep: 0,
             racing: false,
@@ -365,6 +401,7 @@ impl Creatures {
                 ],
             },
             hits,
+            shadow_sizes,
             death_script,
         };
         for s in spawns.iter().take(64) {
@@ -676,6 +713,13 @@ impl Creatures {
         c.time = (at(j) as u32) << 16 | (c.time & 0xFFFF);
     }
 
+    /// 0x425A80: height and depth traded about the creature's home.
+    fn swap_height_depth(c: &mut Creature) {
+        let z = c.pos[2];
+        c.pos[2] = c.home[2] - c.home[1] + c.pos[1];
+        c.pos[1] = c.home[1] + z - c.home[2];
+    }
+
     /// 0x4086F0 + 0x4076F0 for one tick. `camera` and `buzz` in object units.
     pub fn tick(&mut self, world: &World, camera: [i32; 3], buzz: [i32; 3]) -> Vec<(usize, Step)> {
         let mut steps = Vec::new();
@@ -713,9 +757,23 @@ impl Creatures {
             }
             c.active = true;
             let heard = (self.sounds.len(), self.owned_sounds.len());
+            // 0x425A80 (level 10): the wall mice (slots 1-5 whose byte +0x1C is under 0x80) think
+            // with height and depth swapped about their home, so their zone stands up on the
+            // wall behind them. 0x4086F0 swaps before and after the creatures' update.
+            let on_wall = self.wall_mice && (1..=5).contains(&i) && c.rec.decel[0] < 0x80;
+            if on_wall {
+                Self::swap_height_depth(&mut c);
+            }
             let s = self.think(&mut c, world, buzz);
             c.step = s;
             self.routine(i, &mut c, &s, world);
+            if on_wall {
+                Self::swap_height_depth(&mut c);
+            }
+            // The same routine holds slot 3 upside down, on the ceiling.
+            if self.wall_mice && i == 3 {
+                c.angles[2] = 0x800;
+            }
             // Kept in play beyond the original's reach, it makes no sound there (the original
             // only ran, and so only heard, creatures within it).
             if !c.in_reach {
@@ -753,9 +811,9 @@ impl Creatures {
             0xF => self.kite(slot, c, s),
             0x13 => self.friend(c, 0x6B, 0x6C, 0x5A, false),
             0x14 => self.zurg_pod(slot, c, s, world),
-            0x16 => self.drill(slot, c),
+            0x16 => self.drill(slot, c, world),
             0x20 => self.clown(c),
-            0x1A => self.dino(c),
+            0x1A => self.dino(c, world),
             0x2F => self.car_boss(slot, c, s, world),
             0x1F => self.spider(c),
             0x17 => {
@@ -775,7 +833,7 @@ impl Creatures {
             // 0x428650, level 11's critters: they squeak whether found or not.
             0x28 => self.friend(c, 0x96, 0x96, 0x3C, false),
             0x29 => self.hummer(c, s),
-            0x2E => self.side_shooter(c),
+            0x2E => self.side_shooter(c, world),
             5 => self.tin_man(slot, c, s),
             6 => self.sheep(c),
             8 => self.rc(slot, c, s),
@@ -1189,17 +1247,24 @@ impl Creatures {
     }
 
     /// 0x41B780, the drill (0x16), level 4's boss; `boss.state` is the script's 0x52F804. It
-    /// rumbles (0x99, owned; 0x9A when touched) and shakes the camera near Buzz (not ported).
-    /// Fighting, it flashes for 60 ticks after a hit (then hurtable again: record state 7,
-    /// else 4); the laser hurts it (state 5) unless Buzz has the disk launcher out. It kicks
+    /// rumbles (0x99, owned; 0x9A when touched) and shakes the camera near Buzz: 0x14 within
+    /// 300 × 256 when still, 0x28 within 100 once it has died down below 0x14 (0x50A510).
+    /// Fighting, it flashes for 60 ticks after a hit, and can be hurt (record state 5, else 4)
+    /// only while a disc of Buzz's is in flight. It kicks
     /// up dust (0x04 mode 9) every 4 ticks before it's beaten; while Buzz is up on the rim
     /// (y < −0x7DE25) it throws rocks at him (0x54, every 32 ticks, one in four aimed), and
     /// its bar is health × 54 / 30.
-    fn drill(&mut self, slot: usize, c: &mut Creature) {
+    fn drill(&mut self, slot: usize, c: &mut Creature, world: &World) {
         self.owned_sounds.push((0x99, c.pos, slot));
         if c.flags & 0x200 != 0 {
             c.flags &= !0x200;
             self.sounds.push((0x9A, c.pos));
+        }
+        let shake = world.shake.get();
+        if shake == 0 && crate::script::near(self.buzz, c.pos, 300) {
+            world.shake.set(0x14);
+        } else if shake < 0x14 && crate::script::near(self.buzz, c.pos, 100) {
+            world.shake.set(0x28);
         }
         let b = &mut self.boss;
         b.blink = !b.blink;
@@ -1218,7 +1283,8 @@ impl Creatures {
             b.last = c.health;
             c.rec.state = 4;
         }
-        c.rec.state = if b.state < 2 { 4 } else { 5 };
+        // 0x41B780: only while Buzz's discs are out (0x882968 ≠ 6) is it open to a hit.
+        c.rec.state = if b.state < 2 || !self.discs_out { 4 } else { 5 };
         if b.state < 3 && self.clock.is_multiple_of(4) {
             self.spawns.push((c.pos, 4, 9, 0));
         }
@@ -1275,7 +1341,7 @@ impl Creatures {
     /// script's timer makes it breathe fire (particles 0x55 from its mouth, sound 0x78, the
     /// camera shakes at 30); below 10 health it dies (script + 0x74, harmless, five fireballs,
     /// jingle −2, the fight over); then it smokes.
-    fn dino(&mut self, c: &mut Creature) {
+    fn dino(&mut self, c: &mut Creature, world: &World) {
         let b = &mut self.boss;
         b.blink = !b.blink;
         if c.health != b.last {
@@ -1295,6 +1361,10 @@ impl Creatures {
             let r = self.rand() as i32;
             self.rand();
             self.particles.push(ParticleRequest { pos: at, vel: [sin(u) >> 3, r + 0x200, cos(u) >> 3], gravity: 0, angle: 0, spin: r - 0x80, typ: 0x55 });
+            // The first breath (timer 0x1E) shakes the camera (0x420B2C).
+            if c.timer == 0x1E {
+                world.shake.set(0x28);
+            }
             c.timer = (c.timer - 1).max(0);
         }
         c.lit = false;
@@ -1542,8 +1612,9 @@ impl Creatures {
 
     /// 0x406A90 (0x2E): when its script arms the timer (+0x8A), a shot (particle 0x61, sound
     /// 0x56) from its side (0xE0 round from its facing), aimed at Buzz if he's within 0x100
-    /// of its facing; with flag 1, five sparks too.
-    fn side_shooter(&mut self, c: &mut Creature) {
+    /// of its facing; with flag 1, five sparks too. The shot lives until the first wall within
+    /// 0x50 ticks' flight.
+    fn side_shooter(&mut self, c: &mut Creature, world: &World) {
         if c.timer == 0 {
             return;
         }
@@ -1553,9 +1624,17 @@ impl Creatures {
         let aim = atan(self.buzz[0] - at[0] - ox, self.buzz[2] - at[2] - oz);
         let a = if ((aim - f + 0x100) & 0xFFF) > 0x200 { f } else { aim };
         let v = [sin(a) >> 3, 0, cos(a) >> 3];
-        // 0x48C860 trims the shot to the first wall within 0x50 steps and sets the particle's
-        // life from that; a request carries no life, so the shot runs its type's full life.
-        self.particles.push(ParticleRequest { pos: [at[0] + ox, at[1], at[2] + oz], vel: v, gravity: 0, angle: 0, spin: 0, typ: 0x61 });
+        // 0x48C860 trims 0x50 ticks' flight from its middle (no side offset) to the first wall;
+        // the steps that fit, along the larger of x and z, give the life: 2 × steps − 0xF, at
+        // least 1 (0x406A90).
+        let reach = [v[0] * 0x50, 0, v[2] * 0x50];
+        let o = glam::Vec3::from(at.map(|k| k as f32 / 32.0));
+        let d = glam::Vec3::from(reach.map(|k| k as f32 / 32.0));
+        let t = world.sweep(o, d, 1.0).map_or(1.0, |h| h.t);
+        let cut = reach.map(|k| (k as f32 * t) as i32);
+        let steps = if v[2].abs() < v[0].abs() { cut[0] / v[0] } else if v[2] != 0 { cut[2] / v[2] } else { 0 };
+        let life = (steps.abs() * 2 - 0xF).max(1);
+        self.lasting.push((ParticleRequest { pos: [at[0] + ox, at[1], at[2] + oz], vel: v, gravity: 0, angle: 0, spin: 0, typ: 0x61 }, life));
         self.sounds.push((0x56, c.pos));
         if c.flags & 1 != 0 {
             for _ in 0..5 {
@@ -2134,7 +2213,10 @@ impl Creatures {
                     c.timer = w(p + 1);
                     p + 2
                 }
-                0x22 => p + 1,
+                0x22 => {
+                    cond = self.buzz_firing;
+                    p + 1
+                }
                 0x23 => {
                     let a = atan(buzz[0] - c.pos[0], buzz[2] - c.pos[2]);
                     c.target[0] = c.pos[0] - sin(a) * w(p + 1);

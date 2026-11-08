@@ -251,6 +251,9 @@ pub struct World {
     /// (0x488E10 zeroes its velocity); with `hold_all` (level 10) every mover does.
     hold: std::cell::Cell<Option<i32>>,
     pub hold_all: std::cell::Cell<bool>,
+    /// 0x50A510: the camera shake, in ticks left (0x28 at most). Stomps, presses, the drill,
+    /// the dino and the slime set it; the camera (0x4045E0) wobbles its aim and counts it down.
+    pub shake: std::cell::Cell<i32>,
 }
 
 fn cell(v: f32) -> i32 {
@@ -554,7 +557,7 @@ impl World {
                 }
             }
         }
-        World { tris, grid, lo, hi, objects: Vec::new(), always: Vec::new(), rooms: Vec::new(), mover_home: Vec::new(), lowest: hi.y, bounds: Vec::new(), hold: Default::default(), hold_all: Default::default() }
+        World { tris, grid, lo, hi, objects: Vec::new(), always: Vec::new(), rooms: Vec::new(), mover_home: Vec::new(), lowest: hi.y, bounds: Vec::new(), hold: Default::default(), hold_all: Default::default(), shake: Default::default() }
     }
 
     /// Triangles whose grid cells overlap the box around `lo..hi` (x/z).
@@ -649,11 +652,18 @@ impl World {
     /// Earliest contact of a sphere of radius `r` moving from `p0` by `d` (the sweep 0x481FB0
     /// runs for each polygon: its face, then its edges as cylinders and corners as spheres).
     pub fn sweep(&self, p0: Vec3, d: Vec3, r: f32) -> Option<Hit> {
-        self.sweep_in(p0, d, r, None)
+        self.sweep_in(p0, d, r, None, 0)
     }
 
-    /// As `sweep`, against one object's triangles only (no boundary walls) when `only`.
-    fn sweep_in(&self, p0: Vec3, d: Vec3, r: f32, only: Option<usize>) -> Option<Hit> {
+    /// As `sweep` for the camera (0x48C860 / 0x48D530 with their camera argument): objects
+    /// flagged 0x200 don't stop it.
+    pub fn camera_sweep(&self, p0: Vec3, d: Vec3, r: f32) -> Option<Hit> {
+        self.sweep_in(p0, d, r, None, 0x200)
+    }
+
+    /// As `sweep`, against one object's triangles only (no boundary walls) when `only`, and
+    /// skipping objects with any flag in `skip`.
+    fn sweep_in(&self, p0: Vec3, d: Vec3, r: f32, only: Option<usize>, skip: u16) -> Option<Hit> {
         let p1 = p0 + d;
         let reach = Vec3::splat(r + 2.0);
         let mut best: Option<Hit> = None;
@@ -665,7 +675,7 @@ impl World {
             }
         };
         for t in self.candidates(p0.min(p1) - reach, p0.max(p1) + reach) {
-            if only.is_some_and(|o| o != t.obj as usize) {
+            if only.is_some_and(|o| o != t.obj as usize) || (skip != 0 && self.objects.get(t.obj as usize).is_some_and(|o| o.flags & skip != 0)) {
                 continue;
             }
             let mover = self.mover_of(&t);
@@ -1409,9 +1419,9 @@ impl Player {
         let wading = mode != 0 && y > surface;
         let f = self.facing;
         let foot = if feet & 2 != 0 {
-            [sin12(f - 0x400) >> 4, sin12(f) >> 4]
+            [sin12(f - 0x400) >> 2, sin12(f) >> 2]
         } else {
-            [sin12(f + 0x400) >> 4, sin12(f - 0x800) >> 4]
+            [sin12(f + 0x400) >> 2, sin12(f - 0x800) >> 2]
         };
         let p = self.pos_obj();
         let at = [p[0] + foot[0], p[1], p[2] + foot[1]];
@@ -1465,7 +1475,7 @@ impl Player {
                 (_, 0x18) => 5,
                 _ => 0,
             };
-            let foot_at = Vec3::new((p[0] + foot[0] * 8) as f32, p[1] as f32, (p[2] + foot[1] * 8) as f32) / 32.0;
+            let foot_at = Vec3::new((p[0] + foot[0] * 2) as f32, p[1] as f32, (p[2] + foot[1] * 2) as f32) / 32.0;
             self.sounds_at.push((Sound { id, voice: false }, foot_at));
         }
     }
@@ -1888,7 +1898,7 @@ impl Player {
         let fire = std::mem::take(&mut self.fire_latch);
         self.laser_tick(world, fire, self.fire_held || fire);
         self.grapple_tick();
-        let stomp = self.stomp_tick(stomp_pressed);
+        let stomp = self.stomp_tick(world, stomp_pressed);
         self.spin_tick(stomp_pressed);
         if self.hurt_timer > 0 {
             self.hurt_timer -= 1;
@@ -2191,7 +2201,7 @@ impl Player {
     }
 
     /// 0x434D20. Returns 0 to carry on normally, 5 to stop horizontal motion, 7 to hang.
-    fn stomp_tick(&mut self, pressed: bool) -> i32 {
+    fn stomp_tick(&mut self, world: &World, pressed: bool) -> i32 {
         let blocked = self.coyote != 0 || self.fall_timer < 0 || self.fall_timer == FALL_PANIC || self.stomp != 0 || self.charge != 0 || self.spin != 0;
         let can = matches!(self.jump, JumpPhase::Holding | JumpPhase::Released) || self.state == state::DOUBLE_JUMP;
         if pressed && !blocked && can {
@@ -2224,8 +2234,9 @@ impl Player {
             return 7;
         } else {
             // Impact (0x434D20): the swirl at his feet, particles 0x12 (mode 0xB) and 0x13
-            // (mode 0xC) 0x400 up, and sound 0xF. The camera shake isn't drawn yet.
+            // (mode 0xC) 0x400 up, sound 0xF, and the camera shake 0x28 (0x50A510).
             self.stomp = STOMP_RECOVERY;
+            world.shake.set(0x28);
             let p = self.pos_obj();
             let at = [p[0], p[1] - 0x400, p[2]];
             self.effects.push((at, 0x12, 0xB, 0));
@@ -2526,7 +2537,7 @@ impl Player {
                 if len < 1e-3 {
                     break;
                 }
-                let Some(h) = world.sweep_in(at, rest, BODY_RADIUS, Some(m.obj)) else {
+                let Some(h) = world.sweep_in(at, rest, BODY_RADIUS, Some(m.obj), 0) else {
                     at += rest;
                     break;
                 };
@@ -3733,6 +3744,7 @@ mod tests {
         assert!(p.on_floor);
         p.tick(&w, [0.0; 2], false, false);
         assert_eq!(p.state, state::STOMP_LAND);
+        assert_eq!(w.shake.get(), 0x28, "the landing shakes the camera (0x434D20)");
     }
 
     #[test]

@@ -3,8 +3,8 @@
 use glam::Vec3;
 use std::{env, fs, path::PathBuf};
 use ts2::creatures::Creatures;
-use ts2::formats::{exe, packets};
-use ts2::game::Player;
+use ts2::formats::{exe, leveldat, ngn, packets, terrain};
+use ts2::game::{Player, World};
 
 /// The level spans over 10^6 object units. Contact tests (0x407440) used to wrap in i32 there,
 /// so harmful creatures across the tarmac hurt Buzz wherever he stood.
@@ -122,4 +122,36 @@ fn stomping_a_helicopter_button_presses_it() {
         "two presses left"
     );
     assert!(specials.get(0x39).is_some_and(|s| s.hidden));
+}
+
+/// Lightning (0x42E790): the level's colours jump after 200 ticks and fade back over 32, then
+/// the thunder (0x70) rolls.
+#[test]
+fn lightning_flashes_and_thunder_follows() {
+    let Some(game) = env::var_os("TS2_GAME_DIR").map(PathBuf::from) else { return };
+    let dir = game.join("data/level04");
+    let e = exe::Exe::parse(fs::read(game.join("toy2.exe")).unwrap()).unwrap();
+    let n = ngn::parse(&fs::read(dir.join("level1.ngn")).unwrap()).unwrap();
+    let t = terrain::parse(&fs::read(dir.join("TERR1.ALL")).unwrap()).unwrap();
+    let lists = leveldat::parse(&fs::read(dir.join("level1.dat")).unwrap()).unwrap();
+    let world = World::from_terrain(&t);
+    let mut specials = ts2::specials::Specials::new(&n);
+    let random = fs::read(game.join("data/rand.dat")).unwrap();
+    let mut script = ts2::script::for_level(14, &world, &mut specials, Some(&e), &lists, Some(random)).unwrap();
+    let boxes = ts2::boxes::Boxes::new(14, &lists, Some(&e), &world, &mut specials);
+    let mut p = Player::new(Vec3::new(0.0, -100000.0, 0.0));
+    let (mut bright, mut first, mut thunder) = (0, None, false);
+    for k in 0..700 {
+        script.step(&world, &mut specials, &mut p, &boxes);
+        let a = script.ambient.unwrap_or(0x80);
+        bright = bright.max(a);
+        if a > 0x80 && first.is_none() {
+            first = Some(k);
+        }
+        thunder |= script.sounds.drain(..).any(|(id, _)| id == 0x70);
+    }
+    assert_eq!(first, Some(168), "the first flash, 200 - 32 ticks in");
+    assert!((0xD0..=0xDD).contains(&bright), "bright: {bright:x}");
+    assert_eq!(script.ambient, Some(0x80), "back to normal between flashes");
+    assert!(thunder, "thunder");
 }

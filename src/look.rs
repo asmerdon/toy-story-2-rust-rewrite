@@ -315,7 +315,8 @@ impl FirstPerson {
             self.pitch_speed = 0;
         }
         self.pitch = (v - 0x400) & 0xFFF;
-        self.cam_pitch = (self.cam_pitch + wrap(self.pitch - self.cam_pitch) / 8) & 0xFFF;
+        // 0x50A510's shake tips the view here too.
+        self.cam_pitch = (self.cam_pitch + wrap(self.pitch - self.cam_pitch + crate::camera::shake_wobble(world)) / 8) & 0xFFF;
         self.cam_yaw = (self.cam_yaw + wrap(p.facing - self.cam_yaw) / 8) & 0xFFF;
         p.look = [self.cam_pitch, self.cam_yaw];
         // Locked on a hook point (0x50A540 with 0x50A4FC ≥ 1000): firing throws the hook.

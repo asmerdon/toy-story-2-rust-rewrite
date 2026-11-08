@@ -463,3 +463,33 @@ fn slime_waits_through_its_regrowing_scene() {
     }
     assert_eq!(round_over, Some(5));
 }
+
+/// The dino's first breath (timer 0x1E) shakes the camera (0x50A510 = 0x28, 0x420AF0).
+#[test]
+fn dino_first_breath_shakes_the_camera() {
+    let Some(mut l) = load(7, false) else { return };
+    let at = l.cr.slots[0].pos;
+    l.cr.boss.state = 2;
+    l.cr.boss.hud = true;
+    l.cr.slots[0].timer = 0x1F;
+    l.cr.tick(&l.world, at, at);
+    assert_eq!(l.world.shake.get(), 0, "not on the breaths before");
+    l.cr.tick(&l.world, at, at);
+    assert_eq!(l.world.shake.get(), 0x28, "the breath at 0x1E shakes the camera");
+}
+
+/// The penthouse's side shooters (0x2E, 0x406A90) fire a shot whose life is cut to the first
+/// wall in 0x50 ticks' flight (0x48C860): 2 × steps − 0xF, at least 1. The port let every
+/// shot run its type's full life, through walls.
+#[test]
+fn side_shooter_shot_lives_until_the_first_wall() {
+    let Some(mut l) = load(11, true) else { return };
+    let k = l.cr.slots.iter().position(|c| c.id == 0x2E).expect("a side shooter");
+    let at = l.cr.slots[k].pos;
+    l.cr.slots[k].timer = 1;
+    l.cr.tick(&l.world, at, [at[0], at[1], at[2] + 0x4000]);
+    assert!(!l.cr.particles.iter().any(|r| r.typ == 0x61), "no shot without a life");
+    let shots: Vec<i32> = l.cr.lasting.iter().filter(|(r, _)| r.typ == 0x61).map(|(_, life)| *life).collect();
+    assert_eq!(shots.len(), 1, "one shot");
+    assert!((1..=0x50 * 2 - 0xF).contains(&shots[0]), "life {}", shots[0]);
+}

@@ -99,6 +99,10 @@ pub const HUB: usize = 16;
 /// The boss-defeated screen: 0x4500A0 loads `gfx\boss.*` for a boss level's id + 0x20.
 pub const BOSS_DONE: usize = 0x23;
 
+/// A level's loading picture is scene `LOADING + internal id` (0x4500A0: `gfx\loading`, or
+/// `level1a` … `level5c`); the plain id is the demo's.
+pub const LOADING: usize = 0x100;
+
 /// The `.ngn` of internal level `id` (0x452FC0): ids above 10 are `level1.*` in folder id − 10.
 pub fn scene_path(game: &Path, id: usize) -> PathBuf {
     variant_path(game, id, 0)
@@ -109,6 +113,13 @@ pub fn scene_path(game: &Path, id: usize) -> PathBuf {
 pub fn variant_path(game: &Path, id: usize, v: u8) -> PathBuf {
     if id == BOSS_DONE {
         return game.join("data").join("gfx").join("boss.ngn");
+    }
+    if id == LOADING {
+        return game.join("data").join("gfx").join("loading.ngn");
+    }
+    if id > LOADING {
+        let k = id - LOADING - 1;
+        return game.join("data").join("gfx").join(format!("level{}{}.ngn", k / 3 + 1, (b'a' + (k % 3) as u8) as char));
     }
     let (folder, stem) = if id > 10 { (id - 10, "level1") } else { (id, "level") };
     let name = if v == 0 { format!("{stem}.ngn") } else { format!("{stem}t{v}.ngn") };

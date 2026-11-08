@@ -20,9 +20,15 @@
 //!   Screens start black, fade in at speed 0xC (the level select 6), and leave by fading to
 //!   black over 0x17 ticks (0x53CA60).
 //!
-//! Not ported yet: the attract demo after 900 ticks on the title, options, the
-//! movie viewer, the credits, FMVs, the pause menu, the loading pictures (`gfx\levelNx`), and
-//! the level select's sound at each level (0x4A3B90).
+//! - **Options** (0x4371B0): scene 0 variant 2; volumes, the graphics settings and the
+//!   controller list. **Movie viewer** (0x43A600 from 0x453FA0): scene 16 variant 2, the movies
+//!   seen so far. **Credits** (0x43A380): scene 0 variant 3, scrolling text over pictures 0x30+.
+//!   **Loading pictures** (0x414720 / 0x4500A0): `gfx\levelNx`, 0x1C ticks before a level.
+//!   **Attract demo** (0x49D910): after 900 ticks on the title, levels 0, 3, 7, 10, 13 of the
+//!   campaign in turn played from `data\PAD\PATHnn.BIN`, two ticks a frame, until a button.
+//!
+//! Not ported yet: remapping the controls (the controller page shows them), and the level
+//! select's sound at each level (0x4A3B90).
 
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
@@ -52,6 +58,11 @@ pub struct Tables {
     /// 512 × 384 screen; the first seven from picture 0x20, the rest from 0x21) and the seven
     /// uv rectangles both halves share.
     pub etch: Vec<([f32; 4], [f32; 4])>,
+    /// 0x4F6E8C: the movie viewer's order, and 0x4F6E3C: each movie's still (sprite, cell).
+    pub movie_order: Vec<u8>,
+    pub movie_art: Vec<[u8; 2]>,
+    /// 0x4F5F54: the credits, lines ending in `~`.
+    pub credits: String,
 }
 
 /// Pairs of i16 special lists (ending −1) per level, as 0x438A50 reads them.
@@ -59,6 +70,9 @@ const MODELS: u32 = 0x4F6DC4;
 /// 0x494130's rectangles (14 × 4 f32) and uvs (7 × 4 f32).
 const ETCH_RECTS: u32 = 0x500B20;
 const ETCH_UVS: u32 = 0x500AB0;
+const MOVIE_ORDER: u32 = 0x4F6E8C;
+const MOVIE_ART: u32 = 0x4F6E3C;
+const CREDITS: u32 = 0x4F5F54;
 
 impl Tables {
     pub fn read(exe: &Exe) -> Tables {
@@ -77,7 +91,10 @@ impl Tables {
             v.iter().all(Option::is_some).then(|| v.map(Option::unwrap_or_default))
         };
         let etch = (0..14).filter_map(|k| Some((f4(ETCH_RECTS + 16 * k)?, f4(ETCH_UVS + 16 * (k % 7))?))).collect();
-        Tables { order, names, needed, models, etch }
+        let movie_order = (0..32).map_while(|k| exe.at(MOVIE_ORDER + k, 1).ok().map(|b| b[0])).take_while(|&b| b != 0xFF).collect();
+        let movie_art = (0..32).map_while(|k| exe.at(MOVIE_ART + 4 * k, 2).ok().map(|b| [b[0], b[1]])).take_while(|b| b[0] != 0xFF).collect();
+        let credits = (0..8192).map_while(|k| exe.at(CREDITS + k, 1).ok().map(|b| b[0])).take_while(|&b| b != 0).map(char::from).collect();
+        Tables { order, names, needed, models, etch, movie_order, movie_art, credits }
     }
 }
 
@@ -135,6 +152,7 @@ impl Pad {
     pub const RIGHT: u32 = 0x20;
     pub const DOWN: u32 = 0x40;
     pub const LEFT: u32 = 0x80;
+    pub const START: u32 = 8;
     pub const CANCEL: u32 = 0x1000;
     pub const JUMP: u32 = 0x4000;
 }
@@ -159,6 +177,16 @@ pub enum Screen {
     SavePrompt,
     /// The load and save screens (0x49B9E0).
     Saves,
+    /// 0x4371B0.
+    Options,
+    /// 0x43A600.
+    Movies,
+    /// 0x43A380, after the last level.
+    Credits,
+    /// A level's picture before it loads (0x414720); 0 for the demo's.
+    Loading(usize),
+    /// The attract demo playing campaign level `n` (1–15) from its recorded pad file.
+    Demo(usize),
     Quit,
 }
 
@@ -182,7 +210,8 @@ impl Screen {
             // Scene ids over 10 load variant 1 unless one is asked for (0x452FC0): the map's
             // `level1t1.ngn` has the Etch A Sketch frame (`etch_lh` / `etch_rh`, 32 / 33).
             Screen::Results | Screen::GameOver | Screen::Select => 1,
-            Screen::SavePrompt | Screen::Saves => 3,
+            Screen::SavePrompt | Screen::Saves | Screen::Credits => 3,
+            Screen::Options | Screen::Movies => 2,
             _ => 0,
         }
     }
@@ -190,7 +219,11 @@ impl Screen {
     /// The internal id of the scene this screen runs in.
     pub fn scene(self, t: &Tables) -> usize {
         match self {
-            Screen::Logo(_) | Screen::Title | Screen::Menu | Screen::Results | Screen::GameOver | Screen::Quit => crate::campaign::FRONT,
+            Screen::Logo(_) | Screen::Title | Screen::Menu | Screen::Results | Screen::GameOver | Screen::Quit | Screen::Options | Screen::Credits => crate::campaign::FRONT,
+            Screen::Movies => crate::campaign::HUB,
+            Screen::Loading(0) => crate::campaign::LOADING,
+            Screen::Loading(n) => crate::campaign::LOADING + t.order.get(n - 1).copied().unwrap_or(1),
+            Screen::Demo(n) => t.order.get(n - 1).copied().unwrap_or(1),
             Screen::BossDone => crate::campaign::BOSS_DONE,
             Screen::SavePrompt | Screen::Saves => crate::campaign::HUB,
             Screen::Select => crate::campaign::HUB,
@@ -208,6 +241,12 @@ pub enum Event {
     Music { track: usize, repeat: bool },
     /// Movie `n` (see `fmv::name`).
     Movie(usize),
+    /// 0x49E8D0: the music and sound levels (0–10).
+    Volumes { music: i32, sfx: i32 },
+    /// The lens flare option changed (0x508D70 bit 0).
+    LensFlare(bool),
+    /// 0x52AD94 = 1: start the recorded pad for this level (internal id).
+    Demo(usize),
 }
 
 /// A character of 0x49D390's font: texture 31, a 32-pixel cell.
@@ -233,6 +272,10 @@ pub struct Frame {
     pub glyphs: Vec<Glyph>,
     /// Brightness, 0 (black) to 0x80.
     pub brightness: i32,
+    /// 0x49D7A0's cross-fade: black over the picture, 0–0xFF.
+    pub veil: u8,
+    /// `picture` is to be found by 0x44FF50's search of the scene (loading pictures).
+    pub search_picture: bool,
     /// The level select's camera: position (object units) and pitch, yaw (12-bit).
     pub camera: Option<([i32; 3], i32, i32)>,
     /// The map's moving pieces: special id, position (level units), yaw (12-bit).
@@ -282,6 +325,12 @@ pub struct FrontEnd {
     pub select: Option<Select>,
     pub results: Option<Results>,
     pub saves: Option<SaveScreen>,
+    pub options: Options,
+    option_screen: OptionScreen,
+    movies: Option<MovieList>,
+    credits: Option<Credits>,
+    /// 0x52C83C: which demo level is next.
+    demo_next: usize,
     /// Where saves are written and read, and the controls a new save starts with (`Toy200.sav`).
     pub save_dir: std::path::PathBuf,
     pub defaults: Vec<u8>,
@@ -317,6 +366,11 @@ impl FrontEnd {
             select: None,
             results: None,
             saves: None,
+            options: Options::default(),
+            option_screen: OptionScreen::default(),
+            movies: None,
+            credits: None,
+            demo_next: 0,
             save_dir: crate::save::dir(),
             defaults: Vec::new(),
             dirty: false,
@@ -368,6 +422,19 @@ impl FrontEnd {
                 self.events.push(Event::Music { track: crate::music::MENU, repeat: true });
             }
             Screen::Saves => self.fade.speed = 6,
+            Screen::Options => {
+                self.option_screen = OptionScreen::new();
+                self.events.push(Event::Music { track: crate::music::MENU, repeat: true });
+            }
+            Screen::Movies => {
+                self.fade.speed = 6;
+                self.events.push(Event::Music { track: crate::music::MENU, repeat: true });
+            }
+            Screen::Credits => {
+                self.credits = Some(Credits::new(self.tables.credits.clone()));
+                self.fade.speed = 6;
+                self.events.push(Event::Music { track: 0x12, repeat: true });
+            }
             _ => {}
         }
     }
@@ -409,7 +476,45 @@ impl FrontEnd {
     }
 
     fn leave_saving(&mut self) {
-        self.enter(if self.level >= 15 { Screen::Title } else { Screen::Select });
+        self.enter(if self.level >= 15 { Screen::Credits } else { Screen::Select });
+    }
+
+    /// Picks a level to play: its picture first (0x414720).
+    fn start_level(&mut self, n: usize) {
+        self.screen = Screen::Loading(n);
+        self.clock = 0x1C;
+        self.leaving = 0;
+        self.choice = 0;
+        self.fade = Fade { level: 0, target: 0x80, speed: 0xC };
+    }
+
+    /// 0x414720's wait, then the level: its music starts from the level's own code.
+    fn loading_tick(&mut self, n: usize) {
+        self.clock -= 1;
+        if self.clock > 0 {
+            return;
+        }
+        if n == 0 {
+            let level = self.demo_level();
+            self.level = level;
+            self.events.push(Event::Demo(self.tables.order.get(level - 1).copied().unwrap_or(1)));
+            self.screen = Screen::Demo(level);
+        } else {
+            self.screen = Screen::Play(n);
+        }
+    }
+
+    /// 0x49D910: campaign levels 1, 4, 8, 11, 14 in turn (0x52C83C).
+    fn demo_level(&mut self) -> usize {
+        const LEVELS: [usize; 5] = [1, 4, 8, 11, 14];
+        let n = LEVELS[self.demo_next];
+        self.demo_next = (self.demo_next + 1) % LEVELS.len();
+        n
+    }
+
+    /// The demo was stopped by a button (0x52B7DC = 3 or 4): the title again.
+    pub fn demo_done(&mut self) {
+        self.enter(Screen::Title);
     }
 
     /// The load and save screens (0x49B9E0): from the main menu (0x453F20) at the "load / save
@@ -571,6 +676,10 @@ impl FrontEnd {
             Screen::BossDone => self.boss_done_tick(pressed),
             Screen::SavePrompt => self.prompt_tick(pressed),
             Screen::Saves => self.saves_tick(pressed),
+            Screen::Options => self.options_tick(pad, pressed),
+            Screen::Movies => self.movies_tick(pressed),
+            Screen::Credits => self.credits_tick(pad, pressed),
+            Screen::Loading(n) => self.loading_tick(n),
             Screen::Results => {
                 if let Some(r) = self.results.as_mut()
                     && r.tick(pressed, &mut self.fade, &mut self.events, &self.random)
@@ -597,7 +706,7 @@ impl FrontEnd {
                     } else {
                         self.started = true;
                         self.first_clear = false;
-                        self.screen = Screen::Play(self.level);
+                        self.start_level(self.level);
                         // A normal level's intro (level 12's is movie 16), the first time.
                         let n = self.level;
                         if n % 3 != 0 {
@@ -635,8 +744,19 @@ impl FrontEnd {
         self.clock += 1;
         if self.choice != 0 {
             if self.left() {
-                self.enter(Screen::Menu);
+                if self.choice == 1 {
+                    self.start_level(0);
+                } else {
+                    self.enter(Screen::Menu);
+                }
             }
+            return;
+        }
+        // 900 ticks untouched: the attract demo (no sound, unlike the jump).
+        if self.clock > 900 {
+            self.choice = 1;
+            self.leaving = 0x17;
+            self.fade.to(0, 0xC);
             return;
         }
         if pressed.0 & Pad::JUMP != 0 && self.clock > 0x1E {
@@ -651,8 +771,9 @@ impl FrontEnd {
             if self.left() {
                 match self.choice {
                     2 => self.enter(Screen::Select),
-                    // Options, load game and the movie viewer aren't ported: back to the menu.
+                    3 => self.enter(Screen::Options),
                     4 => self.open_saves(false),
+                    5 => self.open_movies(0),
                     _ => self.enter(Screen::Menu),
                 }
             }
@@ -724,9 +845,498 @@ impl FrontEnd {
                     s.draw(&mut f);
                 }
             }
+            Screen::Options => self.option_screen.draw(&mut f, sprites, &self.options),
+            Screen::Movies => {
+                if let Some(m) = &self.movies {
+                    m.draw(&mut f, sprites);
+                }
+            }
+            Screen::Credits => {
+                if let Some(c) = &self.credits {
+                    c.draw(&mut f);
+                }
+            }
+            Screen::Loading(_) => f.search_picture = true,
             _ => {}
         }
         f
+    }
+}
+
+/// The settings the options screen edits (0x52F0CD, 0x52F0CE, 0x508D70, 0x508D74, 0x508D78).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    pub music: i32,
+    pub sfx: i32,
+    pub lens_flare: bool,
+    pub detail: i32,
+    /// 0x508D78 (gamma), in steps of 0x4DC01C from its default.
+    pub gamma: i32,
+    pub animated_textures: bool,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        // 0x49D910's start-up levels; 0x508D70 = 7, detail level 2.
+        Options { music: 8, sfx: 8, lens_flare: true, detail: 2, gamma: 0, animated_textures: true }
+    }
+}
+
+/// 0x4F6BD4: the options' rows (y), the entries around them for the arrows' travel.
+const OPTION_ROWS: [i32; 6] = [-1, 65, 85, 105, 125, 145];
+
+/// 0x4371B0's state.
+#[derive(Debug, Clone, Copy, Default)]
+struct OptionScreen {
+    /// Row (1–4 in `OPTION_ROWS`), the arrows' y × 256, and the arrows' turning.
+    row: usize,
+    y: i32,
+    turn: i32,
+    /// 0x53E4A8 (leaving) and its countdown.
+    done: bool,
+    /// A page open: 0 controller, 1 music, 2 sfx, 3 graphics.
+    page: Option<usize>,
+    /// What cancelling puts back.
+    saved: Option<Options>,
+    clock: i32,
+    frame: i32,
+    frame_acc: i32,
+    /// The graphics page's chosen line and repeat delay.
+    gfx_row: i32,
+    gfx_wait: i32,
+}
+
+impl OptionScreen {
+    fn new() -> OptionScreen {
+        OptionScreen { row: 1, y: OPTION_ROWS[1] << 8, ..Default::default() }
+    }
+
+    fn draw(&self, f: &mut Frame, sprites: &[Option<SpriteDef>], o: &Options) {
+        f.picture = Some(0x28);
+        let q = &mut f.quads;
+        let Some(page) = self.page else {
+            let y = self.y >> 8;
+            let cell = if self.turn != 0 { (self.turn / 2).unsigned_abs() as usize } else { (self.clock / 2 & 7) as usize + 0x10 };
+            let other = if self.turn != 0 { cell } else { (self.clock / 2 + 2 & 7) as usize + 0x10 };
+            put(q, sprites, 320.0, 0x30, y, 0x34, cell, [0x80; 3], 0xFF, 0x1000, 0x1000);
+            put(q, sprites, 320.0, 0xF0, y, 0x34, other, [0x80; 3], 0xFF, 0x1000, 0x1000);
+            option_text(q, sprites, 0x32, "options");
+            for (k, s) in ["configure controller", "music volume", "sfx volume", "configure gfx"].iter().enumerate() {
+                option_text(q, sprites, OPTION_ROWS[k + 1] + 0xE, s);
+            }
+            small_text(q, sprites, 0xBE, "jump select cancel go back");
+            return;
+        };
+        match page {
+            0 => {
+                small_text(q, sprites, 0x2E, "control configuration");
+                for (k, (name, key)) in [("up", "w"), ("down", "s"), ("left", "a"), ("right", "d"), ("jump", "space"), ("spin", "e"), ("laser", "mouse 1"), ("look", "q"), ("pause", "esc")].iter().enumerate() {
+                    let y = (k as i32 + 5) * 0x10;
+                    if y <= 0x90 {
+                        small_text_at(q, sprites, 0x96, y, name);
+                        small_text_at(q, sprites, 0xA0 + 0x40, y, key);
+                    }
+                }
+                small_text(q, sprites, 0xBA, "cancel go back");
+            }
+            1 | 2 => {
+                option_text(q, sprites, 0x32, if page == 1 { "music volume" } else { "sfx volume" });
+                let (spr, n) = if page == 1 { (0x35, o.music) } else { (0x39, o.sfx) };
+                let (s, cell) = if self.frame < 9 { (spr, self.frame) } else { (spr + 1, self.frame - 9) };
+                put(q, sprites, 320.0, 0x75, 0x4C, s, cell as usize, [0x80; 3], 0xFF, 0x1000, 0x1000);
+                put(q, sprites, 320.0, 0x77, 0xA6, 0x37, n as usize, [0x80; 3], 0xFF, 0x1000, 0x1000);
+                if self.clock < 0x14 {
+                    if n != 0 {
+                        put(q, sprites, 320.0, 0x32, 0x9E, 0x38, 3, [0x80; 3], 0xFF, 0x1000, 0x1000);
+                    }
+                    if n < 10 {
+                        put(q, sprites, 320.0, 0xEF, 0x9E, 0x38, 2, [0x80; 3], 0xFF, 0x1000, 0x1000);
+                    }
+                }
+                small_text(q, sprites, 0xBE, "jump accept cancel go back");
+            }
+            _ => {
+                option_text(q, sprites, 0x32, "graphics configuration");
+                option_text(q, sprites, 0x4B, if o.lens_flare { "lens flare on" } else { "lens flare off" });
+                option_text(q, sprites, 100, ["low detail", "medium detail", "high detail"][o.detail.clamp(0, 2) as usize]);
+                option_text(q, sprites, 0x7D, "gamma correction normal");
+                option_text(q, sprites, 0x96, if o.animated_textures { "animated textures on" } else { "animated textures off" });
+                let y = self.gfx_row * 0x19 + 0x48;
+                put(q, sprites, 320.0, 0x32, y, 0x38, 3, [0xFF; 3], 0xFF, 0x800, 0x800);
+                put(q, sprites, 320.0, 0xFF, y, 0x38, 2, [0xFF; 3], 0xFF, 0x800, 0x800);
+                small_text(q, sprites, 0xBA, "jump accept cancel go back");
+            }
+        }
+    }
+}
+
+/// 0x49B2A0: sprite 0x43, centred, 8 apart.
+fn option_text(q: &mut Vec<Quad>, sprites: &[Option<SpriteDef>], y: i32, s: &str) {
+    let mut x = (0x28 - s.len() as i32) * 4;
+    for c in s.bytes() {
+        if c != b' ' {
+            let cell = if c == b'\'' { 0x2F } else { c.wrapping_add(0x9F) as usize };
+            put(q, sprites, 320.0, x, y, 0x43, cell, [0x80; 3], 0xFF, 0x800, 0x800);
+        }
+        x += 8;
+    }
+}
+
+/// 0x49B3B0: the small hints in sprite 0x43, centred on x 0xA0, 6 apart.
+fn small_text(q: &mut Vec<Quad>, sprites: &[Option<SpriteDef>], y: i32, s: &str) {
+    small_text_at(q, sprites, 0xA0 - s.len() as i32 * 3, y, s);
+}
+
+fn small_text_at(q: &mut Vec<Quad>, sprites: &[Option<SpriteDef>], x: i32, y: i32, s: &str) {
+    let mut x = x;
+    for c in s.bytes() {
+        if c != b' ' {
+            let cell = match c {
+                b'0'..=b'9' => (c - b'0') as usize + 0x14,
+                _ => c.wrapping_add(0x9F) as usize,
+            };
+            put(q, sprites, 320.0, x, y, 0x43, cell, [0x80; 3], 0xFF, 0x600, 0x600);
+        }
+        x += 6;
+    }
+}
+
+impl FrontEnd {
+    /// 0x4371B0.
+    fn options_tick(&mut self, pad: Pad, pressed: Pad) {
+        let before = self.options;
+        let s = &mut self.option_screen;
+        s.clock = (s.clock + 1) % 0x28;
+        if s.done {
+            self.leaving -= 1;
+            if self.leaving <= 0 {
+                self.enter(Screen::Menu);
+            }
+            return;
+        }
+        let hit = |b: u32| pressed.0 & b != 0;
+        let held = |b: u32| pad.0 & b != 0;
+        match s.page {
+            None => {
+                let target = OPTION_ROWS[s.row] << 8;
+                if s.y == target {
+                    s.turn = 0;
+                    if hit(Pad::JUMP) {
+                        s.page = Some(s.row - 1);
+                        s.saved = Some(self.options);
+                        s.clock = 0;
+                        self.events.push(Event::Sound(0));
+                    } else if held(Pad::UP) && s.row > 1 {
+                        s.row -= 1;
+                        s.turn = -1;
+                        self.events.push(Event::Sound(1));
+                    } else if held(Pad::DOWN) && s.row < 4 {
+                        s.row += 1;
+                        s.turn = 1;
+                        self.events.push(Event::Sound(1));
+                    }
+                } else if s.y < target {
+                    s.y = (s.y + (OPTION_ROWS[s.row] - OPTION_ROWS[s.row - 1]) * 8).min(target);
+                    s.turn = (s.turn + 1) % 0x20;
+                } else {
+                    s.y = (s.y - (OPTION_ROWS[s.row + 1] - OPTION_ROWS[s.row]) * 8).max(target);
+                    s.turn = (s.turn - 1) % 0x20;
+                }
+                if hit(Pad::CANCEL) {
+                    s.done = true;
+                    self.leaving = 0x2C;
+                    self.fade.to(0, 6);
+                    self.events.push(Event::Sound(2));
+                }
+            }
+            Some(page) => {
+                let mut closed = false;
+                if hit(Pad::CANCEL) {
+                    self.options = s.saved.take().unwrap_or(self.options);
+                    self.events.push(Event::Sound(2));
+                    closed = true;
+                } else if hit(Pad::JUMP) && page != 0 {
+                    self.events.push(Event::Sound(0));
+                    closed = true;
+                }
+                if !closed {
+                    match page {
+                        1 | 2 => {
+                            let v = if page == 1 { &mut self.options.music } else { &mut self.options.sfx };
+                            if hit(Pad::RIGHT) && *v < 10 {
+                                *v += 1;
+                                self.events.push(Event::Sound(1));
+                            }
+                            if hit(Pad::LEFT) && *v > 0 {
+                                *v -= 1;
+                                self.events.push(Event::Sound(1));
+                            }
+                            let rate = if page == 1 { 8 } else { (self.options.sfx >> 1) + 5 };
+                            s.frame_acc += rate;
+                            while s.frame_acc > 0xF {
+                                s.frame_acc -= 0x10;
+                                s.frame = (s.frame + 1) % 0x12;
+                            }
+                        }
+                        3 => {
+                            if s.gfx_wait > 0 {
+                                s.gfx_wait -= 1;
+                            } else {
+                                if held(Pad::UP) {
+                                    s.gfx_row = (s.gfx_row - 1).max(0);
+                                    s.gfx_wait = 0xF;
+                                    self.events.push(Event::Sound(0));
+                                }
+                                if held(Pad::DOWN) {
+                                    s.gfx_row = (s.gfx_row + 1).min(3);
+                                    s.gfx_wait = 0xF;
+                                    self.events.push(Event::Sound(0));
+                                }
+                                if held(Pad::LEFT | Pad::RIGHT) {
+                                    s.gfx_wait = 0xF;
+                                    match s.gfx_row {
+                                        0 => self.options.lens_flare = !self.options.lens_flare,
+                                        1 if held(Pad::LEFT) => self.options.detail = (self.options.detail - 1).max(0),
+                                        1 => self.options.detail = (self.options.detail + 1).min(2),
+                                        3 => self.options.animated_textures = !self.options.animated_textures,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if closed {
+                    s.page = None;
+                }
+            }
+        }
+        if self.options != before {
+            let o = self.options;
+            self.events.push(Event::Volumes { music: o.music, sfx: o.sfx });
+            self.events.push(Event::LensFlare(o.lens_flare));
+        }
+    }
+
+    /// 0x453FA0 / 0x43A600.
+    fn open_movies(&mut self, at: u8) {
+        self.movies = Some(MovieList::new(&self.tables, self.progress.movies, at));
+        self.enter(Screen::Movies);
+    }
+
+    fn movies_tick(&mut self, pressed: Pad) {
+        let brightness = self.fade.level;
+        let Some(m) = self.movies.as_mut() else { return };
+        match m.tick(pressed, brightness, &mut self.fade, &mut self.events) {
+            None => {}
+            Some(None) => self.enter(Screen::Menu),
+            Some(Some(id)) => {
+                self.events.push(Event::Movie(id as usize + 10));
+                self.open_movies(id);
+            }
+        }
+    }
+
+    fn credits_tick(&mut self, pad: Pad, pressed: Pad) {
+        let brightness = self.fade.level;
+        let Some(c) = self.credits.as_mut() else { return };
+        if c.tick(pad, pressed, brightness, &mut self.fade) {
+            self.credits = None;
+            self.enter(Screen::Logo(2));
+        }
+    }
+}
+
+/// 0x43A600: the seen movies on a film strip. Entries are (sprite, cell, id).
+struct MovieList {
+    entries: Vec<(u8, u8, u8)>,
+    x: i32,
+    target: i32,
+    vel: i32,
+    clock: i32,
+    leaving: i32,
+    chosen: Option<u8>,
+}
+
+impl MovieList {
+    /// `seen` is 0x52F0E7 as bits; movie 0 is always listed.
+    fn new(t: &Tables, seen: u32, at: u8) -> MovieList {
+        let seen = seen | 1;
+        let mut entries = Vec::new();
+        for &id in &t.movie_order {
+            if seen & (1u32 << id.min(31)) != 0 {
+                let e = t.movie_art.get(id as usize).copied().unwrap_or([0, 0]);
+                entries.push((e[0], e[1], id));
+            }
+        }
+        let k = entries.iter().position(|e| e.2 == at).unwrap_or(0) as i32;
+        let x = k * 0x1000;
+        MovieList { entries, x, target: x, vel: 0, clock: 0, leaving: 4000, chosen: None }
+    }
+
+    fn at(&self, x: i32) -> usize {
+        ((x + 0x800) >> 12).clamp(0, self.entries.len() as i32 - 1) as usize
+    }
+
+    /// `Some(choice)` when done: `None` to go back.
+    fn tick(&mut self, pressed: Pad, brightness: i32, fade: &mut Fade, events: &mut Vec<Event>) -> Option<Option<u8>> {
+        self.clock += 1;
+        let hit = |b: u32| pressed.0 & b != 0;
+        if self.leaving > 1000 {
+            let near = (self.x - self.target).abs() < 0x800;
+            if hit(Pad::LEFT) && self.target > 0 && near {
+                self.target -= 0x1000;
+                events.push(Event::Sound(1));
+            }
+            if hit(Pad::RIGHT) && (self.target >> 12) + 1 < self.entries.len() as i32 && near {
+                self.target += 0x1000;
+                events.push(Event::Sound(1));
+            }
+            self.vel = if self.vel < 0 { (self.vel + 8).min(0) } else { (self.vel - 8).max(0) };
+            if self.x < self.target - 0x400 {
+                self.vel += 0x10;
+            }
+            if self.x > self.target + 0x400 {
+                self.vel -= 0x10;
+            }
+            self.vel = self.vel.clamp(-0x80, 0x80);
+            self.x += self.vel;
+        }
+        if self.leaving > 0 && self.leaving < 1000 {
+            self.leaving -= 1;
+        }
+        if self.leaving >= 0x18 && brightness == 0x80 {
+            if hit(Pad::CANCEL) {
+                self.leaving = 0x35;
+                self.chosen = None;
+                fade.to(0, 6);
+                events.push(Event::Sound(2));
+            } else if hit(Pad::JUMP) && !self.entries.is_empty() {
+                self.leaving = 0x35;
+                self.chosen = Some(self.entries[self.at(self.x)].2);
+                fade.to(0, 6);
+                events.push(Event::Sound(0));
+            }
+        }
+        (self.leaving <= 0).then_some(self.chosen)
+    }
+
+    fn draw(&self, f: &mut Frame, sprites: &[Option<SpriteDef>]) {
+        f.picture = Some(0x28);
+        let blink = self.clock & 0x3F < 0x30;
+        let q = &mut f.quads;
+        if self.target > 0 && blink {
+            put(q, sprites, 320.0, 0x10, 0x70, 0x39, 0, [0x80; 3], 0xFF, 0x1000, 0x1000);
+        }
+        if (self.target >> 12) + 1 < self.entries.len() as i32 && blink {
+            put(q, sprites, 320.0, 0x110, 0x70, 0x39, 1, [0x80; 3], 0xFF, 0x1000, 0x1000);
+        }
+        for (x, s, c) in [(0, 0x3C, 0), (0x80, 0x3C, 1), (0x100, 0x3D, 0)] {
+            put(q, sprites, 320.0, x, 0, s, c, [0x80; 3], 0xFF, 0x1000, 0x1000);
+        }
+        // The frames: a blank (sprite 0x40), then this movie's still over it, clipped to the
+        // two gates (0x4949B0: x, y, clip from, clip to).
+        let mut panels = |sx: i32, sprite: usize, cell: usize| {
+            for (x0, x1, off) in [(0xD0, 0x108, 0x10C), (0x38, 0x70, 0x72)] {
+                if let Some(Some(d)) = sprites.get(sprite) {
+                    let [u, v] = d.cells.get(cell).copied().unwrap_or([0, 0]);
+                    let (l, w) = (sx + off, d.size[0] as i32);
+                    let (a, b) = (l.max(x0), (l + w).min(x1));
+                    if b > a {
+                        let uv = [(u as i32 + a - l) as f32 / 256.0, v as f32 / 256.0, (u as i32 + b - l) as f32 / 256.0, (v as f32 + d.size[1] as f32) / 256.0];
+                        f.panels.push((d.texture as u32, [a as f32 / 320.0, 0x50 as f32 / 256.0, b as f32 / 320.0, (0x50 + d.size[1] as i32) as f32 / 256.0], uv));
+                    }
+                }
+            }
+        };
+        panels(-(self.x >> 5 & 0x7F), 0x40, 0);
+        if !self.entries.is_empty() {
+            let e = self.entries[self.at(self.x)];
+            panels(-(self.x.wrapping_sub(0x800) >> 5 & 0x7F), e.0 as usize, e.1 as usize);
+        }
+        let d = self.x >> 6;
+        for x in [-d % 0x140, -(d % 0x140) + 0x140] {
+            for (off, s, c) in [(0, 0x3E, 0), (0x80, 0x3E, 1), (0x100, 0x3F, 0)] {
+                put(&mut f.quads, sprites, 320.0, x + off, 0, s, c, [0x80; 3], 0xFF, 0x1000, 0x1000);
+            }
+        }
+        font_text_in(&mut f.glyphs, 320.0, 0xD4, 0xA0, "press jump to select");
+    }
+}
+
+/// 0x43A380: forty lines of up to 63 characters, wrapped round as the text scrolls up.
+struct Credits {
+    text: Vec<u8>,
+    at: usize,
+    lines: Vec<String>,
+    /// Lines fed so far, the scroll (+8 a tick), the leaving countdown.
+    fed: i32,
+    t: i32,
+    leaving: i32,
+    /// 0x49D7A0: ticks to the next picture, and which it is.
+    picture_wait: i32,
+    picture: u32,
+}
+
+impl Credits {
+    fn new(text: String) -> Credits {
+        Credits { text: text.into_bytes(), at: 0, lines: vec![String::new(); 0x28], fed: 0, t: 0, leaving: 4000, picture_wait: 600, picture: 0 }
+    }
+
+    fn feed(&mut self) {
+        let due = self.t / 128;
+        while self.fed < due {
+            let k = ((self.fed + 2) % 0x28) as usize;
+            self.fed += 1;
+            let mut line = String::new();
+            while let Some(&c) = self.text.get(self.at) {
+                self.at += 1;
+                if c == b'~' {
+                    break;
+                }
+                line.push(c as char);
+            }
+            self.lines[k] = line;
+        }
+    }
+
+    fn tick(&mut self, pad: Pad, pressed: Pad, brightness: i32, fade: &mut Fade) -> bool {
+        let _ = pad;
+        self.feed();
+        self.t += 8;
+        if self.picture_wait < 1 {
+            self.picture_wait = 600;
+            self.picture = (self.picture + 1) % 10;
+        } else {
+            self.picture_wait -= 1;
+        }
+        if self.leaving > 0 && self.leaving < 1000 {
+            self.leaving -= 1;
+        }
+        let finished = self.at >= self.text.len();
+        if (pressed.0 & 0xF000 != 0 || finished) && self.leaving > 0x35 && brightness == 0x80 {
+            self.leaving = 0x35;
+            fade.to(0, 6);
+        }
+        self.leaving <= 0
+    }
+
+    fn draw(&self, f: &mut Frame) {
+        f.picture = Some(0x30 + self.picture);
+        f.veil = if self.picture_wait < 0x19 {
+            (self.picture_wait * -10 - 1) as u8
+        } else if self.picture_wait > 600 - 0x19 {
+            (self.picture_wait * 10 - 6000 - 1) as u8
+        } else {
+            0
+        };
+        for (k, l) in self.lines.iter().enumerate() {
+            let y = (0x140 + 8 * k as i32 - (self.t >> 4) % 0x140).rem_euclid(0x140) - 0x21;
+            if !l.is_empty() && y < 0x100 {
+                font_text_in(&mut f.glyphs, 320.0, y, 0xA0, l);
+            }
+        }
     }
 }
 
@@ -1485,7 +2095,7 @@ mod tests {
     use super::*;
 
     fn tables() -> Tables {
-        Tables { order: vec![1, 2, 6, 4, 5, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15], names: vec![String::new(); 16], needed: vec![0, 0, 3, 0, 0, 10, 0, 0, 18, 0, 0, 28, 0, 0, 40, 0], models: Vec::new(), etch: Vec::new() }
+        Tables { order: vec![1, 2, 6, 4, 5, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15], names: vec![String::new(); 16], needed: vec![0, 0, 3, 0, 0, 10, 0, 0, 18, 0, 0, 28, 0, 0, 40, 0], models: Vec::new(), etch: Vec::new(), ..Default::default() }
     }
 
     #[test]
@@ -1667,7 +2277,98 @@ mod tests {
         assert_eq!(save.progress().movies, f.progress.movies, "kept in saves");
     }
 
+        #[test]
+    fn a_level_starts_with_its_picture() {
+        let mut f = FrontEnd::new(tables());
+        f.start_level(2);
+        assert_eq!(f.screen, Screen::Loading(2));
+        assert_eq!(f.screen.scene(&f.tables), crate::campaign::LOADING + 2);
+        for _ in 0..0x1B {
+            f.tick(Pad(0));
+            assert_eq!(f.screen, Screen::Loading(2));
+        }
+        f.tick(Pad(0));
+        assert_eq!(f.screen, Screen::Play(2));
+    }
+
     #[test]
+    fn loading_pictures_name_the_gfx_files() {
+        let g = std::path::Path::new("G");
+        assert!(crate::campaign::variant_path(g, crate::campaign::LOADING, 0).ends_with("gfx/loading.ngn"));
+        assert!(crate::campaign::variant_path(g, crate::campaign::LOADING + 1, 0).ends_with("gfx/level1a.ngn"));
+        assert!(crate::campaign::variant_path(g, crate::campaign::LOADING + 15, 0).ends_with("gfx/level5c.ngn"));
+    }
+
+    #[test]
+    fn the_title_starts_the_demo_when_left_alone() {
+        let mut f = FrontEnd::new(tables());
+        f.enter(Screen::Title);
+        for _ in 0..901 {
+            f.tick(Pad(0));
+        }
+        assert_eq!(f.screen, Screen::Title, "fading out");
+        for _ in 0..0x17 {
+            f.tick(Pad(0));
+        }
+        assert_eq!(f.screen, Screen::Loading(0));
+        for _ in 0..0x1C {
+            f.tick(Pad(0));
+        }
+        assert_eq!(f.screen, Screen::Demo(1));
+        assert!(f.events.iter().any(|e| matches!(e, Event::Demo(1))), "level 1's pad");
+        f.demo_done();
+        assert_eq!(f.screen, Screen::Title);
+        assert_eq!(f.demo_level(), 4, "then the next in turn");
+    }
+
+    #[test]
+    fn options_change_and_cancel_restores() {
+        let mut f = FrontEnd::new(tables());
+        f.enter(Screen::Options);
+        let press = |f: &mut FrontEnd, b: u32| {
+            f.tick(Pad(0));
+            f.tick(Pad(b));
+        };
+        press(&mut f, Pad::DOWN);
+        for _ in 0..40 {
+            f.tick(Pad(0));
+        }
+        press(&mut f, Pad::JUMP);
+        assert_eq!(f.option_screen.page, Some(1), "music volume");
+        press(&mut f, Pad::RIGHT);
+        assert_eq!(f.options.music, 9);
+        assert!(f.events.iter().any(|e| matches!(e, Event::Volumes { music: 9, sfx: 8 })));
+        press(&mut f, Pad::CANCEL);
+        assert_eq!((f.option_screen.page, f.options.music), (None, 8));
+        press(&mut f, Pad::CANCEL);
+        for _ in 0..0x2D {
+            f.tick(Pad(0));
+        }
+        assert_eq!(f.screen, Screen::Menu);
+    }
+
+    #[test]
+    fn movies_list_only_the_seen_ones() {
+        let t = Tables { movie_order: vec![0, 1, 2], movie_art: vec![[0x42, 1], [0x41, 3], [0x43, 4]], ..tables() };
+        let m = MovieList::new(&t, 1 << 2, 2);
+        assert_eq!(m.entries, vec![(0x42, 1, 0), (0x43, 4, 2)], "0 is always there");
+        assert_eq!(m.x, 0x1000, "opens on the one last played");
+    }
+
+    #[test]
+    fn credits_feed_lines_and_finish() {
+        let mut c = Credits::new("one~two~".to_string());
+        let mut fade = Fade { level: 0x80, target: 0x80, speed: 6 };
+        let mut done = false;
+        for _ in 0..200 {
+            done |= c.tick(Pad(0), Pad(0), fade.level, &mut fade);
+            fade.step();
+        }
+        assert!(c.lines.iter().any(|l| l == "one") && c.lines.iter().any(|l| l == "two"));
+        assert!(done, "the text ran out and it faded");
+    }
+
+#[test]
     fn exit_quits() {
         let mut f = FrontEnd::new(tables());
         f.enter(Screen::Menu);

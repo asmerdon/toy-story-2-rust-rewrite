@@ -179,7 +179,7 @@ set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
 
-The suite (222 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
+The suite (257 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
 
 ## Tools for development
 

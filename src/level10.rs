@@ -21,8 +21,9 @@
 //! - The spider (slot 8, list 0x1F; token 4) with its routine 0x425700: Buzz reaching its
 //!   floor starts it; the arena fans run on a random cycle.
 //!
-//! Not ported: the lifts standing still while Buzz climbs onto them (0x559E80), the lights
-//! (list 13, 0x44F200), the electric beams in rooms 7 and 12 (lists 11 / 12 / 58).
+//! - The mice on walls and the ceiling (0x425A80, `Creatures::wall_mice`).
+//!
+//! Not ported: the lights (list 13, 0x44F200).
 
 use crate::boxes::Boxes;
 use crate::creatures::{Creatures, ParticleRequest};
@@ -137,6 +138,11 @@ pub struct Level10 {
 }
 
 impl Level10 {
+    /// Marks the three switches solved (0x52FC14 & 4), so the lifts run; for tests.
+    pub fn solve_switches(&mut self) {
+        self.opened |= 4;
+    }
+
     pub fn new(exe: Option<&Exe>) -> Level10 {
         let load = |va: u32| exe.map(|e| PathRunner::load(e, va)).unwrap_or_default();
         Level10 {
@@ -698,6 +704,7 @@ impl Script for Level10 {
     }
 
     fn step_creatures(&mut self, _world: &World, specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
+        cr.wall_mice = true;
         // 0x425B60: the spider starts 0x10000 along x from its home.
         if !std::mem::replace(&mut self.placed, true) && let Some(c) = cr.slots.get_mut(SPIDER.0).filter(|c| c.id == 0x1F) {
             c.pos[0] += 0x10000;

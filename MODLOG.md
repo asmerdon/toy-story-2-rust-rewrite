@@ -141,6 +141,47 @@ Dated history of the work, newest at the bottom. Current state is in HANDOFF.md;
 - A `cargo fmt` run reformatted the whole workspace by mistake; it was undone (untouched files restored from git, edited files re-merged onto their original layout; a few edited spots keep rustfmt's layout).
 - Checks: workspace release build clean; 213 tests pass (202 engine + 11 launcher).
 
+## 2026-11-08 (evening): the still-to-do list, level 8's boxes, the flash
+
+- Floor shadows (list 0x54F098, 0x445720): Buzz (0x4857E0), creatures (0x4076F0, size table 0x4E05EE), particles (0x410F40). Tilted to the floor's normal, shrunk on steep floors. `src/shadows.rs`. Drawn with the exe's plain alpha path (black at 0x30 / 0x20), so they're faint; the other path (0x30840, blend ZERO / INVSRCCOLOR) does nothing with the black texels of texture 31's cell, so it can't be the one in use.
+- Lens flares (0x44F200, 0x44F420, 0x44F580, table 0x4F72D8): level lamps (levels 3, 5, 10, 11, 12, 13, 14, 15) and glowing particles (kinds 7, 0xE, 0x1A, 0x1B, 0x27). `src/flares.rs`. Level 4's wait on the crane puzzle.
+- Rain splashes and level 3's rain and lightning (0x41AA10); level 7's drips (0x421340); `Common::lightning`, `Common::rain_splash`.
+- Pause menu (0x49E330, 0x49F4B0, 0x49FD40): continue, camera mode, volume control, exit level. `src/pause.rs`. Escape or F2. World stands still.
+- Options (0x4371B0): volumes, graphics page, controller page. Movie viewer (0x43A600). Credits (0x43A380). Loading pictures (0x414720, `gfx\levelNx`). Attract demo (900 ticks on the title; `data\PAD\PATHnn.BIN`, two ticks a frame; "demo mode").
+- Level 14 (and 3) flash: 0x44DD80 adds a white wash for colours over 0x80 (v = c × 2 − 0x100, alpha 0xFF − v). It was missing, so the flash only brightened the floor.
+- Level 8's boxes: 0x4F2F44 wasn't in `box_list`, nor levels 5 (0x4F215C) and 7 (0x4F2A24).
+- Not done: the moving lights' tint on models (0x49EE50, 0x49EEE0, 0x4CE6C0: needs the original's model lighting worked out), level 4's pipe flows, passive camera (the option is stored, the camera doesn't change), control remapping (the page lists them), detail / gamma / animated textures (shown only), level 8's claw shadow and level 9 / 12's.
+- Tests: 21 more (`shadows`, `flares`, `pause`, front end), `level_8_boxes_are_loaded_and_push` (fails without the list). Engine 246 pass. Shots: pause menu and the flash; none of the rest seen or played.
+
+## 2026-11-08 (later): outstanding features
+
+- Level 14's lightning (0x42E790): the level's colours (0x54DD6C) jump to 0xDD and fade over 32 ticks every 32-542 ticks, thunder (0x70) up to 255 ticks later. `Common::ambient`, shader `params.w`.
+- Level 8: the two arcs between lists 14 and 15 (0x422D20), hurting Buzz where they strike; room 2's lobbers (list 16, particle 0x60; the old "cannon" entry); room 4's swaying specials 0x14-0x17 and their creaks.
+- HUD: the hook's icon (sprite 0x21) on the weapon meter. HANDOFF had 0x493DC0 down as a model; it is a sprite.
+- Checked, not changed: the drill's hit rule (hit table 0x4E066C: the laser is type 2, gated by the record state's bit 0; discs are type 3, not gated). Level coins are 100 across at half-size and dropped coins 70, through the same routine (0x4B8E60), so the size difference is the original's.
+- Tests: `arcs_strike_buzz_in_their_area`, `room_2_lobbers_throw_at_buzz`, `room_4_specials_sway`, `lightning_flashes_and_thunder_follows`, `hook_icon_shows_on_the_weapon_meter`. Engine: 225 pass; none of these seen in a shot.
+
+## 2026-11-08: playtest round 8
+
+- Level 10 (reported as 11) camera on the lifts: the exe's camera rays (0x48C860 / 0x48D530) skip collision objects flagged 0x200 and the port tested everything, so a lift car's walls pulled the camera in; its own wall clamp then fought the "too close to Buzz" step, jumping about 500 units every few ticks when Buzz stood off-centre. `camera.rs` now ports the original's collision: the standing ray that sets the distance, the moving-only pull-in, the three whisker rays with their yaw and pitch nudges, the height pull while riding a mover (0x50A4E0), and the swing behind him on zip lines, rockets, slides and the hook. Summed jerk over a ride (150 positions and facings) fell from about 90,000 units to under 4.
+- Viewer: a frame that runs several ticks now blends from the tick before the last (Buzz, specials, creatures, camera) and ticks the camera on Buzz as each tick left him. It used to blend from further back, so slow frames jumped backwards.
+- Level 10's wall mice: 0x425A80 was not ported. For slots 1-5 with record byte +0x1C under 0x80, 0x4086F0 swaps height and depth about the home before and after the update, so the zone stands up on the wall; slot 3 is held upside down. They used to walk flat, through the wall.
+- Level 4's side lift: going down it compared against its home plus the button's height, so it stopped at the top. It compares against its home alone (0x41C640), so it shuttles between the button and the ground, which is what the owner remembered.
+- Level 4's hanging platforms: only climbing onto one holds it (0x559E80); standing on it, it travels and tilts together. 0x49EC00 also leaves the mover being climbed onto alone.
+- Level 13's oil: checked, no code change to the logic. On oil 0x4A2D80 makes only the splash (0x1D); the prints (type 0x21, a dark mark, 64 ticks) come on ordinary floor afterwards, within 180 ticks. Shot confirmed on ordinary floor. Foot offsets were a quarter of the exe's (`>> 4` of the 16384 table).
+- Open items: the camera shake in first person (0x4038E0); the drill can only be hurt while a disc is in flight (0x882968, it was always open); script op 0x22 tests Buzz's laser arm (0x53C620). Level 10's group re-alignment needs no port, since the group moves as one here.
+- Diagnostics: `lift_ride` (with a `scan` mode), `surfaces_grid`, `oil_edges`; shot word `oily`; `?` also prints the surface and prints.
+- Tests: `the_camera_rides_a_lift_smoothly`, `wall_mice_crawl_up_their_walls`, `side_lift_shuttles_up_to_the_stomped_button`, `hanging_platforms_travel_with_buzz_on_them`.
+
+## 2026-11-07: open issues (no playtest batch)
+
+- Camera shake (0x50A510) ported as `World::shake`: the follow camera (0x4045E0) adds sin((−3s & 0x1F) × 0x80) / ((s − 0x32) × 16) to its aim pitch's target while it counts down. Set by the stomp landing (0x434D20, 0x28), level 4's presses (0x41BC20: 0x28 − (√(d² + 1) >> 4) within 500 × 256), the drill (0x41B780: 0x14 within 300, 0x28 within 100), the dino's first breath (0x420AF0) and the slime's timer 3 (0x41AA10). First person only counts it down.
+- The countdown tick: 0x49FD40 plays owned sound 0x5E (fixed volumes) while it draws a countdown; it loops and stops 16 ticks after.
+- Level 11's side shooters (0x2E, 0x406A90): the shot's life is cut to the first wall in 0x50 ticks' flight (0x48C860), 2 × steps − 0xF. Creatures can now ask for particles with a life (`Creatures::lasting`).
+- Checked, not changed: the floor-mover carry is unswept in the original too (0x488E10). Creature rays already test boundary walls (`World::sweep`); the HANDOFF item was stale.
+- Tests: `countdown_ticks_only_while_shown`, `shake_wobbles_the_aim_and_dies_away`, `a_press_slamming_near_buzz_shakes_the_camera`, `dino_first_breath_shakes_the_camera`, `side_shooter_shot_lives_until_the_first_wall`; `stomp_hangs_then_slams` and `drill_challenge` check the shake. They don't compile against the old code (no `World::shake`, `Creatures::lasting`, `Hud::countdown_ticking`).
+- Checks: workspace release build clean; 227 tests pass. No shots taken (the shake and the sound only show in play).
+
 ## 2026-11-03 (evening): playtest round 7
 
 - Level 2 leaves and bushes: their faces are blended (mode 0x02) but wholly opaque, drawn unsorted without depth writes, so a bush's back or a far bush showed over the near one. Such faces are now drawn alpha-tested with depth writes (deviation, README).

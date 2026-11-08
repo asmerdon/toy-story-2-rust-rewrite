@@ -65,12 +65,96 @@ fn drill_challenge() {
         l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
     }
     assert_eq!(l.cr.boss.state, 1, "challenged");
+    // Beside it, the drill shakes the camera (0x14 within 300 × 256, 0x41B780).
+    assert_eq!(l.world.shake.get(), 0x14, "the drill shakes the camera near Buzz");
     l.script.cutscene = None;
     for _ in 0..30 {
         l.cr.tick(&l.world, p.pos_obj(), p.pos_obj());
         l.script.step_creatures(&l.world, &mut l.specials, &p, &mut l.cr, 0);
     }
     assert_eq!(l.cr.boss.state, 2);
+}
+
+/// A press slamming down within 500 × 256 of Buzz shakes the camera by how near he is:
+/// 0x28 − (√(d² + 1) >> 4), d in 256s (0x41BC20 at 0x41BE0F).
+#[test]
+fn a_press_slamming_near_buzz_shakes_the_camera() {
+    let Some(mut l) = load() else { return };
+    let home = l.specials.home_obj(0x24).unwrap();
+    // 0x3000 to one side: d = 0x30, so the shake is 0x28 − 3.
+    let mut p = Player::new(Vec3::new((home[0] + 0x3000) as f32, home[1] as f32, home[2] as f32) / 32.0);
+    let mut seen = 0;
+    for _ in 0..300 {
+        let keep = p.pos;
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        p.pos = keep;
+        seen = seen.max(l.world.shake.get());
+        l.world.shake.set(0);
+    }
+    assert_eq!(seen, 0x28 - 3, "the slam shakes the camera");
+}
+
+/// The side lift (0x41C640): after a button it goes up to that button's height, then back down
+/// to 0xE100 above its home and up again, so it carries Buzz back up if he falls.
+#[test]
+fn side_lift_shuttles_up_to_the_stomped_button() {
+    let Some(mut l) = load() else { return };
+    let home = l.world.mover_pos(0x15).unwrap().y;
+    let mut p = Player::new(Vec3::new(0.0, -100000.0, 0.0));
+    p.on_floor = true;
+    p.stomp = 1;
+    p.floor_mover = Some((0x16, Vec3::NEG_Y));
+    l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+    p.stomp = 0;
+    p.floor_mover = None;
+    p.on_floor = false;
+    let (mut top, mut bottom_after_top, mut reversals, mut last, mut dir) = (home, f32::MIN, 0, home, 0.0f32);
+    for _ in 0..6000 {
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        let y = l.world.mover_pos(0x15).unwrap().y;
+        top = top.min(y);
+        if top < home - 2000.0 {
+            bottom_after_top = bottom_after_top.max(y);
+        }
+        let d = y - last;
+        if d != 0.0 && dir != 0.0 && d.signum() != dir.signum() {
+            reversals += 1;
+        }
+        if d != 0.0 {
+            dir = d;
+        }
+        last = y;
+    }
+    // It only starts to slow on passing each mark, so it runs on by 2032 (0x400 at 8 a tick²).
+    let want_top = home - (0x15E00 as f32) / 32.0 - 2032.0;
+    assert!((top - want_top).abs() < 200.0, "up to the button's height: {top} wanted {want_top}");
+    let want_low = home - (0xE100 as f32) / 32.0 + 2032.0;
+    assert!((bottom_after_top - want_low).abs() < 200.0, "back down to just above home: {bottom_after_top} wanted {want_low}");
+    assert!(reversals >= 3, "it keeps going: {reversals} reversals");
+}
+
+/// Standing on a hanging platform it keeps travelling (and tilting); only climbing onto it holds
+/// it still (0x559E80, 0x41C640).
+#[test]
+fn hanging_platforms_travel_with_buzz_on_them() {
+    let run = |climbing: bool| {
+        let mut l = load()?;
+        let start = l.world.mover_pos(1).unwrap();
+        let mut p = Player::new(Vec3::new(0.0, -100000.0, 0.0));
+        let mut far = 0.0f32;
+        for _ in 0..1200 {
+            p.on_floor = true;
+            p.floor_mover = Some((1, Vec3::NEG_Y));
+            p.mantle_mover = climbing.then_some(1);
+            l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+            far = far.max((l.world.mover_pos(1).unwrap() - start).length());
+        }
+        Some(far)
+    };
+    let Some(standing) = run(false) else { return };
+    let climbing = run(true).unwrap();
+    assert!(standing > 50.0, "standing on it, it travels: {standing}");
+    assert_eq!(climbing, 0.0, "climbing onto it, it holds still");
 }
 
 /// The paint-room door's hatch (specials 0x3F / 0x40, 0x41C640) folds up to nothing while Buzz

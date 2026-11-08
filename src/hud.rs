@@ -152,6 +152,13 @@ impl Hud {
         self.coin_frame = (self.coin_frame + 1) % 0x18;
     }
 
+    /// Whether the countdown's tick sound plays this tick: 0x49FD40 plays sound 0x5E (an owned,
+    /// looping sound) each time it draws element 6 with a value from 100 up, unless paused
+    /// (0x52B818). It stops 16 ticks after the countdown leaves the screen (0x4A3BE0).
+    pub fn countdown_ticking(&self, s: &Status) -> bool {
+        self.offset(LAPS).is_some() && s.laps >= 100
+    }
+
     /// 0x49FC60's offset: None when hidden.
     fn offset(&self, k: usize) -> Option<i32> {
         let s = self.slide[k];
@@ -281,8 +288,8 @@ impl Hud {
                 0x800,
             );
             // The ammo left (0x49FD40): discs (with their icon, sprite 0x1C, in place of the
-            // bar) or hooks (the bar staying, the count 7 higher). The hook's icon (0x493DC0,
-            // a model) isn't drawn.
+            // bar) or hooks (the bar staying, the count 7 higher, the hook's icon, sprite 0x21,
+            // above it).
             let (count, lift) = if s.hooks != 0 {
                 (s.hooks, -7)
             } else {
@@ -310,6 +317,9 @@ impl Hud {
                     0x800,
                     0x800,
                 );
+                if s.hooks != 0 {
+                    put(NARROW, 0x112 - shift, y - 10, 0x21, 0, [0x80, 0x60, 0x40], 0x1000, 0x1000);
+                }
                 if s.hooks == 0 {
                     put(
                         WIDE,
@@ -431,6 +441,39 @@ mod tests {
         s.laps = 1;
         let q = h.quads(&s, &sprites);
         assert_eq!(q.iter().filter(|q| q.sprite == 3).map(|q| q.cell).collect::<Vec<_>>(), [2], "two laps to go");
+    }
+
+    /// 0x49FD40 plays the tick sound 0x5E while it draws a countdown, not while it draws laps,
+    /// and not once the element has slid away.
+    #[test]
+    fn countdown_ticks_only_while_shown() {
+        let mut h = Hud::default();
+        let mut s = Status { race: 2, laps: 130, ..Default::default() };
+        assert!(!h.countdown_ticking(&s), "not before the element slides in");
+        h.tick(&s);
+        assert!(h.countdown_ticking(&s));
+        s.laps = 2;
+        assert!(!h.countdown_ticking(&s), "laps are silent");
+        s.laps = 130;
+        s.race = 0;
+        for _ in 0..80 {
+            h.tick(&s);
+        }
+        assert!(!h.countdown_ticking(&s), "silent once slid away");
+    }
+
+    /// 0x49FD40 element 4 with hooks: the count and the hook's icon, sprite 0x21, in brown.
+    #[test]
+    fn hook_icon_shows_on_the_weapon_meter() {
+        let sprites: Vec<Option<SpriteDef>> = (0..0x40).map(|_| Some(SpriteDef { texture: 31, size: [8, 8], cells: vec![[0, 0]; 40] })).collect();
+        let mut h = Hud::default();
+        let s = Status { hooks: 7, ..Default::default() };
+        for _ in 0..40 {
+            h.tick(&s);
+        }
+        assert!(h.quads(&s, &sprites).iter().any(|q| q.sprite == 0x21), "the hook icon");
+        let s = Status { discs: 7, ..Default::default() };
+        assert!(!h.quads(&s, &sprites).iter().any(|q| q.sprite == 0x21), "not for discs");
     }
 
     /// 0x49FD40 element 4 with discs: the count (two digits) and the disc icon (0x1C) in

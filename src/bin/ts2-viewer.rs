@@ -90,6 +90,8 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
     // PS1 convention: 0x80 = 1.0, so double the 0..1 value.
     if (mode == 1u) { shade = i.color.yzw * 2.0; }
     if (mode == 2u) { shade = i.color.wzy * 2.0; }
+    // w: the level's colours (0x54DD6C, 1.0 = normal); 0 leaves them alone (the HUD).
+    if (u.params.w > 0.0) { shade = shade * u.params.w; }
     // Byte 0 of the vertex colour is alpha (0x80 = PS1 50% semi-transparency); only the
     // blended pipelines use it.
     return vec4<f32>(t.rgb * shade, t.a * i.color.x);
@@ -124,12 +126,38 @@ fn world_to_game(p: Vec3) -> [f32; 3] {
     [p.x / WORLD_SCALE, -p.y / WORLD_SCALE, -p.z / WORLD_SCALE]
 }
 
+/// `data\\PAD\\PATHnn.BIN` (0x4A3770): (pad, ticks held) pairs of i16, one step per frame
+/// of the demo's two ticks (0x52F2D4 = 2).
+struct Demo {
+    words: Vec<u16>,
+    at: i64,
+    hold: i32,
+    pad: u32,
+    acc: f32,
+    /// A button was pressed (0x52AD84).
+    stop: bool,
+}
+
+impl Demo {
+    /// 0x49DFE0's replay for one frame: the bits for this frame.
+    fn step(&mut self) {
+        self.hold -= 1;
+        if self.hold < 0 {
+            self.hold = self.words.get((self.at + 3) as usize).copied().unwrap_or(0) as i16 as i32;
+            self.at += 2;
+        }
+        self.pad = self.words.get(self.at as usize).copied().unwrap_or(0) as u32;
+    }
+}
+
 /// Sound output: the level's samples, mixed with the original's volume and pan.
 struct AudioOut {
     _stream: rodio::OutputStream,
     handle: rodio::OutputStreamHandle,
     bank: ts2::audio::SoundBank,
     music: Option<rodio::Sink>,
+    /// The sound level (0x5028C8): 1.0 at the default.
+    sfx: f32,
     /// Buzz's voice channel: one voice line at a time (0x49EA60 / 0x4A3E60).
     voice: Option<rodio::Sink>,
     /// DirectSound buffers per sample slot (0x47DE50 loads six copies of each sample): a free
@@ -146,6 +174,8 @@ const OWNED_TICKS: i32 = 0x10;
 const OWNER_BUZZ: u32 = 0;
 const OWNER_OBJECT: u32 = 1;
 const OWNER_CREATURES: u32 = 2;
+/// The HUD's own sounds (owned sounds played with obj 0).
+const OWNER_HUD: u32 = u32::MAX;
 
 const BUFFERS_PER_SAMPLE: usize = 6;
 
@@ -158,6 +188,7 @@ impl AudioOut {
         let Some(slot) = self.bank.sound_slot(id) else { return };
         let (l, r) = ts2::audio::positional(vol, rel, right, forward);
         let (gl, gr) = self.bank.gains(l, r);
+        let (gl, gr) = (gl * self.sfx, gr * self.sfx);
         if self.bank.is_owned(id) {
             let key = (slot, owner);
             // Played again: kept going, its balance following the owner (0x4A3980).
@@ -184,11 +215,38 @@ impl AudioOut {
         }
     }
 
+    /// An owned sound played with obj 0 (0x49E660 → 0x4A3980 at the table's two volumes):
+    /// one loop per owner, kept going while played again each tick.
+    fn play_owned_flat(&mut self, id: u16, owner: u32) {
+        let Some((_, l, r)) = self.bank.sound(id) else { return };
+        let Some(slot) = self.bank.sound_slot(id) else { return };
+        let (gl, gr) = self.bank.gains(l, r);
+        let (gl, gr) = (gl * self.sfx, gr * self.sfx);
+        if !self.bank.is_owned(id) {
+            self.buffered(slot, gl, gr);
+            return;
+        }
+        let key = (slot, owner);
+        if let Some((s, t, _)) = self.owned.get_mut(&key)
+            && !s.empty()
+        {
+            *t = OWNED_TICKS;
+            return;
+        }
+        let Some(sample) = self.bank.slot(slot) else { return };
+        let Ok(sink) = rodio::Sink::try_new(&self.handle) else { return };
+        let gains = Gains::default();
+        gains.set(gl, gr);
+        sink.append(Looped { data: std::sync::Arc::new(sample.data.clone()), rate: sample.rate, at: 0, gains: gains.clone() });
+        self.owned.insert(key, (sink, OWNED_TICKS, gains));
+    }
+
     /// A sound with no position (PlaySound with obj 0: 0x4A37E0), at its two table volumes.
     fn play_flat(&mut self, id: u16) {
         let Some((_, l, r)) = self.bank.sound(id) else { return };
         let Some(slot) = self.bank.sound_slot(id) else { return };
         let (gl, gr) = self.bank.gains(l, r);
+        let (gl, gr) = (gl * self.sfx, gr * self.sfx);
         self.buffered(slot, gl, gr);
     }
 
@@ -196,6 +254,7 @@ impl AudioOut {
     fn play_slot(&mut self, slot: u16, vol: i32, rel: Vec3, right: Vec3, forward: Vec3) {
         let (l, r) = ts2::audio::positional(vol, rel, right, forward);
         let (gl, gr) = self.bank.gains(l, r);
+        let (gl, gr) = (gl * self.sfx, gr * self.sfx);
         self.buffered(slot, gl, gr);
     }
 
@@ -479,8 +538,24 @@ struct Viewer {
     front: Option<Front>,
     /// The scene's level.dat lists.
     level_lists: Vec<ts2::formats::leveldat::PointList>,
+    /// Lens flares: 0x4F72D8, the level's lamps, and the graphics option (0x508D70 bit 0).
+    flare_table: Vec<[i16; 6]>,
+    lamps: ts2::flares::Lamps,
+    lens_flare: bool,
     /// Escape in a level, and the level's end, for the front end to act on.
     quit_level: bool,
+    /// The pause menu (0x52B818); Start seen this frame; close the window when set.
+    pause: Option<ts2::pause::Pause>,
+    pause_pressed: bool,
+    pause_acc: f32,
+    quit_app: bool,
+    /// 0x52F0CD / 0x52F0CE and 0x52F0CC bit 0x40.
+    volumes: (i32, i32),
+    active_camera: bool,
+    /// The attract demo's recorded pad (0x52B820): words, read position, ticks left, last bits.
+    demo: Option<Demo>,
+    /// Loaded by the front end for the scene about to start.
+    demo_file: Option<((), Demo)>,
     level_ended: bool,
     out_of_lives: bool,
     /// The game folder, the level's own music track (its campaign index) and the track playing.
@@ -697,6 +772,13 @@ fn scene_camera(script: Option<&dyn ts2::script::Script>) -> Option<Camera> {
 
 /// Drawing between game ticks: where things were at the previous tick, and how far (0..1)
 /// the next tick has come. Moves longer than a jump (a teleport, a respawn) aren't blended.
+/// The view from the follow camera (game space to the renderer's).
+fn follow_view(c: &ts2::camera::Camera) -> Camera {
+    let g = c.forward();
+    let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
+    Camera { pos: game_to_world(c.position().to_array()), yaw: w.x.atan2(-w.z), pitch: w.y.clamp(-1.0, 1.0).asin() }
+}
+
 #[derive(Default)]
 struct Interp {
     alpha: f32,
@@ -1202,10 +1284,135 @@ impl Viewer {
         self.keys.contains(&k)
     }
 
+    /// 0x49F4B0: the pause menu's tick; `true` keeps it open.
+    fn pause_update(&mut self, dt: f32) {
+        use ts2::frontend::Pad;
+        let Some(p) = self.pause.as_mut() else { return };
+        let bits = [
+            (&[KeyCode::ArrowUp, KeyCode::KeyW][..], Pad::UP),
+            (&[KeyCode::ArrowDown, KeyCode::KeyS], Pad::DOWN),
+            (&[KeyCode::ArrowLeft, KeyCode::KeyA], Pad::LEFT),
+            (&[KeyCode::ArrowRight, KeyCode::KeyD], Pad::RIGHT),
+            (&[KeyCode::Space, KeyCode::Enter, KeyCode::NumpadEnter], Pad::JUMP),
+            (&[KeyCode::Backspace], Pad::CANCEL),
+            (&[KeyCode::Escape, KeyCode::F2], Pad::START),
+        ];
+        let pad = Pad(bits.iter().filter(|(keys, _)| keys.iter().any(|k| self.keys.contains(k))).fold(0, |a, (_, b)| a | b));
+        self.pause_acc += dt;
+        let mut out = Vec::new();
+        while self.pause_acc >= 1.0 / 60.0 {
+            self.pause_acc -= 1.0 / 60.0;
+            out.extend(p.tick(pad));
+        }
+        for o in out {
+            use ts2::pause::Out;
+            match o {
+                Out::Sound(id) => {
+                    if let Some(a) = self.audio.as_mut() {
+                        a.play_flat(id);
+                    }
+                }
+                Out::Resume => {
+                    self.pause = None;
+                    if let Some(m) = self.audio.as_ref().and_then(|a| a.music.as_ref()) {
+                        m.play();
+                    }
+                    self.last = Instant::now();
+                    return;
+                }
+                Out::ExitLevel => {
+                    self.pause = None;
+                    if let Some(m) = self.audio.as_ref().and_then(|a| a.music.as_ref()) {
+                        m.play();
+                    }
+                    if self.front.is_some() {
+                        self.level_ended = true;
+                    } else {
+                        self.quit_app = true;
+                    }
+                    return;
+                }
+                Out::Camera(active) => self.active_camera = active,
+                Out::Volumes { music, sfx } => {
+                    self.volumes = (music, sfx);
+                    self.apply_volumes();
+                }
+            }
+        }
+    }
+
+    /// 0x4A3ED0: the music at table 0x5028A8 × 2 / 3, the sounds at 0x5028C8 × 3 / 2; level 8
+    /// (the defaults) is the volume the port has always played at.
+    fn apply_volumes(&mut self) {
+        const MUSIC: [i32; 11] = [0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90];
+        const SFX: [i32; 11] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80];
+        let (m, s) = self.volumes;
+        if let Some(a) = self.audio.as_mut() {
+            a.sfx = (SFX[s.clamp(0, 10) as usize] * 3 / 2) as f32 / 96.0;
+            if let Some(music) = a.music.as_ref()
+                && music.volume() > 0.0
+            {
+                music.set_volume((MUSIC[m.clamp(0, 10) as usize] * 2 / 3) as f32 / 96.0);
+            }
+        }
+    }
+
     fn update(&mut self, dt: f32) {
         if self.movie.is_some() || !self.movies.is_empty() {
             self.movie_update();
             return;
+        }
+        // Start (fresh): 0x49DFE0 pauses unless a level is ending.
+        if std::mem::take(&mut self.pause_pressed) && self.pause.is_none() && self.player.is_some() && !self.level_ended && !self.out_of_lives && self.demo.is_none() {
+            self.pause = Some(ts2::pause::Pause::new(self.volumes.0, self.volumes.1));
+            if let Some(a) = self.audio.as_mut() {
+                a.play_flat(0x3D);
+                if let Some(m) = a.music.as_ref() {
+                    m.pause();
+                }
+            }
+        }
+        if self.pause.is_some() {
+            self.pause_update(dt);
+        }
+        // The attract demo: its pad bits drive the keys, one step per two ticks.
+        if let Some(mut d) = self.demo.take() {
+            d.acc += dt;
+            while d.acc >= 1.0 / 30.0 {
+                d.acc -= 1.0 / 30.0;
+                d.step();
+            }
+            for (bit, key) in [(0x10, KeyCode::KeyW), (0x40, KeyCode::KeyS), (0x80, KeyCode::KeyA), (0x20, KeyCode::KeyD), (0x4000, KeyCode::Space), (0x2000, KeyCode::KeyE)] {
+                let on = d.pad & bit != 0;
+                if on && !self.keys.contains(&key) {
+                    match key {
+                        KeyCode::Space => self.jump_pressed = true,
+                        KeyCode::KeyE => self.stomp_pressed = true,
+                        _ => {}
+                    }
+                }
+                if on {
+                    self.keys.insert(key);
+                } else {
+                    self.keys.remove(&key);
+                }
+            }
+            let held = d.pad & 0x8000 != 0;
+            if held && !self.fire_held {
+                self.fire_pressed = true;
+            }
+            self.fire_held = held;
+            let stop = d.stop || std::mem::take(&mut self.level_ended) || std::mem::take(&mut self.out_of_lives);
+            if stop {
+                self.keys.clear();
+                self.fire_held = false;
+                self.player = None;
+                if let Some(f) = self.front.as_mut() {
+                    f.state.demo_done();
+                }
+            } else {
+                self.demo = Some(d);
+            }
         }
         if std::mem::take(&mut self.quit_level) {
             self.finish_level(true);
@@ -1222,7 +1429,7 @@ impl Viewer {
         self.front_update(dt);
         let fwd = self.cam.forward();
         let right = fwd.cross(Vec3::Y).normalize_or_zero();
-        if let Some(player) = self.player.as_mut() {
+        if let Some(player) = self.player.as_mut().filter(|_| self.pause.is_none()) {
             // The keys as d-pad bits; the heading from them and the camera-to-Buzz angle as
             // the original reads a keyboard (0x414AF0 → 0x433F40).
             let dpad = [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
@@ -1273,9 +1480,26 @@ impl Viewer {
             // Boxes and the level script run inside each tick, just before Buzz moves (0x433700
             // is called from 0x436220 there).
             let (boxes, specials, script) = (&mut self.boxes, &mut self.specials, &mut self.script);
-            let buzz_before = player.pos;
-            let specials_before: std::collections::HashMap<u16, [f32; 3]> = specials.objects.iter().map(|(&id, s)| (id, s.pos)).collect();
+            // What the last tick started from, however many ticks this frame runs: blending
+            // from further back makes a slow frame jump backwards.
+            let mut buzz_before = player.pos;
+            let mut specials_before: std::collections::HashMap<u16, [f32; 3]> = std::collections::HashMap::new();
+            // Ticks before the last one run the camera here, on Buzz as that tick left him; the
+            // last runs below, with its focus.
+            let mut ran = 0;
+            let (orig_cam, follow) = (&mut self.orig_cam, self.use_orig_cam);
+            if let (Some(l), Some(c)) = (script.as_mut(), orig_cam.as_ref()) {
+                l.view = (c.pos, c.look_yaw);
+            }
             let ticks = player.update_with(&self.world, input, dt, &mut |p, w| {
+                buzz_before = p.pos;
+                specials_before = specials.objects.iter().map(|(&id, s)| (id, s.pos)).collect();
+                if ran > 0 {
+                    if let Some(c) = orig_cam.as_mut().filter(|_| follow && p.first_person == 0) {
+                        c.tick(p, w);
+                    }
+                }
+                ran += 1;
                 if let Some(b) = boxes.as_mut() {
                     b.tick(p, w, specials);
                     if let Some(l) = script.as_mut() {
@@ -1330,11 +1554,16 @@ impl Viewer {
                     a.play_flat(id);
                 }
             }
+            // The camera as the tick before the last left it, when this frame ran several.
+            let mut cam_before = None;
             if player.first_person == 0
                 && let Some(c) = self.orig_cam.as_mut()
             {
                 c.focus = self.creatures.as_mut().and_then(|cr| cr.boss.focus.take());
-                for _ in 0..ticks {
+                if ticks > 0 {
+                    if ticks > 1 {
+                        cam_before = Some(c.clone());
+                    }
                     c.tick(player, &self.world);
                 }
             }
@@ -1369,13 +1598,7 @@ impl Viewer {
                     self.cam.yaw = w.x.atan2(-w.z);
                     self.cam.pitch = w.y.clamp(-1.0, 1.0).asin();
                 }
-                Some(c) => {
-                    self.cam.pos = game_to_world(c.position().to_array());
-                    let g = c.forward();
-                    let w = Vec3::new(g.x, -g.y, -g.z).normalize_or_zero();
-                    self.cam.yaw = w.x.atan2(-w.z);
-                    self.cam.pitch = w.y.clamp(-1.0, 1.0).asin();
-                }
+                Some(c) => self.cam = follow_view(c),
                 None => self.cam.pos = target - fwd * 4.5,
             }
             // Laser shots fired this frame hit before the creatures move (0x434990 runs in
@@ -1544,7 +1767,7 @@ impl Viewer {
                     }
                 }
                 self.hud_last = now;
-                self.hud_state.tick(&ts2::hud::Status {
+                let hud_status = ts2::hud::Status {
                     lives: player.lives,
                     health: player.health,
                     coins,
@@ -1560,7 +1783,14 @@ impl Viewer {
                     boss: self.script.as_ref().and_then(|l| l.boss_bar).unwrap_or_else(|| self.creatures.as_ref().map_or(0, |c| c.boss.bar)),
                     boss_on: self.script.as_ref().is_some_and(|l| l.boss_hud),
                     collected: challenge_count(self.script.as_deref(), self.pickups.as_ref()),
-                });
+                };
+                self.hud_state.tick(&hud_status);
+                // 0x49FD40: the countdown's tick (owned sound 0x5E, fixed volumes).
+                if self.hud_state.countdown_ticking(&hud_status)
+                    && let Some(a) = self.audio.as_mut()
+                {
+                    a.play_owned_flat(0x5E, OWNER_HUD);
+                }
                 // 0x49EAC0: the miniboss theme while the boss bar shows, the race theme while
                 // the laps show with a race on (0x52F2F8 ≥ 2), else the level's own.
                 if let Some(level_track) = self.level_track.filter(|_| self.theme_events) {
@@ -1577,15 +1807,22 @@ impl Viewer {
             // Creatures (0x4086F0) near the camera.
             if let Some(cr) = self.creatures.as_mut() {
                 let cam_obj = cam_game.map(|v| (v * 32.0) as i32);
-                if ticks > 0 {
-                    self.interp.creatures_prev = cr.slots.iter().map(|c| c.pos).collect();
-                }
-                for _ in 0..ticks {
+                cr.discs_out = player.disc_ammo != 0 && self.particles.discs_in_flight() > 0;
+                cr.buzz_firing = player.laser != 0;
+                for k in 0..ticks {
+                    if k + 1 == ticks {
+                        self.interp.creatures_prev = cr.slots.iter().map(|c| c.pos).collect();
+                    }
                     cr.tick(&self.world, cam_obj, player.pos_obj());
                     cr.contact(player);
                 }
                 for r in cr.particles.drain(..) {
                     self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ);
+                }
+                for (r, life) in cr.lasting.drain(..) {
+                    if let Some(k) = self.particles.create(r.pos, r.vel, r.gravity, r.angle, r.spin, r.typ) {
+                        self.particles.slots[k].life = life;
+                    }
                 }
                 // Routines that hurt Buzz, and beams they draw this frame.
                 for (angle, mode) in cr.hurts.drain(..) {
@@ -2106,15 +2343,16 @@ impl Viewer {
                 self.interp.cam = None;
             } else {
                 let now = self.cam;
-                let prev = match self.interp.cam {
-                    Some((p, n)) => {
+                let prev = match (cam_before.as_ref(), self.interp.cam) {
+                    (Some(c), _) => follow_view(c),
+                    (None, Some((p, n))) => {
                         if ticks > 0 {
                             n
                         } else {
                             p
                         }
                     }
-                    None => now,
+                    (None, None) => now,
                 };
                 self.interp.cam = Some((prev, now));
                 // A cut (a new scene, a respawn) doesn't blend.
@@ -2261,6 +2499,21 @@ impl Viewer {
                 let (w, h, _) = ngn.textures[i].dimensions()?;
                 Some((i, [(w as f32).abs(), (h as f32).abs()]))
             };
+            // Floor shadows (0x445720): Buzz (0x436220, 0x4857E0), then the creatures and
+            // particles; only in play.
+            if let (Some(p), Some((tex, size))) = (self.player.as_ref(), texture(0x1F)) {
+                let mut list = Vec::new();
+                if let Some((y, _, _, n)) = self.world.floor_below_full(p.pos.x, p.pos.z, p.pos.y - 16.0) {
+                    let n = n.to_array().map(|v| (v * 16384.0) as i32);
+                    let at = p.pos_obj();
+                    ts2::shadows::on_floor(&mut list, [at[0], (y * 32.0) as i32, at[2]], 100, at[1], n);
+                }
+                if let Some(cr) = self.creatures.as_ref() {
+                    cr.shadows(&self.world, &mut list);
+                }
+                self.particles.shadows(&mut list);
+                scene::merge(&mut batches, ts2::shadows::batches(&list, tex, size));
+            }
             let f = self.cam.forward();
             let r = f.cross(Vec3::Y).normalize_or_zero();
             let u = r.cross(f).normalize_or_zero();
@@ -2341,6 +2594,42 @@ impl Viewer {
                     q.extend(c.dialog.quads());
                 }
                 self.hud_frames = self.hud_frames.wrapping_add(1);
+                let mut flare_batches = Vec::new();
+                if self.lens_flare && self.player.is_some() {
+                    // 0x44F200: the lamps, then the particles; at most 8 pass, tested from the
+                    // camera nine tenths of the way there (objects flagged 0x200 don't block it).
+                    let cam_game = Vec3::from(world_to_game(self.cam.pos));
+                    let mut flares = Vec::new();
+                    self.lamps.lit(cam_game.to_array().map(|v| (v * 32.0) as i32), &mut flares);
+                    self.particles.flares(&mut flares);
+                    let aspect = gfx.config.width as f32 / gfx.config.height as f32;
+                    let m = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), aspect, 0.05) * self.cam.view();
+                    let mut shown = 0;
+                    let mut quads = Vec::new();
+                    for f in flares {
+                        if shown >= ts2::flares::LIMIT {
+                            break;
+                        }
+                        let at = Vec3::from(f.pos.map(|v| v as f32 / 32.0));
+                        if self.world.camera_sweep(cam_game, (at - cam_game) * 0.9, 0.0).is_some() {
+                            continue;
+                        }
+                        let clip = m * game_to_world(at.to_array()).extend(1.0);
+                        if clip.w <= 0.0 {
+                            continue;
+                        }
+                        let s = ts2::flares::Screen { x: ((clip.x / clip.w + 1.0) * 256.0) as i32, y: ((1.0 - clip.y / clip.w) * 128.0) as i32, depth: (clip.w / WORLD_SCALE) as i32 };
+                        if !(0..=0x200).contains(&s.x) || !(0..=0x100).contains(&s.y) || s.depth <= 0x80 {
+                            continue;
+                        }
+                        shown += 1;
+                        quads.extend(ts2::flares::quads(&f, s, &self.flare_table, &self.hud_sprites));
+                    }
+                    flare_batches = ts2::hud::batches(&quads, &self.hud_sprites, &texture);
+                    for b in &mut flare_batches {
+                        b.blend = scene::Blend::Additive;
+                    }
+                }
                 if self.token_seq == 9 {
                     // 0x49FD40's token menu: the box, the title, the two choices (the chosen one
                     // pulsing) and the hint.
@@ -2356,10 +2645,25 @@ impl Viewer {
                     centred(&mut q, 0x72, "exit level", exit);
                     centred(&mut q, 0x7C, "jump to select", [0x80; 3]);
                 }
-                ts2::hud::batches(&q, &self.hud_sprites, &texture)
+                if let Some(p) = &self.pause {
+                    q.extend(p.quads(&self.hud_sprites));
+                }
+                // 0x49FD40: "demo mode", blinking.
+                if self.demo.is_some() && self.hud_frames & 0x20 == 0 {
+                    q.extend(ts2::pause::demo_text(&self.hud_sprites));
+                }
+                let mut hud = ts2::hud::batches(&q, &self.hud_sprites, &texture);
+                hud.extend(flare_batches);
+                hud
             }
             None => self.front.as_ref().map_or_else(Vec::new, |f| front_batches(f, &self.ngn)),
         };
+        // 0x44DD80: colours over 0x80 (the lightning) also lay a white wash over the screen,
+        // v = c × 2 − 0x100 at alpha 0xFF − v, added to the picture.
+        let mut hud = hud;
+        if let Some(c) = self.script.as_ref().and_then(|l| l.ambient).filter(|&c| c > 0x80) {
+            hud.insert(0, ts2::flares::white_wash(c));
+        }
         gfx.hud = upload(&gfx.device, &hud, gfx.texture_bgs.len() - 1);
         // Billboards (rails, spindles, plants) turn to the camera every frame.
         {
@@ -2435,14 +2739,26 @@ impl Viewer {
             self.movie_skip |= matches!(code, KeyCode::Space | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape);
             return false;
         }
+        // The attract demo ends at the first button (0x52AD84).
+        if let Some(d) = self.demo.as_mut() {
+            d.stop = true;
+            return false;
+        }
+        // While paused the keys are the menu's (read each tick).
+        if self.pause.is_some() {
+            return false;
+        }
+        // Start: Escape, or F2 as in the original's default keys (0x49C420).
+        if self.player.is_some() && matches!(code, KeyCode::Escape | KeyCode::F2) {
+            self.pause_pressed = true;
+            return false;
+        }
         let n_anims = self.anims.get(self.creature_idx).map_or(0, Vec::len).max(1);
         // In the front end's menus the keys are the pad's (read each tick); Escape on the
-        // title closes the window, and in a level it quits to the main menu (the pause
-        // menu isn't ported).
+        // title closes the window.
         if let Some(f) = &self.front {
             match f.state.screen {
                 ts2::frontend::Screen::Title if code == KeyCode::Escape => return true,
-                ts2::frontend::Screen::Play(_) if code == KeyCode::Escape => self.quit_level = true,
                 ts2::frontend::Screen::Play(_) if code == KeyCode::KeyF => {}
                 ts2::frontend::Screen::Play(_) => {}
                 _ => return false,
@@ -2539,7 +2855,7 @@ impl ApplicationHandler for Viewer {
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         self.window_event_inner(el, event);
-        if self.front.as_ref().is_some_and(|f| f.state.screen == ts2::frontend::Screen::Quit) {
+        if self.quit_app || self.front.as_ref().is_some_and(|f| f.state.screen == ts2::frontend::Screen::Quit) {
             el.exit();
         }
     }
@@ -2675,7 +2991,7 @@ impl Viewer {
         g.sky = self.backdrop.map_or_else(Vec::new, |b| upload(&g.device, &sky_batch(&b, proj * self.cam.view(), self.cam.forward(), self.backdrop_image.as_ref().map(|_| self.ngn.textures.len()), aspect), g.texture_bgs.len() - 1));
         let u = Uniforms {
             view_proj: (proj * self.cam.view()).to_cols_array_2d(),
-            params: [self.color_mode as f32, if self.alpha_test { 1.0 } else { 0.0 }, WORLD_SCALE, 0.0],
+            params: [self.color_mode as f32, if self.alpha_test { 1.0 } else { 0.0 }, WORLD_SCALE, self.script.as_ref().and_then(|l| l.ambient).map_or(1.0, |a| a as f32 / 128.0)],
             range: [0.0, f32::MAX, 0.0, 0.0],
         };
         g.render(&u);
@@ -2715,9 +3031,15 @@ impl Viewer {
                     }
                 }
                 ShotStep::Movie(n) => self.movies.push_back(*n),
+                // Feet as they are stepping out of oil (0x53C60C = 180 ticks of kind 3).
+                ShotStep::Oily => {
+                    if let Some(p) = self.player.as_mut() {
+                        p.footprints = 0xB4 << 16 | 3;
+                    }
+                }
                 ShotStep::Report => {
                     if let Some(p) = self.player.as_ref() {
-                        println!("buzz at {:.1?} facing {} health {} on floor {}", p.pos, p.facing, p.health, p.on_floor);
+                        println!("buzz at {:.1?} facing {} health {} on floor {} surface {:?} prints {:x} flat particles {}", p.pos, p.facing, p.health, p.on_floor, p.surface, p.footprints, self.particles.slots.iter().filter(|q| q.life > 0 && q.flags & 0x10 != 0).count());
                     }
                 }
                 ShotStep::Boss => {
@@ -2846,6 +3168,12 @@ impl Viewer {
         f.track = None;
         match f.state.screen {
             ts2::frontend::Screen::Select => f.state.begin_select(&self.level_lists, self.random_table.clone().unwrap_or_default()),
+            ts2::frontend::Screen::Demo(_) => {
+                self.toggle_play();
+                if let Some((_, n)) = self.demo_file.take() {
+                    self.demo = Some(n);
+                }
+            }
             ts2::frontend::Screen::Play(_) => {
                 let (lives, abilities) = (f.state.progress.lives, f.state.progress.abilities);
                 self.toggle_play();
@@ -2870,10 +3198,14 @@ impl Viewer {
                 let window = self.gfx.take().and_then(|g| g.window);
                 front.scene = scene;
                 next.front = Some(front);
+                // The settings and the demo about to start outlive the scene.
+                let (volumes, lens_flare, active_camera, demo_file) = (self.volumes, self.lens_flare, self.active_camera, self.demo_file.take());
                 *self = next;
+                (self.volumes, self.lens_flare, self.active_camera, self.demo_file) = (volumes, lens_flare, active_camera, demo_file);
                 if attached {
                     self.attach(window);
                 }
+                self.apply_volumes();
                 self.enter_front_scene();
             }
             Err(e) => {
@@ -2887,7 +3219,7 @@ impl Viewer {
     fn front_update(&mut self, dt: f32) {
         use ts2::frontend::{Event, Pad, Screen};
         let Some(f) = self.front.as_mut() else { return };
-        if matches!(f.state.screen, Screen::Play(_)) {
+        if matches!(f.state.screen, Screen::Play(_) | Screen::Demo(_)) {
             return;
         }
         let bits = [
@@ -2904,6 +3236,7 @@ impl Viewer {
             f.acc -= 1.0 / 60.0;
             f.state.tick(pad);
         }
+        let (mut pending_volumes, mut pending_demo) = (None, None);
         for ev in std::mem::take(&mut f.state.events) {
             match ev {
                 Event::Sound(id) => {
@@ -2922,8 +3255,21 @@ impl Viewer {
                 // Not in screenshots: they'd sit through the logos.
                 Event::Movie(n) if !SILENT.load(std::sync::atomic::Ordering::Relaxed) => self.movies.push_back(n),
                 Event::Movie(_) => {}
+                Event::Volumes { music, sfx } => pending_volumes = Some((music, sfx)),
+                Event::LensFlare(on) => self.lens_flare = on,
+                Event::Demo(level) => pending_demo = Some(level),
             }
         }
+        if let Some(level) = pending_demo {
+            let path = f.game.join("data").join("PAD").join(format!("PATH{level:02}.BIN"));
+            let words = fs::read(&path).map(|b| b.chunks_exact(2).map(|w| u16::from_le_bytes([w[0], w[1]])).collect::<Vec<_>>()).unwrap_or_default();
+            self.demo_file = Some(((), Demo { words, at: -2, hold: 0, pad: 0, acc: 0.0, stop: false }));
+        }
+        if let Some(v) = pending_volumes {
+            self.volumes = v;
+            self.apply_volumes();
+        }
+        let Some(f) = self.front.as_mut() else { return };
         let want = (f.state.screen.scene(&f.state.tables), f.state.screen.variant());
         if want != f.scene && f.state.screen != Screen::Quit {
             self.switch_scene(want);
@@ -2994,9 +3340,11 @@ fn front_batches(f: &Front, ngn: &ngn::Ngn) -> Vec<Batch> {
     let frame = f.state.frame(&f.sprites);
     let named = |name: &str| ngn.textures.iter().position(|t| t.name.eq_ignore_ascii_case(name));
     let mut out = Vec::new();
+    // 0x44FF50's search for a loading picture: 0x24, 0x25, 0x28–0x2F, 0x58–0x5F.
+    let searched = frame.search_picture.then(|| [0x24u32, 0x25].into_iter().chain(0x28..0x30).chain(0x58..0x60).find(|p| named(&format!("bgr{p:02}")).or_else(|| named(&format!("tex{p:02}"))).is_some())).flatten();
     // The picture is drawn blended (fully opaque), not as an opaque batch: the HUD pass draws
     // opaque batches first, writing depth, and the sprites over it would fail the test.
-    if let Some(i) = frame.picture.and_then(|p| named(&format!("bgr{p:02}")).or_else(|| named(&format!("tex{p:02}")))) {
+    if let Some(i) = frame.picture.or(searched).and_then(|p| named(&format!("bgr{p:02}")).or_else(|| named(&format!("tex{p:02}")))) {
         let c = |x: f32, y: f32| GpuVertex { pos: [x, y, 0.0], uv: [x, y], color: [0xFF, 0x80, 0x80, 0x80] };
         out.push(Batch { texture: Some(i), blend: scene::Blend::Alpha, vertices: vec![c(0.0, 0.0), c(1.0, 0.0), c(1.0, 1.0), c(0.0, 0.0), c(1.0, 1.0), c(0.0, 1.0)] });
     }
@@ -3025,6 +3373,10 @@ fn front_batches(f: &Front, ngn: &ngn::Ngn) -> Vec<Batch> {
             v.extend([c(x0, y0, u0, v0), c(x1, y0, u1, v0), c(x1, y1, u1, v1), c(x0, y0, u0, v0), c(x1, y1, u1, v1), c(x0, y1, u0, v1)]);
         }
         out.push(Batch { texture: Some(font), blend: scene::Blend::Alpha, vertices: v });
+    }
+    if frame.veil != 0 {
+        let c = |x: f32, y: f32| GpuVertex { pos: [x, y, 0.0], uv: [0.0; 2], color: [frame.veil, 0, 0, 0] };
+        out.push(Batch { texture: None, blend: scene::Blend::Alpha, vertices: vec![c(0.0, 0.0), c(1.0, 0.0), c(1.0, 1.0), c(0.0, 0.0), c(1.0, 1.0), c(0.0, 1.0)] });
     }
     if frame.brightness < 0x80 {
         let a = ((0x80 - frame.brightness.max(0)) * 2).min(0xFF) as u8;
@@ -3081,6 +3433,7 @@ enum ShotStep {
     Teleport([f32; 3], Option<i32>),
     /// `?`: prints Buzz's position, health and floor.
     Report,
+    Oily,
 }
 
 impl Shot {
@@ -3124,6 +3477,8 @@ impl Shot {
                 shot.script.push(ShotStep::Play);
             } else if w == "?" {
                 shot.script.push(ShotStep::Report);
+            } else if w == "oily" {
+                shot.script.push(ShotStep::Oily);
             } else if let Some(t) = w.strip_prefix("tp:") {
                 let v: Vec<f32> = t.split(',').filter_map(|x| x.parse().ok()).collect();
                 if v.len() >= 3 {
@@ -3399,7 +3754,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
                     println!("music: {name} (M to mute)");
                     Ok(sink)
                 })().map_err(|e| println!("no music: {e}")).ok();
-                Some(AudioOut { _stream: stream, handle, bank, music, voice: None, buffers: Default::default(), owned: Default::default() })
+                Some(AudioOut { _stream: stream, handle, bank, music, sfx: 1.0, voice: None, buffers: Default::default(), owned: Default::default() })
             }
             Err(err) => {
                 println!("no sound output: {err}");
@@ -3517,8 +3872,19 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         menu_nav: 0,
         hud_frames: 0,
         front: None,
+        flare_table: game_exe.as_ref().map(ts2::flares::table).unwrap_or_default(),
+        lamps: level_no.map_or_else(Default::default, |lv| ts2::flares::Lamps::new(lv, &level_lists)),
+        lens_flare: true,
         level_lists,
         quit_level: false,
+        pause: None,
+        pause_pressed: false,
+        pause_acc: 0.0,
+        quit_app: false,
+        volumes: (8, 8),
+        active_camera: true,
+        demo: None,
+        demo_file: None,
         out_of_lives: false,
         game_dir: level_path.ancestors().nth(3).map(std::path::Path::to_path_buf),
         level_track: level_no.and_then(|lv| ts2::campaign::LEVELS.iter().position(|l| l.internal_id == lv)),

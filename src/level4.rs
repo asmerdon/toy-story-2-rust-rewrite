@@ -2,14 +2,16 @@
 //!
 //! - Four hanging platforms (movers / specials 1–4, turned 0xC00, 0xC00, 0, 0) follow path
 //!   programs (0x4F1BA4, 0x4F1BC8, 0x4F1BF4, 0x4F1C1C) and sway (0x49EC00 mode 2, ±0xE0, /16);
-//!   they stop while Buzz stands on one or on the platform hanging under it (movers 7, 8, 9,
-//!   6), which 0x41BEE0 keeps under its special 0x14 + k with the rope stretched between.
+//!   they stop while Buzz climbs onto one or onto the platform hanging under it (movers 7, 8,
+//!   9, 6; 0x559E80), which 0x41BEE0 keeps under its special 0x14 + k with the rope stretched
+//!   between.
 //! - Movers 0xE–0x11 (specials 0x29–0x2C) run path programs 0x4F1C64 / 0x4F1C40.
 //! - Three presses (specials 0x24–0x26, movers 10 / 12 / 11; 0x41BC20) rise, hold and slam
 //!   down while Buzz is near.
 //! - Stomping surface 0x24 lowers the drawbridge (mover 0x1A, specials 0x1C / 0x1D) for 240
 //!   ticks. Stomping on the buttons (movers 0x16–0x18) presses them (sparkles 4–6) and lifts
-//!   the lift (mover 0x15, special 0x44) to the button's height.
+//!   the lift (mover 0x15, special 0x44) to the button's height, from where it keeps going
+//!   down to just above the ground and back.
 //! - Water in the gully (mode 2 at −0x7A78).
 //! - Characters: a timed challenge (slot 0x1A, list 0x1F: find five things in time, token 2),
 //!   Mr Potato Head (slot 0x15: the disk launcher), Hamm (0x14), the hint character (0x11),
@@ -28,7 +30,7 @@ use crate::creatures::Creatures;
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
 use crate::game::{Player, World};
-use crate::script::{near, touched, Common, PathRunner, Script, Tilt};
+use crate::script::{near, near_sq, touched, Common, PathRunner, Script, Tilt};
 use crate::specials::Specials;
 use glam::Vec3;
 
@@ -370,6 +372,11 @@ impl Level4 {
                         self.common.rand();
                         self.common.spawns.push((home, 0x42, 0xE, spin, None));
                     }
+                    // Near Buzz (500 × 256), the camera shakes by how near:
+                    // 0x28 − (√(d² + 1) >> 4), d in 256s (0x41BE0F).
+                    if let Some(d2) = near_sq(home, buzz, 500) {
+                        world.shake.set(0x28 - ((d2 as f64).sqrt() as i32 >> 4));
+                    }
                 }
                 *v = -(*v / 4);
             }
@@ -447,7 +454,8 @@ impl Level4 {
 
     /// The buttons (movers 0x16–0x18): stomped on, each goes down (and its special 0x41 + k
     /// turns) and lifts the lift (mover 0x15, special 0x44) to its height, speeding up by 8 a
-    /// tick to 0x400 and easing in at the top.
+    /// tick to 0x400 and easing in at the top. Then it goes back down until 0xE100 above its
+    /// home and up again, for as long as the level lasts (0x41C640).
     fn lift(&mut self, world: &World, specials: &mut Specials, player: &Player) {
         if player.stomp != 0 {
             for k in 0..3 {
@@ -484,7 +492,7 @@ impl Level4 {
                 }
             }
             -self.lift_v
-        } else if y + 0xE100 < home[1] + goal {
+        } else if y + 0xE100 < home[1] {
             self.lift_v = (self.lift_v + 8).min(0x400);
             self.lift_v
         } else {
@@ -621,11 +629,12 @@ impl Script for Level4 {
         }
         self.hatch(specials, player.pos_obj());
         let lists = std::mem::take(&mut self.common.story.lists);
-        let on = player.floor_mover.filter(|_| player.on_floor).map(|(m, _)| m);
+        // Only climbing onto one holds it still (0x559E80); standing on it, it carries on.
+        let climbing = player.mantle_mover;
         for k in 0..4 {
             let (m, yaw, low, ..) = RIGS[k];
             self.tilts[k].step(world, specials, player, m, m - 1, yaw, 2, -0xE0, 0xE0, 0x10);
-            if on != Some(m) && on != Some(low) {
+            if climbing != Some(m) && climbing != Some(low) {
                 let mut rand = || self.common.rand();
                 let mut flags = self.path_flags;
                 self.rigs[k].step(world, specials, m, m - 1, &mut flags, &lists, &mut rand);

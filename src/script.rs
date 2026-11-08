@@ -69,6 +69,15 @@ pub struct Common {
     /// Particles by type and mode (0x40FDF0) then given a velocity (+0x0C, stored as is)
     /// and spin (+0x36): where, type, mode, velocity, spin.
     pub kicked: Vec<([i32; 3], u8, usize, [i32; 3], i32)>,
+    /// The level's colours (0x54DD6C and its pair, 0x80 = normal), when the script sets them.
+    pub ambient: Option<i32>,
+    /// The camera (object units) and its yaw (0x52ADC0, +0x22), set by the caller.
+    pub view: ([i32; 3], i32),
+    /// Lightning (levels 3 and 14: 0x52FFA8 / 0x52F708): ticks to the flash (first 200), then
+    /// to the thunder (0x70) and where it rolls.
+    pub flash: i32,
+    pub thunder: i32,
+    pub thunder_at: [i32; 3],
     /// It rains here, drawn with this sprite (0x44ED90's third argument).
     pub rain: Option<u8>,
     pub particles: Vec<ParticleRequest>,
@@ -117,6 +126,60 @@ impl Common {
     }
 
     /// Every `n` ticks (the flags 0x52F1C2–0x52F1CB of 0x4A2960).
+    /// 0x42E790 / 0x41AA10: every 32–542 ticks a flash fades over 32 ticks (the level's colours
+    /// from 0xDD back to 0x80), and thunder rolls 0–255 ticks later ahead of the camera.
+    pub fn lightning(&mut self) {
+        let t = self.flash - 1;
+        let mut next = t;
+        if t < 0x20 {
+            if self.flash >= 0x20 {
+                let delay = self.rand();
+                let (at, yaw) = self.view;
+                let u = yaw - 0x80 + self.rand();
+                self.thunder = delay;
+                self.thunder_at = [at[0] + (sin_table(u) * delay >> 5), at[1], at[2] + (sin_table(u + 0x400) * delay >> 5)];
+            }
+            if t < 0 {
+                next = self.rand() * 2 + 0x20;
+                self.ambient = Some(0x80);
+            } else {
+                self.ambient = Some(t * 3 + 0x80);
+            }
+        }
+        self.flash = next;
+        self.thunder -= 1;
+        if self.thunder < 1 {
+            self.thunder = 20000;
+            self.sounds.push((0x70, self.thunder_at));
+        }
+    }
+
+    /// Every 8 ticks a splash (0x1B, mode 2) at a random spot 3 × 0x4000 ahead of the camera:
+    /// on the floor under it (level 14; level 5 also stopping at the water, and never under
+    /// it), or at height 0 (level 3).
+    pub fn rain_splash(&mut self, world: &World, flat: bool, water: Option<i32>) {
+        if !self.every(8) {
+            return;
+        }
+        let (cam, yaw) = self.view;
+        let (s, c) = (sin_table(yaw) * 3, sin_table(yaw + 0x400) * 3);
+        if flat {
+            let r = (self.rand() - 0x80) * 0x100;
+            self.rand();
+            self.spawns.push(([cam[0] + s + r, 0, cam[2] + c + r], 0x1B, 2, 0, None));
+            return;
+        }
+        if water.is_some_and(|w| w - cam[1] < 0) {
+            return;
+        }
+        let (x, z) = ((self.rand() - 0x80) * 0x100 + cam[0] + s, (self.rand() - 0x80) * 0x100 + cam[2] + c);
+        let Some(y) = world.floor_below(x as f32 / 32.0, z as f32 / 32.0, (cam[1] - 0x8000) as f32 / 32.0) else { return };
+        let y = water.map_or((y * 32.0) as i32, |w| ((y * 32.0) as i32).min(w));
+        if cam[1] < y {
+            self.spawns.push(([x, y, z], 0x1B, 2, 0, None));
+        }
+    }
+
     pub fn every(&self, n: u32) -> bool {
         self.clock.is_multiple_of(n)
     }
@@ -515,6 +578,11 @@ impl Tilt {
     /// with three quarters of its speed. The special follows; Buzz on it turns with it.
     #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, mover: i32, special: i32, yaw: i32, mode: u8, lo: i32, hi: i32, div: i32) {
+        // 0x49EC00 leaves the mover Buzz is climbing onto alone, its swing stopped.
+        if player.mantle_mover == Some(mover) {
+            self.v = 0;
+            return;
+        }
         let mut v = self.v;
         let riding = player.on_floor && player.floor_mover.is_some_and(|(m, _)| m == mover);
         let before = [0, yaw, self.z >> 2];
@@ -589,6 +657,13 @@ pub fn sin_table(a: i32) -> i32 {
 pub fn near(p: [i32; 3], q: [i32; 3], r: i32) -> bool {
     let d = [0, 1, 2].map(|k| (p[k] - q[k]) >> 8);
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < r * r
+}
+
+/// 0x49F400's own return: the squared distance in 256s plus one when within `r`, else None.
+pub fn near_sq(p: [i32; 3], q: [i32; 3], r: i32) -> Option<i32> {
+    let d = [0, 1, 2].map(|k| (p[k] - q[k]) >> 8);
+    let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    (d2 < r * r).then_some(d2 + 1)
 }
 
 /// Within `r` of `q` across the ground, ignoring height (0x49F3C0).

@@ -47,15 +47,16 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 ## 4 Construction Yard (`level4.rs`)
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
-| Hanging platforms, path movers | `platforms_follow_their_paths` | | |
-| Presses, drawbridge stomp | | | |
+| Hanging platforms, path movers: travel and tilt with Buzz on them; only climbing on holds them (0x559E80) | `platforms_follow_their_paths`, `hanging_platforms_travel_with_buzz_on_them` | | reported not moving under him |
+| Side lift (mover 0x15): shuttles between the stomped button and the ground (0x41C640) | `side_lift_shuttles_up_to_the_stomped_button` | | reported stuck at the top |
+| Presses, drawbridge stomp; a press slamming within 500 shakes the camera by distance (0x41BC20) | `a_press_slamming_near_buzz_shakes_the_camera` | | |
 | Lift buttons (movers 0x16-0x18): any contact (0x48B640), tilted -0x180 like their specials | `every_stomp_switch_registers` | | |
 | Timed challenge (token 2), finder (token 1) | | | |
-| Drill boss (token 4) | `drill_challenge` | | |
+| Drill boss (token 4); shakes the camera near Buzz, hurt only while a disc flies (0x41B780) | `drill_challenge` | | |
 | Paint puzzle (token 3) | `construction_paint_*` (2) | | confirmed |
 | Paint-room hatch folds open near Buzz (0x41C640, 0x52F7D0) | `paint_room_hatch_opens_for_buzz` | `cmp_hatch_play.png` | reported textured before fix |
 | Interior seen only through portals (0x4BC460, level 4 only) | `paint_room_seen_only_through_its_portals` | `cmp_far*.png`; Level 1 identical | reported before fix; creatures/pickups not room-gated yet |
-| Not ported: drips, lights | | | |
+| Not ported: pipe flows, the crane's lamps, moving lights | | | |
 
 ## 5 Alleys and Gullies (`level5.rs`)
 | Interaction | Sim | Shot | User |
@@ -68,7 +69,8 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Bones challenge (2): all five exist, show and can be collected | `bones_all_collectable` | `l5-bones-0.png` | user's report was really the missing countdown |
 | Challenge/race countdown (HUD element 6 ≥ 100, 0x49FD40) | `hud::laps_from_100_are_a_countdown` | `l5-countdown.png` | reported missing; fixed |
 | Finder ducks (1), Hamm, hint | | | |
-| Not ported: stomp machine and bubbles, falling gate, drips, underwater fog | | | |
+| Rain splashes (0x41E880) | | | |
+| Not ported: stomp machine and bubbles, falling gate, underwater fog | | | |
 
 ## 6 Slime Time (`level3.rs`, boss)
 | Interaction | Sim | Shot | User |
@@ -77,7 +79,9 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Laser power-up (special 0x32) from the third round | `slime_shrinks_over_four_rounds` (pickup shown) | | asked; confirmed present |
 | Trash-can lid on its head, dropped at death | same test (lid tracks node 10) | 2026-10-31 | reported missing before fix |
 | Own music throughout | `music::boss_levels_keep_their_own_track` | | reported before fix |
-| Not ported: light and fog, drips, camera shake | | | |
+| Its timer 3 shakes the camera (0x41AA10) | | | |
+| Rain, lightning and its flash (0x41AA10) | | | |
+| Not ported: light and fog | | | |
 
 ## 7 Al's Toy Barn (`level7.rs`)
 | Interaction | Sim | Shot | User |
@@ -87,9 +91,10 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Spring, trampoline | | | |
 | Skateboards (movers 10 / 0xE): landing on one rolls it, throws Buzz at the end | `skateboard_one_rolls_when_landed_on`, `skateboard_two_rolls_and_returns` | | reported not working; ported, not yet reviewed in a shot |
 | Finder chicks (1), egg challenge (2), Potato Head boots, Hamm, hint | | | |
-| Dino boss (token 4) | `dino_fight` | | |
+| Dino boss (token 4); its first breath shakes the camera (0x420AF0) | `dino_fight`, `dino_first_breath_shakes_the_camera` | | |
 | "Ride the HayBale" (button mover 0xF, bale mover 0, 0x421340): 45 s countdown, bob, throw | `hay_bale_ride`, `every_stomp_switch_registers` | | reported stomp not working: was not ported |
-| Not ported: rockets, chicks pushed by boxes, drips | | | |
+| Drips (0x421340) | | | |
+| Not ported: rockets, chicks pushed by boxes | | | |
 
 ## 8 Al's Space Land (`level8.rs`)
 | Interaction | Sim | Shot | User |
@@ -99,7 +104,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Claw machine (token 3) | `space_land_claw_catches_the_prize_and_drops_it_out` | | |
 | Finder aliens (1), Hamm, hint | | | |
 | Boss (token 4) | `boss_fight` | | |
-| Not ported: electric arcs, room 2 cannon, swaying specials | | | |
+| Electric arcs (0x422D20), room 2's lobbers, room 4's swaying specials | `arcs_strike_buzz_in_their_area`, `room_2_lobbers_throw_at_buzz`, `room_4_specials_sway` | | |
 
 ## 9 Toy Barn Encounter (`level9.rs`, boss)
 | Interaction | Sim | Shot | User |
@@ -119,7 +124,9 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Runaway token (2) | `runaway_token` | | |
 | Spider (4) | `spider_fight` | | |
 | Mice finder (1), Potato Head hook, Hamm, hint | | | |
-| Not ported: lifts pausing, lights, electric beams | | | |
+| Lifts: the follow camera while riding (objects flagged 0x200 ignored, 0x48C860) | `the_camera_rides_a_lift_smoothly` | | reported juddering (as level 11) |
+| Wall mice (0x425A80, slots 1-5): height and depth swapped about home | `wall_mice_crawl_up_their_walls` | `mouse.png` 2026-11-08 | reported clipping through walls |
+| Not ported: lights | | | |
 
 ## 11 Al's Penthouse (`level11.rs`)
 | Interaction | Sim | Shot | User |
@@ -128,6 +135,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Pipes and boat | `penthouse_pipe_switch_moves_flow_and_the_boat_sails` | | |
 | Turrets | `penthouse_turret_button_looks_then_wrecks_its_turret` | | |
 | Gunslinger (token 4) | `penthouse_gunslinger_intro_fight_and_token` | | |
+| Side shooters (0x2E): the shot's life ends at the first wall (0x406A90 / 0x48C860) | `side_shooter_shot_lives_until_the_first_wall` | | |
 | Floats, doors, critter owner (1), horse challenge (2) | | | |
 | Far-set copies (0x50, 0x57, 0x40) follow in level units (were placed at a quarter) | | | |
 
@@ -143,6 +151,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Interaction | Sim | Shot | User |
 |---|---|---|---|
 | Oil (surface type 5): little grip (0x436220 types 4-7) | `oil_is_slippery` | | reported not slippery |
+| Oil: splash on it (0x1D), prints (0x21) on ordinary floor after it (0x4A2D80) | | `oil6.png` with `oily`, 2026-11-08 | reported no prints; needs the spot |
 | Conveyors, belts, luggage, springs | `airport_platforms_move_and_stomp_springs_launch` | | |
 | Conveyor ends hold Buzz (boundary walls, swept push) | `airport_conveyor_ends_hold_buzz_inside_the_level` | `l13-belt-end.png` | reported clipping out |
 | Weights challenge | `airport_weights_challenge_times_out_and_can_be_won_on_retry` | | |
@@ -159,7 +168,8 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Floating token, wing race, luggage | | | |
 | Start: no talk or race by itself (0x708 draw distance, not flags) | `standing_at_the_start_starts_no_talk_or_race` | `l14-start-fixed.png` | reported |
 | "Things not animated" (user report; what exactly is unknown) | | | reported, open |
-| Not ported: rain, lightning, lights | | | |
+| Lightning: flash, screen wash (0x44DD80) and thunder (0x42E790) | `lightning_flashes_and_thunder_follows`, `the_white_wash_follows_the_colour` | `l14_c.png` 2026-11-08 | reported no flash |
+| Not ported: lights | | | |
 
 ## 15 Prospector Showdown (`level15.rs`, boss)
 | Interaction | Sim | Shot | User |
@@ -183,7 +193,19 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Moving platforms carry Buzz however they're moved (levels 4, 7, 10: every flat-topped mover, rising in and between ticks) | `rising_platforms_carry_buzz`; user reported falling through the level 4 claw and level 10 lifts |
 | A platform rising into a jumping or falling Buzz puts him on it (levels 2, 4, 7, 10); planks tipping up lift him; level 4's platforms and shuttles under the real script | `a_rising_platform_meeting_buzz_puts_him_on_it`, `a_tipping_plank_lifts_buzz`, `a_mover_coming_sideways_pushes_buzz`, `buzz_stays_on_the_moving_platforms`, `rocket_double_jump_spreads_the_wings`; user reported the level 2 float, level 4 claw and iron bar |
 | Level tester: every ability given, gadget cages open | |
+| Camera shake (0x50A510): the follow camera's aim pitch wobbles (0x4045E0); set by stomps, level 4's presses and drill, the dino, the slime | `shake_wobbles_the_aim_and_dies_away`, `stomp_hangs_then_slams`; not seen in a shot; first person doesn't wobble |
+| Countdown tick (sound 0x5E, owned loop) while a challenge countdown shows (0x49FD40) | `countdown_ticks_only_while_shown`; not heard by the agent |
 | Disc launcher (ammo B): fire throws discs, homing (0x47) or straight (0x48), at most 6; the HUD's ammo count | `discs_replace_the_laser`, `homing_discs_hit_or_bounce`, `disc_count_shows_on_the_weapon_meter`; not played yet |
 | Specials by layer and distance (0x4CDDD0), all levels: no power-ups or helicopter through walls | `specials_of_each_layer_have_their_own_distance`; sweep `out/rv/sweep` |
 | Boundary walls (kind 0x101) in every level that has them | `final_arena_back_*`, `airport_conveyor_ends_*` |
 | Spawn snap (0x4863A0): only level 13 differed, now starts on the X-ray conveyor | `level_13_starts_on_the_conveyor_above_its_table_point`; `l13-start-orig.png` |
+
+## Added 2026-11-08 (not played)
+
+| Feature | Test | Shot | Report |
+|---|---|---|---|
+| Floor shadows (0x445720) | `shadows::tests` | `shadow3c.png` | |
+| Lens flares (0x44F580) | `flares::tests` | | |
+| Pause menu (0x49F4B0) | `pause::tests` | `pause.png` | |
+| Options, movie viewer, credits, loading pictures, attract demo | `frontend::tests` | | |
+| Level 8's boxes (0x4F2F44), also levels 5 and 7 | `level_8_boxes_are_loaded_and_push` | | reported unpushable |

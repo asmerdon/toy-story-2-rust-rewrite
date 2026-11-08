@@ -152,6 +152,37 @@ fn sin14(a: i32) -> i32 {
 }
 
 impl Particles {
+    /// 0x410F40: the kinds that glow queue a lens flare (0x44F200, base size 0x30).
+    pub fn flares(&self, out: &mut Vec<crate::flares::Flare>) {
+        for p in self.slots.iter().filter(|p| p.life > 0) {
+            let [r, g, b] = p.rgb.map(i32::from);
+            let rgb = match p.kind {
+                7 | 0xE | 0x27 => [r, g, b],
+                0x1A => [g, g, b],
+                0x1B => [b, b >> 1, 0],
+                _ => continue,
+            };
+            out.push(crate::flares::Flare { pos: p.pos, rgb, size: 0x30 });
+        }
+    }
+
+    /// 0x410F40's shadows, flat: those that land on a floor (flag 1, on the height they were
+    /// given), and kinds 1 (under itself), 0x17 and 0x19 (on their floors).
+    pub fn shadows(&self, out: &mut Vec<crate::shadows::Shadow>) {
+        for p in self.slots.iter().filter(|p| p.life > 0) {
+            if p.flags & 1 != 0
+                && let Some(f) = p.floor
+            {
+                crate::shadows::flat(out, [p.pos[0], f, p.pos[2]], p.size[0]);
+            }
+            match (p.kind, p.floor) {
+                (1, _) => crate::shadows::flat(out, [p.pos[0], p.pos[1] + p.size[1] * 0x20, p.pos[2]], p.size[0]),
+                (0x17 | 0x19, Some(f)) => crate::shadows::flat(out, [p.pos[0], f, p.pos[2]], p.size[0]),
+                _ => {}
+            }
+        }
+    }
+
     pub fn new(exe: Option<&Exe>, random: Vec<u8>) -> Particles {
         let types = (0..TYPE_COUNT as u32)
             .map(|t| {

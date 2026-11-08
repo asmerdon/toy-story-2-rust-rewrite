@@ -59,6 +59,8 @@ const PATHS: [(i32, i32, u32, Option<usize>); 6] = [
 pub struct Level7 {
     paths: [PathRunner; 6],
     path_flags: u16,
+    /// 0x52FA0C: the next of list 6's drips.
+    drip_next: usize,
     /// The spring (0x52F9C0) and the trampoline's squash (0x52F9EC).
     spring: i32,
     squash: i32,
@@ -105,7 +107,33 @@ impl Level7 {
             tip_state: 0,
             tip: 0,
             // 0x503A30: level 7's missing item (1) and gift (bit 2, the rocket boots).
+            drip_next: 0,
             common: Common { given: [false, false, false, true, false], item: 1, ..Default::default() },
+        }
+    }
+
+    /// 0x421340: every 0x40 ticks, in one area a drip from list 6's points in turn (0x56, onto
+    /// floor 0, sound 0x74), in another one from a random point of list 7 (0x50).
+    fn drips(&mut self, player: &Player) {
+        if !self.common.every(0x40) {
+            return;
+        }
+        let b = player.pos_obj();
+        let inside = |x0: i32, x1: i32, z0: i32, z1: i32| x0 < b[0] && b[0] < x1 && z0 < b[2] && b[2] < z1;
+        if inside(-0x5CF57, -0x36A57, 0x6D7D, 0x5247D)
+            && let Some(l) = self.common.story.lists.get(&6).cloned().filter(|l| !l.is_empty())
+        {
+            self.drip_next = (self.drip_next + 1) % l.len();
+            let at = l[self.drip_next].map(|v| v << 5);
+            self.common.drops.push((at, 0x56, 0x19, 0, 0));
+            self.common.sounds.push((0x74, at));
+        }
+        if inside(-0x3BB3A, -0x1B73A, -0xA7DD, 0x48FA3)
+            && let Some(l) = self.common.story.lists.get(&7).cloned().filter(|l| !l.is_empty())
+        {
+            let r = (self.common.rand() & 7) as usize;
+            let at = l[if r > 5 { r - 6 } else { r } % l.len()].map(|v| v << 5);
+            self.common.spawns.push((at, 0x50, 0x18, 0, None));
         }
     }
 
@@ -496,6 +524,7 @@ impl std::ops::DerefMut for Level7 {
 impl Script for Level7 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
+        self.drips(player);
         self.springs(specials, player);
         self.hay_bale(world, specials, player);
         self.skateboards(world, specials, player);

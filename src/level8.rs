@@ -12,15 +12,18 @@
 //!
 //! - The claw machine in room 4 (token 3): see [`Claw`].
 //!
-//! Not ported: the two electric arcs (0x422D20, hurting Buzz where they strike), the cannon
-//! in room 2, the swaying specials 0x14–0x17 and lights.
+//! - Two electric arcs between lists 14 and 15 (0x422D20), striking Buzz when he's near and
+//!   low enough. Room 2's lobbers (list 16, particle 0x60). Room 4's swaying specials
+//!   0x14–0x17, with their creaks.
+//!
+//! Not ported: lights.
 
 use crate::boxes::Boxes;
-use crate::creatures::Creatures;
+use crate::creatures::{Creatures, ParticleRequest};
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
 use crate::game::{Player, World};
-use crate::script::{near_xz, sin_table, touched, Common, Script};
+use crate::script::{near, near_sq, near_xz, sin_table, touched, Common, Script};
 use crate::specials::Specials;
 
 const HINTS: u32 = 0x4F2F30;
@@ -37,6 +40,16 @@ const BOSS: (usize, i16) = (40, 0x11);
 /// The racer's path (level.dat list 13).
 const TRACK: i16 = 13;
 
+/// One electric arc (0x422D20): where it strikes, how long it lasts, the time left and its
+/// place in the list.
+#[derive(Default, Clone, Copy)]
+struct Arc {
+    at: [i32; 3],
+    span: i32,
+    left: i32,
+    index: usize,
+}
+
 pub struct Level8 {
     /// The spinners' angle and phase (0x52FB20 pairs).
     spin: [(i32, i32); 8],
@@ -46,6 +59,15 @@ pub struct Level8 {
     speed: i32,
     bob: i32,
     claw: Option<Claw>,
+    /// The two arcs (0x52FA60 / 0x52FAFC / 0x52FB90 / 0x52FBAC).
+    arcs: [Arc; 2],
+    /// Room 4's swaying specials: phases (0x52FB78, 0x52FB6C, 0x52FB68, 0x52FB70) and the time
+    /// to the next creak (0x52FB80).
+    sway: [i32; 4],
+    creak: i32,
+    /// Room 2's lobbers: the wait (0x52FB98) and the next point of list 16 (0x52FAF8).
+    lob_wait: i32,
+    lob_next: usize,
     /// 0x52FB7C: the boss's taunt timer (0x3C at the level's start, 0x4A1A50).
     taunt: i32,
     common: Common,
@@ -109,8 +131,104 @@ fn in_box(p: [i32; 3], x: (i32, i32), z: (i32, i32)) -> bool {
 }
 
 impl Level8 {
+    /// 0x422D20: arc `k` runs from a point of list 14 + k to the same place in the other list.
+    /// Every 8–15 ticks it jumps on 0–7 points, or to Buzz if he's within 500 and above the
+    /// floor limit. The bolt shrinks towards its far end as it dies; where it lands there are
+    /// five sparks and sound 7, and Buzz within 25 is hurt.
+    fn arc(&mut self, k: usize, buzz: [i32; 3], cr: &mut Creatures) {
+        let lists = &self.common.story.lists;
+        let (Some(from), Some(to)) = (lists.get(&(14 + k as i16)).cloned(), lists.get(&(15 - k as i16)).cloned()) else { return };
+        if from.is_empty() || to.is_empty() {
+            return;
+        }
+        let r = (self.common.rand(), self.common.rand());
+        let a = &mut self.arcs[k];
+        a.left -= 1;
+        if a.left < 1 {
+            a.left = (r.0 & 7) + 8;
+            a.span = a.left;
+            a.index = (a.index + (r.1 & 7) as usize) % from.len();
+            a.at = from[a.index].map(|v| v << 5);
+            let d = [0, 1, 2].map(|i| (a.at[i] - buzz[i]) >> 8);
+            if buzz[1] > -0x150F && d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 250_000 {
+                a.at = [buzz[0], buzz[1] - 0x800, buzz[2]];
+            }
+        }
+        let a = self.arcs[k];
+        let end = to[a.index % to.len()].map(|v| v << 5);
+        let delta = [0, 1, 2].map(|i| a.left * (end[i] - a.at[i]) / a.span.max(1));
+        let colour = if k == 0 { [0x80, 0, 0] } else { [0, 0x40, 0x80] };
+        cr.ribbons.push((a.at, [a.at[0] + delta[0], a.at[1] + delta[1], a.at[2] + delta[2]], colour, 0x40));
+        if a.left == a.span {
+            for _ in 0..5 {
+                let life = (self.common.rand() & 0xF) * 2 + 0x18;
+                self.common.spawns.push((a.at, 4, 4, 0, Some(life)));
+            }
+            self.common.sounds.push((7, a.at));
+            if near(buzz, a.at, 0x19) {
+                cr.hurts.push((crate::boxes::angle12((buzz[0] - a.at[0]) as f32, (buzz[2] - a.at[2]) as f32), 2));
+            }
+        }
+    }
+
+    /// 0x423200, room 4: specials 0x14–0x17 sway about their homes (in height for 0x14 / 0x17,
+    /// sideways for 0x15 / 0x16), and one of them creaks (0x7B–0x7D) every 10–137 ticks.
+    fn sway(&mut self, specials: &mut Specials) {
+        for (ph, step) in self.sway.iter_mut().zip([8, 7, 6, 0xB]) {
+            *ph = (*ph + step) & 0xFFF;
+        }
+        let homes = [0x14, 0x15, 0x16, 0x17].map(|id| specials.home_obj(id));
+        for (k, (id, up)) in [(0x14, true), (0x15, false), (0x16, false), (0x17, true)].into_iter().enumerate() {
+            let Some(h) = homes[k] else { continue };
+            let off = sin_table(self.sway[k]) >> 6;
+            let p = h.map(|v| v >> 5);
+            specials.set_pos(id, if up { [p[0], p[1] + off, p[2]] } else { [p[0] + off, p[1], p[2]] });
+        }
+        self.creak -= 1;
+        if self.creak < 1 {
+            self.creak = (self.common.rand() & 0x7F) + 10;
+            let sound = match self.common.rand() & 3 {
+                3 => 0,
+                n => n,
+            };
+            // 0x423200 picks by a third roll: 0x14, 0x15, 0x16, 0x17 in its own order.
+            let who = [0x14, 0x15, 0x16, 0x17][(self.common.rand() & 3) as usize];
+            if let Some(at) = specials.home_obj(who) {
+                self.common.sounds.push(((sound + 0x7B) as u16, at));
+            }
+        }
+    }
+
+    /// 0x423200, room 2: after 200 ticks each point of list 16 in turn, one a tick, lobs a
+    /// shot (0x60) at Buzz if he's within 0x300, timed to reach him under gravity 0x80.
+    fn lobbers(&mut self, buzz: [i32; 3]) {
+        self.lob_wait += 1;
+        if self.lob_wait <= 200 {
+            return;
+        }
+        let Some(list) = self.common.story.lists.get(&16).cloned().filter(|l| !l.is_empty()) else { return };
+        let at = list[self.lob_next.min(list.len() - 1)].map(|v| v << 5);
+        self.lob_next += 1;
+        if self.lob_next >= list.len() {
+            self.lob_next = 0;
+            self.lob_wait = 0;
+        }
+        let Some(d2) = near_sq(at, buzz, 0x300) else { return };
+        let d = (d2 as f64).sqrt() as i32;
+        let speed = (d * 2 / 3).max(1);
+        let time = ((d << 12) / speed).max(1);
+        let u = crate::boxes::angle12(((at[0] - buzz[0]) >> 5) as f32, ((at[2] - buzz[2]) >> 5) as f32);
+        let vel = [
+            sin_table(u - 0x800) * speed / 0x4000,
+            time * -0x80 / 256 - (at[1] - buzz[1]) * 0x80 / time,
+            sin_table(u - 0x400) * speed / 0x4000,
+        ];
+        self.common.particles.push(ParticleRequest { pos: at, vel, gravity: 0x80, angle: 0, spin: 0, typ: 0x60 });
+        self.common.sounds.push((0xD, at));
+    }
+
     pub fn new() -> Level8 {
-        Level8 { spin: [(0, 0); 8], t: 0, speed: 0, bob: 0, claw: None, taunt: 0x3C, common: Common { given: [false, false, false, true, false], ..Default::default() } }
+        Level8 { spin: [(0, 0); 8], t: 0, speed: 0, bob: 0, claw: None, arcs: Default::default(), sway: [0; 4], creak: 0, lob_wait: 0, lob_next: 0, taunt: 0x3C, common: Common { given: [false, false, false, true, false], ..Default::default() } }
     }
 
     /// See [`Claw`].
@@ -423,11 +541,23 @@ impl Script for Level8 {
             specials.turn_from_own(k as i32 + 2, [0, *a, 0]);
         }
         let b = player.pos_obj();
+        let room = world.room_at(player.pos);
+        if room == Some(4) {
+            self.sway(specials);
+        }
+        if room == Some(2) && b[0] < 0x1B467 {
+            self.lobbers(b);
+        }
         player.water = if in_box(b, (0x3320E, 0x5960E), (0x269CA, 0x49D8A)) { (3, -0x8200) } else { (0, 0) };
     }
 
     fn step_creatures(&mut self, world: &World, _specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
         self.boss_hud = false;
+        let b = player.pos_obj();
+        if in_box(b, (0x29EA3, 0x9AB23), (-0x6F3F3, -0x6273)) {
+            self.arc(0, b, cr);
+            self.arc(1, b, cr);
+        }
         self.hamm(cr, HAMM.0, HAMM.1, None, 0, coins);
         self.hint_character(cr, HINT.0, HINT.1);
         if touched(cr, FINDER.0) && cr.sheep >= 0 {

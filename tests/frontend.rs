@@ -71,7 +71,7 @@ fn level_select_flies_to_a_level_and_gates_on_tokens() {
     assert_eq!(f.select.as_ref().unwrap().level, 2);
     // Level 2 has none needed: jump picks it.
     f.tick(Pad(Pad::JUMP));
-    for _ in 0..0x20 {
+    for _ in 0..0x20 + 0x1C {
         f.tick(Pad(0));
     }
     assert_eq!(f.screen, Screen::Play(2));

@@ -1,6 +1,7 @@
 //! Tarmac Trouble: setup 0x42E600 and frame 0x42E790. Rotating aeroplane,
 //! three-press matching puzzle, floating token, wing race, luggage and Blacksmith.
-//! Rain/lightning and dynamic lights remain renderer effects.
+//! Lightning (0x42E790): the level brightens for half a second every so often, thunder after.
+//! Dynamic lights remain renderer effects.
 use crate::{
     boxes::{Boxes, angle12},
     creatures::{Creatures, ParticleRequest},
@@ -40,6 +41,8 @@ impl Level14 {
                 given: [false, false, false, true, false],
                 // 0x42E790 calls 0x44ED90(0x100, 0x1000, 0x33) every tick: rain.
                 rain: Some(0x33),
+                flash: 200,
+                thunder: 20000,
                 ..Default::default()
             },
             bits: 0,
@@ -346,6 +349,8 @@ impl std::ops::DerefMut for Level14 {
 impl Script for Level14 {
     fn step(&mut self, w: &World, s: &mut Specials, p: &mut Player, _: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
+        self.common.lightning();
+        self.common.rain_splash(w, false, None);
         self.plane(w, s, p);
         self.puzzle(s, p);
         let t = self.clock as i32;

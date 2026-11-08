@@ -68,6 +68,10 @@ fn box_list(level: usize) -> Option<u32> {
         2 => Some(0x4F1518),
         // The crane (mover 0) and a crate, pushed along lists 3 and 5.
         4 => Some(0x4F1C88),
+        5 => Some(0x4F215C),
+        7 => Some(0x4F2A24),
+        // Room 1's boxes (specials 0, 15, 19 on movers 0, 3, 4; lists 1, 2, 3).
+        8 => Some(0x4F2F44),
         11 => Some(0x4F3E60),
         13 => Some(0x4F46A4),
         _ => None,
