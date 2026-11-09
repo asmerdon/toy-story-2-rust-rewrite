@@ -31,7 +31,7 @@ exe functions) and `docs/formats/*.md`.
 - **Level 1:** signed off by the user.
 - **Levels 2–15:** the user has sent seven rounds of playtest reports (the latest on levels 2, 4 and 10); every reproduced report has been fixed (see the list below and MODLOG). Rounds 5–7 are pushed (commit 199b9d8) but not yet re-played.
 - **Not done:** no level other than 1 has a full sign-off.
-- **Tests:** 257 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (246 engine + 11 launcher), 2026-11-08; on the last run the launcher exe was locked, so its 3 end-to-end tests were not re-run. `cargo build --release` builds the viewer, tool and launcher without warnings.
+- **Tests:** 280 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (269 engine + 11 launcher), 2026-11-09; on the last run the launcher exe was locked, so its 3 end-to-end tests were not re-run. `cargo build --release` builds the viewer, tool and launcher without warnings.
 - **Git:** work is on `dev` (local `master` tracks `origin/dev`); last push 199b9d8. The user asks before each push.
 
 ### Fixed from the user's playtests
@@ -108,7 +108,7 @@ Every fix below comes from the original's code, has a regression test, and was m
 - Open edges in L5/7/8/10, found by `examples/clipsweep.rs`, are unverified against the original.
 
 **Drawing**
-- Room culling only applies to Level 4. Levels 1, 2, 5 and 10 have portals, and 2 and 10 have their own 0x440F70 overrides.
+- Room culling applies to Level 4 only (`ROOM_CULLED_LEVELS`). The user tried it on Level 1, had things fail to load and chose not to spread it: every other level draws every room, on purpose.
 - Creatures and pickups are not room-gated (0x447BD0, creature room byte +0x6C).
 - The far set's near clip of 10000 is not applied.
 - Creatures are drawn within 10176 rather than from the original's active list.
@@ -124,12 +124,9 @@ Every fix below comes from the original's code, has a regression test, and was m
 
 **Missing features**
 - The camera shake isn't cleared when the camera is reset (0x403450); it lasts at most 40 ticks.
-- The moving lights on models (0x49EE50, 0x49EEE0, applied by 0x4CE6C0 with three fixed white lights set up in 0x4CE910): how the original lights models hasn't been worked out, so nothing draws them.
-- Passive camera: the pause menu stores it (0x52F0CC bit 0x40), `camera.rs` doesn't use it.
-- Control remapping (0x49C420): the options page lists the keys only. Detail, gamma and animated textures are shown, not applied.
-- Level 4's pipe flows (0x52F83C / 0x52F850) and lamps (list 6, tied to the crane puzzle).
-- Level 8's claw shadow (0x423200), level 9's boss shadow (0x424490), level 12's lobbed shots' (0x42B090).
-- Room culling beyond level 4 and creature room gating: the user asked to leave these alone for now.
+- Moving-light sources not wired: level 8's boss hitting Buzz (0x422660, red at Buzz), a few one-off script flashes. The model lighting assumes the exe's materials are white.
+- Creature room gating: not done.
+- Follow camera standing or hanging with a low ceiling just above Buzz: 0x48C860's ball starts inside the ceiling, so it finds nothing and the camera drifts through (poles 11–13 on level 1, 3,900 ticks in `camera_poles`). The exe does the same, and 0x48D530 only runs while he moves; fixing it would be a deviation, not yet asked for.
 - Shield slowing Buzz.
 
 **Unconfirmed**
@@ -480,6 +477,7 @@ shadows are the biggest unported systems.
 | `poles`, `rope`, `bars`, `seesaw`, `tinman <dist>`, `arena` | Simulations of poles, rope exits, ledge bars, the see-saw, the Tin Man fight, a creature's zone |
 | `potato`, `dialog` | Conversations through the level script; speech-box typing |
 | `shared_specials`, `floorline`, `room`, `wander`, `stress`, `gaps` | Misc: shared specials, floor heights, room lookups, fall-through stress tests |
+| `edge_turns`, `find_stairs`, `camera_poles` | Buzz turning on edges (`--trace` for one run), flights of stairs, the camera while climbing each pole |
 | `token_model <game> <out>` | Exports the Pizza Planet token (level 1 special 0x39) for the icon generator |
 | `floor_at <dir> x z [file]`, `object_tris <dir> index [file]` | Every collision triangle under a point; one object's triangles and normals |
 | `zurgintro [-v\|-f]` | Level 12's entrance tick by tick (`-v`: every tick, with the scene camera; `-f`: the fight, Zurg's distance from Buzz and the middle) |

@@ -141,6 +141,25 @@ Dated history of the work, newest at the bottom. Current state is in HANDOFF.md;
 - A `cargo fmt` run reformatted the whole workspace by mistake; it was undone (untouched files restored from git, edited files re-merged onto their original layout; a few edited spots keep rustfmt's layout).
 - Checks: workspace release build clean; 213 tests pass (202 engine + 11 launcher).
 
+## 2026-11-09 (evening): culling backed out of level 1, shield prints, edges, the camera through walls
+
+- Room culling off on level 1 again, after things failed to load there. Level 4 keeps it (played and approved, and it's one entry in a list). No other level will get it.
+- Deviation (owner's request): in the shield's ball slime leaves no footprints (`foot_effects`; 0x4A2D80 doesn't look at the shield).
+- Buzz at the edge of a surface: the sweep only tried a face's edges when he was moving into the face, a test 0x481FB0 doesn't have, so running flat at a lip after rolling round it (which a reversal does) missed the edge and his body sank through. Now every near edge is tried, keeping the exe's rule that the contact comes from the face's front (0x4813B0 / 0x481D00). Contacts also stop short along the normal, as 0x482A00 does, not along the motion. `edge_turns` on the ledges of room 1: 13 pass-throughs to 4, bodies in geometry 191 to 100; the real staircase 262 to 148, no pass-throughs before or after. `clipsweep` improves on levels 1, 4 and 10 (227 / 62 / 29 walls to 211 / 46 / 28).
+- Camera behind walls: the camera's look at Buzz (0x48D530 → 0x48C030) is a thin ray that counts only when the first face on the way was crossed from behind. The port swept a ball that only saw fronts, so a camera that had gone through a wall never knew. The earlier lift fix had removed a home-made clamp that was hiding this. Level 1's poles while climbing: 2,235 ticks behind a wall of 26,400 down to 50. Lifts are still smooth.
+- Tests: `reversing_on_an_edge_stays_out_of_it`, `reversing_at_a_ledge_keeps_him_on_it`, `no_slime_prints_in_the_shield`, `a_camera_behind_a_wall_comes_back_to_it`, `a_wall_seen_from_its_front_is_left_alone`. The first four fail on the old code. Engine 269 pass. Not played. Diagnostics `edge_turns`, `find_stairs`, `camera_poles`.
+
+## 2026-11-09: the not-done pile, level 1 room culling
+
+- Room culling on level 1 (`ROOM_CULLED_LEVELS`), to be tested. 42 shots at pickups in every room, facing two ways, match the unculled build once the camera has settled.
+- Moving lights on models: `src/lights.rs` ports the slots (0x49EE50, 0x49EEE0, slot 0 from table 0x50387C, slot 1 the nearest lamp); `scene::ModelLight` the hardware lights (0x4CE910: three white ones a third of a turn apart, 0x4CE6C0: the fourth). Only nodes flagged 4 use them (0x4CAA60 → 0x4B84E0 → D3DVOP_LIGHT in 0x4B70E0): Buzz's body and Bo Peep's among others; the rest stay baked. Vertex colours on those parts are replaced by the lit colour, as the exe's lit path doesn't read them. Sources wired: level lamps, deaths, explosions, particle bursts, pods' lasers, level 8's arcs, level 10's alarm.
+- Animated textures (0x49B260 → 0x4AFD30), which turned out not to be ported at all: `src/texanim.rs`, sites on levels 1, 2, 3, 5, 8 (two), 11, 13 and the shield. The option turns them off.
+- Passive camera and the camera buttons (`Camera::passive`, `pad`; 0x4045E0): passive orbits with them and doesn't follow, cancel snaps it behind; auto mode turns Buzz on the spot. Defaults Delete / Page Down as the exe's.
+- Control remapping (0x49C420): `src/controls.rs`, the options' controller page, saved in the save folder's `controls.txt`. Keys are translated as they arrive, so the engine still reads fixed ones.
+- Graphics options apply: detail (table 0x508D28: draw ranges) and gamma (0x4B3740's gain).
+- Level 4's pipe drips, the spray and the fading lamps (0x41C640). Shadows: level 8's claw, level 9's flails, level 12's lobbed shots.
+- Tests: `lights`, `texanim`, `controls`, `camera::mode_tests`, `hardware_lights_shade_by_normal`, `pipes_drip_and_lamps_fade`, lamps and controller page. Engine 264 pass. Not played.
+
 ## 2026-11-08 (evening): the still-to-do list, level 8's boxes, the flash
 
 - Floor shadows (list 0x54F098, 0x445720): Buzz (0x4857E0), creatures (0x4076F0, size table 0x4E05EE), particles (0x410F40). Tilted to the floor's normal, shrunk on steep floors. `src/shadows.rs`. Drawn with the exe's plain alpha path (black at 0x30 / 0x20), so they're faint; the other path (0x30840, blend ZERO / INVSRCCOLOR) does nothing with the black texels of texture 31's cell, so it can't be the one in use.

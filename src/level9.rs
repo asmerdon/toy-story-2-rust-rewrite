@@ -198,6 +198,7 @@ impl Script for Level9 {
                 time + 0xC0000
             };
         }
+        self.common.shadows.clear();
         // 0x43C1C0: the tip is (0, 0x96, 0x5AA) on the flail's animated node 1, in model units.
         // Without the animation, the same point turned by the facing alone.
         for (k, i) in FLAILS.enumerate() {
@@ -216,6 +217,13 @@ impl Script for Level9 {
             ];
             let tip = cr.node_point(i, 1, [0.0, 150.0, 1450.0]).unwrap_or(rough);
             self.tips[k + 1] = tip;
+            // 0x424490: a live flail's tip casts a shadow (0x486280, half size 0x96).
+            if f.health == 1
+                && let Some((y, _, _, n)) = world.floor_below_full(tip[0] as f32 / 32.0, tip[2] as f32 / 32.0, tip[1] as f32 / 32.0)
+            {
+                let n = n.to_array().map(|v| (v * 16384.0) as i32);
+                crate::shadows::on_floor(&mut self.common.shadows, [tip[0], (y * 32.0) as i32, tip[2]], 0x96, tip[1], n);
+            }
             if f.health == 1 && f.id != 0 && near(buzz, tip, 0x4B) {
                 cr.hurts.push((crate::boxes::angle12((buzz[0] - tip[0]) as f32, (buzz[2] - tip[2]) as f32), 1));
             }
@@ -382,6 +390,7 @@ impl Script for Level9 {
                             let spin = self.common.rand() - 0x80;
                             self.common.spawns.push((tip, 0x23, 0xE, spin, None));
                         }
+                        self.common.lights.push((tip, 0xF08000, 0x20, 0));
                         self.common.sounds.push((0x85, tip));
                         self.voices.push(0xD6);
                         cr.kill_slot(flail);
@@ -455,6 +464,11 @@ impl Script for Level9 {
             }
             if self.every(4) {
                 self.common.spawns.push((hit, 0x46, 2, 0, None));
+                // 0x424490: a green flash every 0x20 ticks.
+                if self.common.every(0x20) {
+                    self.common.lights.push((hit, 0xC000, 0x10, -2));
+                }
+                cr.flares.push(crate::flares::Flare { pos: hit, rgb: [0, 0x80, 0], size: 0x40 });
             }
             if near(buzz, hit, 0x1E) {
                 if player.hurt_timer == 0 {

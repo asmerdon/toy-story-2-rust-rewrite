@@ -39,6 +39,8 @@ const SARGE: (usize, i16) = (6, 7);
 const KITE: (usize, i16) = (0x1A, 9);
 
 pub struct Level2 {
+    /// 0x52F6C4: the pool texture's phase.
+    tex_wave: i32,
     saws: [Tilt; 2],
     /// The switches' buttons (0x52F6C8 / 0x52F6CC: 0x1000 up, then sinking to 0), the planks'
     /// sway (0x52F6D8 phase, 0x52F614 / 0x52F618 tilt) and the door state (0x52F610).
@@ -100,6 +102,7 @@ impl Level2 {
         specials.turn_from_own(5, [0, 0, 0x2EE]);
         let rope = specials.pos_obj(0x19).unwrap_or_default();
         let l = Level2 {
+            tex_wave: 0,
             saws: Default::default(),
             buttons: [0x1000; 2],
             sway: (0xC00, 0, 0),
@@ -548,6 +551,12 @@ impl std::ops::DerefMut for Level2 {
 
 impl Script for Level2 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, boxes: &Boxes) {
+        // 0x4190C0, the camera in room 1: the pool's tile (texture 5).
+        if world.room_at(glam::Vec3::from(self.common.view.0.map(|v| v as f32 / 32.0))) == Some(1) {
+            let oy = (crate::script::sin_table(self.tex_wave) >> 9) & 0x3F;
+            self.common.tex_blits.push(crate::texanim::Blit::new(5, 0x80, 0xC0, 0x40, 0x40, 0, oy, 0x40, 0));
+            self.tex_wave = (self.tex_wave + 8) & 0xFFF;
+        }
         self.leaves(world, player);
         self.clock = self.clock.wrapping_add(1);
         if !std::mem::replace(&mut self.pole_set, true) {

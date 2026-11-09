@@ -166,6 +166,7 @@ A few things are deliberately different, mostly to fix what looked wrong when dr
 - Level 1's garage drill bits move and hurt, matched to the original by eye.
 - Leaving a level after a Pizza Planet token, Buzz spreads his wings and flies up until the level ends (the PC original does an ordinary jump).
 - A double jump with the rocket boots lit shows the wings (the original keeps the rocket pose).
+- Inside the shield's energy ball Buzz picks up no slime footprints (the original leaves them).
 - Blended level faces that are fully opaque (level 2's tree leaves and bushes) are drawn alpha-tested with depth writes, so a bush's near side always shows over its far side.
 - Special objects (lifts, platforms) are drawn between game ticks like Buzz and the camera, so a lift doesn't judder on a fast display.
 - Saves go to `%APPDATA%/ts2-rust` (or `TS2_SAVE_DIR`) instead of beside the game, which is usually read-only. They use the original's `Toy2NN.sav` format, so saves copied between the two work.
@@ -179,7 +180,7 @@ set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
 
-The suite (257 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
+The suite (280 tests) covers movement, combat, bosses, races, gadgets, the front end, saves and movie decoding. A passing simulation test is not proof that a level plays correctly; see docs/coverage.md.
 
 ## Tools for development
 

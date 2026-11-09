@@ -6,9 +6,12 @@
 //! (with the turn when he runs towards the camera), the swing behind him after he stops, the
 //! pitch resting at 0x40, distance 0x4B0 shortened when geometry blocks the view, and the
 //! position and aim lagging by 1/(lag/2) per tick, the shake (0x50A510) wobbling the aim's
-//! pitch, the wall "whisker" yaw nudges and pitch changes, the distance cut by walls (0x48C860,
-//! 0x48D530; both ignore collision objects flagged 0x200) and the pull onto Buzz's height
-//! while he rides a mover (0x50A4E0). Not yet: manual mode (L2/R2 orbit, Triangle).
+//! pitch, the wall "whisker" yaw nudges and pitch changes, the distance cut by walls (0x48C860
+//! for where it's going, 0x48D530 when it has gone through one; both ignore collision objects
+//! flagged 0x200) and the pull onto Buzz's height
+//! while he rides a mover (0x50A4E0). The camera buttons (L2 / R2, 0x100 / 0x200) turn Buzz
+//! on the spot in auto mode; in passive mode (the bit clear) they orbit the camera, it doesn't
+//! follow him, and cancel (0x1000) snaps it behind him.
 
 use crate::game::{Hit, Player, World};
 use crate::script::sin_table;
@@ -70,6 +73,13 @@ pub struct Camera {
     /// (0x50A4B4).
     whisker: u16,
     whisker_rate: i32,
+    /// 0x52F0CC bit 0x40 clear: the passive camera.
+    pub passive: bool,
+    /// The buttons this tick (0x52AD88) and last tick: d-pad, 0x100 / 0x200, 0x1000.
+    pub pad: u32,
+    prev_pad: u32,
+    /// What the camera buttons have turned Buzz by, for the caller to apply.
+    pub turn_buzz: i32,
 }
 
 impl Camera {
@@ -78,13 +88,17 @@ impl Camera {
         let b = obj_pos(buzz);
         let f = buzz.facing;
         let pos = [b[0] + ((sin12(f - 0x800) * 4) * DISTANCE >> 9), b[1] - 0x3200, b[2] + ((sin12(f - 0x400) * 4) * DISTANCE >> 9)];
-        Camera { pos, height_target: b[1], height: b[1], yaw: f, pitch: REST_PITCH, distance: DISTANCE, look_yaw: f, look_pitch: 0, idle: 0, swing: 0, focus: None, ride: 0, whisker: 0, whisker_rate: 0 }
+        Camera { pos, height_target: b[1], height: b[1], yaw: f, pitch: REST_PITCH, distance: DISTANCE, look_yaw: f, look_pitch: 0, idle: 0, swing: 0, focus: None, ride: 0, whisker: 0, whisker_rate: 0, passive: false, pad: 0, prev_pad: 0, turn_buzz: 0 }
     }
 
     /// One game tick.
     pub fn tick(&mut self, buzz: &Player, world: &World) {
         let b = obj_pos(buzz);
         let facing = buzz.facing;
+        let fresh = self.pad & !self.prev_pad;
+        self.prev_pad = self.pad;
+        let (left, right) = (self.pad & 0x100 != 0, self.pad & 0x200 != 0);
+        let mut snap = false;
         // 0x50A4E0: riding a mover (0x48E1B0: the floor object is type 8), the height follow is
         // pulled onto Buzz, so a lift doesn't drag the camera behind him.
         if buzz.on_floor && buzz.floor_mover.is_some() {
@@ -103,24 +117,51 @@ impl Camera {
                 self.idle += 0x42;
             }
             self.idle = self.idle.min(0xF0);
-            let min_rate = 0x140;
-            if self.idle < 100 {
-                self.idle = 100;
-                self.swing = diff12(facing, self.yaw);
+            let full = self.idle > 0xEF;
+            let mut ease = true;
+            // The rate to swing behind him at, if it's time to.
+            let swing = if self.passive {
+                if fresh & 0x1000 != 0 && self.pad & 0xF0 == 0 {
+                    snap = true;
+                    self.yaw = facing;
+                }
+                ease = full;
+                full.then_some(10)
+            } else {
+                let mut min_rate = 0x140;
+                if self.pad & 0x300 != 0 {
+                    // The camera buttons turn Buzz on the spot.
+                    min_rate = 0x280;
+                    self.turn_buzz += if right { 0x10 } else { -0x10 };
+                }
+                if self.idle < 100 {
+                    self.idle = 100;
+                    self.swing = diff12(facing, self.yaw);
+                }
+                if self.swing.abs() < min_rate || self.idle > 0xA4 {
+                    self.swing = min_rate;
+                }
+                Some((self.swing * (self.idle - 100).min(8)).abs() / 0x180)
+            };
+            if let Some(rate) = swing {
+                let d = diff12(self.yaw, facing);
+                if d < 0 {
+                    self.yaw = if d + rate >= 0 { facing } else { self.yaw + rate };
+                } else if d > 0 {
+                    self.yaw = if d - rate <= 0 { facing } else { self.yaw - rate };
+                }
             }
-            if self.swing.abs() < min_rate || self.idle > 0xA4 {
-                self.swing = min_rate;
-            }
-            let rate = (self.swing * (self.idle - 100).min(8)).abs() / 0x180;
-            let d = diff12(self.yaw, facing);
-            if d < 0 {
-                self.yaw = if d + rate >= 0 { facing } else { self.yaw + rate };
-            } else if d > 0 {
-                self.yaw = if d - rate <= 0 { facing } else { self.yaw - rate };
+            if self.passive {
+                let v = if right { -0x10 } else if left { 0x10 } else { 0 };
+                if v != 0 {
+                    self.idle = 0x42;
+                    self.yaw += v;
+                    ease = true;
+                }
             }
             self.yaw &= 0xFFF;
             // On a pole (0x53C668) the pitch only comes down from above its rest.
-            if self.pitch > REST_PITCH || buzz.climb < 1 {
+            if ease && (self.pitch > REST_PITCH || buzz.climb < 1) {
                 self.ease_pitch();
             }
             self.height_target -= (self.height_target - b[1] + 0x1000) >> 5;
@@ -146,13 +187,29 @@ impl Camera {
             if buzz.hover != 0 && b[1] - 0x1000 < self.height {
                 self.height = b[1] - 0x1000;
             }
-            // Chase Buzz's facing; if he runs towards the camera, turn the other way round.
-            let mut d = diff12(self.yaw, facing);
-            if d.abs() > 0x600 {
-                d = ((if d < 1 { -0x800 } else { 0x800 }) - d) * 3;
+            if self.passive {
+                // Passive: only the buttons turn it, unless a wall's whisker says otherwise.
+                let mut v = 0;
+                if left && self.whisker & 9 == 0 {
+                    v = 0x10;
+                }
+                if right && self.whisker & 10 == 0 {
+                    v = -0x10;
+                }
+                self.yaw += v;
+                if fresh & 0x1000 != 0 {
+                    self.yaw = facing;
+                }
+                self.yaw &= 0xFFF;
+            } else {
+                // Chase Buzz's facing; if he runs towards the camera, turn the other way round.
+                let mut d = diff12(self.yaw, facing);
+                if d.abs() > 0x600 {
+                    d = ((if d < 1 { -0x800 } else { 0x800 }) - d) * 3;
+                }
+                let rate = if buzz.skid != 0 { FOLLOW_SKID } else { FOLLOW };
+                self.yaw = (self.yaw - d / (rate * 2)) & 0xFFF;
             }
-            let rate = if buzz.skid != 0 { FOLLOW_SKID } else { FOLLOW };
-            self.yaw = (self.yaw - d / (rate * 2)) & 0xFFF;
             // Zip line, rocket boots, sliding or the hook's pull: swing in behind him as well.
             if buzz.zip != 0 || buzz.rocket != 0 || buzz.slip != 0 || buzz.grapple == 2 {
                 self.yaw = (self.yaw - diff12(self.yaw, facing).clamp(-0x200, 0x200) / 32) & 0xFFF;
@@ -165,7 +222,7 @@ impl Camera {
         let target = [b[0] + off[0], self.height - 0x2000 + off[1], b[2] + off[2]];
         let div = (LAG * 2 / 4).max(1);
         for k in 0..3 {
-            self.pos[k] -= (self.pos[k] - target[k]) / div;
+            self.pos[k] = if snap { target[k] } else { self.pos[k] - (self.pos[k] - target[k]) / div };
         }
         // Aim at Buzz's chest, lagging the same way.
         let (dx, dy, dz) = ((b[0] - self.pos[0]) as f64, ((b[1] - 0x1800) - self.pos[1]) as f64, (b[2] - self.pos[2]) as f64);
@@ -173,13 +230,16 @@ impl Camera {
         // This pitch runs the opposite way to +0x20's, so the shake is taken off.
         let want_pitch = ((-dy).atan2(dx.hypot(dz)) / std::f64::consts::TAU * 4096.0).round() as i32 - shake_wobble(world);
         let half = (LAG / 2).max(1);
-        self.look_yaw = (self.look_yaw + diff12(want_yaw, self.look_yaw) / half) & 0xFFF;
+        self.look_yaw = if snap { want_yaw } else { (self.look_yaw + diff12(want_yaw, self.look_yaw) / half) & 0xFFF };
         self.look_pitch += diff12(want_pitch & 0xFFF, self.look_pitch & 0xFFF) / half;
-        // Moving: a wall between the camera and Buzz takes its length off the distance, and a
-        // near one brings the camera straight to it (0x48D530).
+        // Moving: gone through a wall (0x48D530 → 0x48C030: the first face on the way to Buzz
+        // is crossed from behind), the part behind it comes off the distance, and when it's
+        // near the camera comes straight back to the wall.
         if !still {
             let to_buzz = [b[0] - self.pos[0], b[1] - 0x1800 - self.pos[1], b[2] - self.pos[2]];
-            if let Some((cut, _)) = camera_ray(world, self.pos, to_buzz, 32) {
+            let v = |a: [i32; 3]| Vec3::new(a[0] as f32, a[1] as f32, a[2] as f32) / 32.0;
+            if let Some(t) = world.camera_behind_wall(v(self.pos), v(to_buzz)) {
+                let cut = to_buzz.map(|k| (k as f32 * t) as i32);
                 let d = length_level(cut);
                 self.distance = (self.distance - d).max(10);
                 if d < 300 {
@@ -319,7 +379,7 @@ impl Camera {
     }
 }
 
-/// 0x48C860 / 0x48D530 as the camera calls them: a ball of radius `r` (object units) swept from
+/// 0x48C860 as the camera calls it: a ball of radius `r` (object units) swept from
 /// `from` along `delta` through everything but objects flagged 0x200. The part of `delta` up
 /// to the hit, and the hit.
 fn camera_ray(world: &World, from: [i32; 3], delta: [i32; 3], r: i32) -> Option<([i32; 3], Hit)> {
@@ -387,5 +447,86 @@ mod tests {
         // The first tick's nudge: sin((−3 × 0x28) & 0x1F × 0x80) / ((0x28 − 0x32) × 16).
         w.shake.set(0x28);
         assert_eq!(shake_wobble(&w), (sin12(0x400) * 4) / -160);
+    }
+}
+
+#[cfg(test)]
+mod wall_tests {
+    use super::*;
+
+    /// 0x48D530 → 0x48C030: running, a camera that has gone through a wall (the first face on
+    /// the way to Buzz is crossed from behind) comes straight back to it.
+    #[test]
+    fn a_camera_behind_a_wall_comes_back_to_it() {
+        let (a, b, c, d) = (Vec3::new(-5000.0, -5000.0, -200.0), Vec3::new(5000.0, -5000.0, -200.0), Vec3::new(5000.0, 5000.0, -200.0), Vec3::new(-5000.0, 5000.0, -200.0));
+        let w = World::from_triangles(vec![[a, b, c], [a, c, d]]).one_sided();
+        let mut p = Player::new(Vec3::ZERO);
+        p.set_facing(0);
+        p.vel = [0, 0, 0x200];
+        let mut cam = Camera::new(&p);
+        cam.pos = [0, -0x1800, -300 * 32];
+        cam.tick(&p, &w);
+        assert!(cam.position().z > -202.0, "still behind the wall: {:?}", cam.position());
+    }
+
+    /// The same ray ignores a face it meets from the front first: that's scenery between them.
+    #[test]
+    fn a_wall_seen_from_its_front_is_left_alone() {
+        let (a, b, c) = (Vec3::new(-5000.0, -5000.0, -200.0), Vec3::new(5000.0, -5000.0, -200.0), Vec3::new(5000.0, 5000.0, -200.0));
+        let w = World::from_triangles(vec![[a, c, b]]).one_sided();
+        assert_eq!(w.camera_behind_wall(Vec3::new(4000.0, 0.0, -300.0), Vec3::new(0.0, 0.0, 300.0)), None);
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+    use crate::game::{Player, World};
+
+    fn standing() -> (Player, World, Camera) {
+        let (a, b, c, d) = (Vec3::new(-9000.0, 0.0, -9000.0), Vec3::new(9000.0, 0.0, -9000.0), Vec3::new(9000.0, 0.0, 9000.0), Vec3::new(-9000.0, 0.0, 9000.0));
+        let world = World::from_triangles(vec![[a, b, c], [a, c, d]]);
+        let mut p = Player::new(Vec3::ZERO);
+        p.on_floor = true;
+        p.coyote = 6;
+        let c = Camera::new(&p);
+        (p, world, c)
+    }
+
+    /// 0x4045E0, bit 0x40 clear: the camera buttons orbit it; it stays where it's put.
+    #[test]
+    fn passive_buttons_orbit_and_it_stays() {
+        let (p, w, mut c) = standing();
+        c.passive = true;
+        let y = c.yaw;
+        c.pad = 0x100;
+        c.tick(&p, &w);
+        assert_eq!(c.yaw, (y + 0x10) & 0xFFF);
+        c.pad = 0;
+        for _ in 0..20 {
+            c.tick(&p, &w);
+        }
+        assert_eq!(c.yaw, (y + 0x10) & 0xFFF, "not following yet");
+        assert_eq!(c.turn_buzz, 0);
+    }
+
+    /// Cancel snaps it behind him, position and aim at once.
+    #[test]
+    fn passive_cancel_snaps() {
+        let (mut p, w, mut c) = standing();
+        c.passive = true;
+        p.set_facing(0x300);
+        c.pad = 0x1000;
+        c.tick(&p, &w);
+        assert_eq!(c.yaw, p.facing);
+    }
+
+    /// Auto: the same button turns Buzz instead.
+    #[test]
+    fn auto_buttons_turn_buzz() {
+        let (p, w, mut c) = standing();
+        c.pad = 0x200;
+        c.tick(&p, &w);
+        assert_eq!(c.turn_buzz, 0x10);
     }
 }

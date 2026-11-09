@@ -99,6 +99,8 @@ pub enum Event {
     Hurt([i32; 3]),
     /// A disc hit creature slot `slot` coming at `angle`: HitCreature(c, angle, 4) (0x408A60).
     HitCreature { slot: usize, angle: i32 },
+    /// A flash on Buzz (0x49EE50).
+    Light(crate::lights::Flash),
 }
 
 /// A creature a homing particle can steer at (0x410F40 with a creature at +0x10): where it
@@ -178,6 +180,10 @@ impl Particles {
             match (p.kind, p.floor) {
                 (1, _) => crate::shadows::flat(out, [p.pos[0], p.pos[1] + p.size[1] * 0x20, p.pos[2]], p.size[0]),
                 (0x17 | 0x19, Some(f)) => crate::shadows::flat(out, [p.pos[0], f, p.pos[2]], p.size[0]),
+                // Zurg's lobbed shots over his arena (0x42B090).
+                (0x2F, _) if (-0x256D6..0xE0AA).contains(&p.pos[0]) && (-0x1B3E9..0x1B297).contains(&p.pos[2]) && p.pos[1] < -0x12BD2 => {
+                    crate::shadows::flat(out, [p.pos[0], -0x12BD3, p.pos[2]], p.size[0])
+                }
                 _ => {}
             }
         }
@@ -855,9 +861,10 @@ impl Particles {
             2 => self.splat(p, 1),
             4 => self.splat(p, 2),
             3 => {
-                // Burst into dust on the floor (and a light, not drawn).
+                // Burst into dust on the floor, and a flash.
                 dust(self, 5);
                 self.spawn([p.pos[0], floor_y, p.pos[2]], 0x28, 2);
+                self.events.push(Event::Light(([p.pos[0], floor_y, p.pos[2]], 0xA00000, 0x18, 0)));
                 self.events.push(Event::Sound(0xB, p.pos));
             }
             5 => {
@@ -872,6 +879,7 @@ impl Particles {
                         self.slots[k].life = (b & 0xF) * 2 + 0x18;
                     }
                 }
+                self.events.push(Event::Light((p.pos, 0x604000, 0x10, 0)));
             }
             6 => self.droplets(p.pos, 0x3E),
             7 => {
@@ -880,6 +888,7 @@ impl Particles {
             }
             8 => {
                 dust(self, 5);
+                self.events.push(Event::Light(([p.pos[0], floor_y, p.pos[2]], 0xA00000, 0x18, 0)));
                 self.events.push(Event::Sound(0xB, p.pos));
             }
             9 => {

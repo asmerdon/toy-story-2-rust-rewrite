@@ -526,6 +526,10 @@ impl Level10 {
         if on != (self.opened & 8 != 0) {
             self.opened ^= 8;
             self.lights(specials, on);
+            if on {
+                // 0x425F60: the alarm's red flash.
+                self.common.lights.push(([-0xFA78, -0xE034B, 0x2F5CC], 0xFF0000, 0x10, -1));
+            }
         }
         self.place_marks(specials);
     }

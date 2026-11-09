@@ -44,6 +44,8 @@ use crate::specials::Specials;
 use glam::Vec3;
 
 pub struct Level1 {
+    /// 0x52F5D0: the swelling texture's phase.
+    tex_wave: i32,
     /// 0x52F500: door tilt.
     door: i32,
     /// 0x52F5A0: plank growth (0 = not started).
@@ -159,6 +161,7 @@ impl Level1 {
             fountain: 0,
             steam: 0,
             vent: 0,
+            tex_wave: 0,
             common: Common {
                 given: [false, false, false, true, false],
                 item: 8,
@@ -675,6 +678,12 @@ impl std::ops::DerefMut for Level1 {
 
 impl Script for Level1 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, boxes: &Boxes) {
+        // 0x417680, the camera in room 6: the tile swells (texture 8).
+        if world.room_at(Vec3::from(self.common.view.0.map(|v| v as f32 / 32.0))) == Some(6) {
+            let oy = (crate::script::sin_table(self.tex_wave) >> 0xB) & 0x3F;
+            self.common.tex_blits.push(crate::texanim::Blit::new(8, 0x80, 0x80, 0x40, 0x40, 0, oy, 0x40, 0));
+            self.tex_wave = (self.tex_wave + 0x20) & 0xFFF;
+        }
         self.tick(world, specials, player, boxes);
     }
 

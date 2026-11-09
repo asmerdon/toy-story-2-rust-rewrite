@@ -86,6 +86,61 @@ impl Place {
     }
 }
 
+/// The hardware lights on models (0x4CE910, 0x4CE6C0): three fixed white ones a third of a
+/// turn apart, and one set each frame from `lights::Lights`. Only parts flagged 4 use them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelLight {
+    /// The way the light travels, game axes (0x4CE6C0 negates 0x52F324).
+    pub dir: [f32; 3],
+    /// 1.0 = 0x80.
+    pub colour: [f32; 3],
+}
+
+impl ModelLight {
+    /// From 0x52F324 and 0x52F334; a zero direction is the identity matrix's z (0x4A9400).
+    pub fn new(direction: [i32; 3], colour: [i32; 3]) -> ModelLight {
+        let dir = if direction == [0; 3] { glam::Vec3::Z } else { -glam::Vec3::from(direction.map(|v| v as f32)).normalize() };
+        ModelLight { dir: dir.to_array(), colour: colour.map(|c| c as f32 / 128.0) }
+    }
+
+    /// The colour of a vertex with unit normal `n`, 0x80 = 1.0.
+    pub fn shade(&self, n: glam::Vec3) -> [u8; 3] {
+        const RING: [[f32; 3]; 3] = [[0.0, 0.0, 1.0], [0.866_025_4, 0.0, -0.5], [-0.866_025_4, 0.0, -0.5]];
+        let white: f32 = RING.iter().map(|d| (-n.dot(glam::Vec3::from(*d))).max(0.0)).sum();
+        let lit = (-n.dot(glam::Vec3::from(self.dir))).max(0.0);
+        [0, 1, 2].map(|k| ((white + lit * self.colour[k]).min(1.0) * 128.0) as u8)
+    }
+}
+
+thread_local! {
+    static MODEL_LIGHT: std::cell::Cell<Option<ModelLight>> = const { std::cell::Cell::new(None) };
+}
+
+/// The light for the models built next (none: every part keeps its baked colours).
+pub fn set_model_light(l: Option<ModelLight>) {
+    MODEL_LIGHT.with(|c| c.set(l));
+}
+
+/// A flagged part (0x4CAA60 bit 4): as `add_mesh`, its colours from the lights.
+fn add_lit_mesh(ngn: &Ngn, out: &mut Vec<Batch>, mesh: &Mesh, place: Place, m: Option<&[[f32; 4]; 4]>, light: &ModelLight) {
+    let origin = glam::Vec3::from(place.apply(transform(m, [0.0; 3])));
+    for g in &mesh.groups {
+        let tex = mesh.group_texture(g).and_then(|n| texture_index(ngn, n));
+        let blend = mesh.group_blend(g);
+        for t in g.triangles() {
+            let tri = t.map(|i| {
+                let v = &mesh.vertices[i as usize];
+                let n = (glam::Vec3::from(place.apply(transform(m, v.normal))) - origin).normalize_or_zero();
+                let [r, g2, b] = light.shade(n);
+                let mut out = gpu(v, place.apply(transform(m, mesh.position(g, i))));
+                out.color = [v.color[0], r, g2, b];
+                out
+            });
+            push(out, tex, blend, tri);
+        }
+    }
+}
+
 fn add_mesh(ngn: &Ngn, out: &mut Vec<Batch>, mesh: &Mesh, place: Place, m: Option<&[[f32; 4]; 4]>) {
     add_mesh_parts(ngn, out, None, mesh, place, m, None);
 }
@@ -363,7 +418,10 @@ fn creature_batches_placed(ngn: &Ngn, c: &Creature, place: Place, base: Option<(
             continue;
         }
         if let Some(mesh) = &node.mesh {
-            add_mesh(ngn, &mut out, mesh, place, matrices[n].as_ref());
+            match MODEL_LIGHT.with(|c| c.get()).filter(|_| node.flags & 4 != 0) {
+                Some(light) => add_lit_mesh(ngn, &mut out, mesh, place, matrices[n].as_ref(), &light),
+                None => add_mesh(ngn, &mut out, mesh, place, matrices[n].as_ref()),
+            }
         }
     }
     for patch in &c.patches {
@@ -648,6 +706,19 @@ mod tests {
 
     /// 0x4CD880 / 0x450C70: a creature's roll (Z) turns it in its own frame before its yaw.
     /// A banking plane flying sideways must roll round its length, not pitch.
+    #[test]
+    fn hardware_lights_shade_by_normal() {
+        // No colour: the three white lights alone. Facing one of them squarely gives 1.0; a
+        // normal straight up or down sees none of them, as they're all horizontal.
+        let l = ModelLight { dir: [0.0, 1.0, 0.0], colour: [0.0; 3] };
+        assert_eq!(l.shade(glam::Vec3::new(0.0, 0.0, -1.0)), [128; 3]);
+        assert_eq!(l.shade(glam::Vec3::Y), [0; 3]);
+        // The fourth comes from above (+Y is down, so it travels +Y): it lights an upward normal.
+        let l = ModelLight::new([0, -0x40, 0], [0x40, 0x20, 0]);
+        assert_eq!(l.dir, [0.0, 1.0, 0.0]);
+        assert_eq!(l.shade(glam::Vec3::NEG_Y), [64, 32, 0]);
+    }
+
     #[test]
     fn roll_comes_before_yaw() {
         let h = std::f32::consts::FRAC_PI_2;

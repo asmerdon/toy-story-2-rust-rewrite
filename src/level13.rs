@@ -337,6 +337,9 @@ impl std::ops::DerefMut for Level13 {
 }
 impl Script for Level13 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _: &Boxes) {
+        // 0x42CA60: the belt's texture (5) rolls.
+        let oy = (0xFF - (self.common.clock as i32 & 0xFF)) & 0x3F;
+        self.common.tex_blits.push(crate::texanim::Blit::new(5, 0, 0, 0x40, 0x40, 0, oy, 0, 0x40));
         self.clock = self.clock.wrapping_add(1);
         if matches!(world.room_at(player.pos), Some(2 | 4 | 5)) {
             self.tilts[0].step(world, specials, player, 3, 4, 0, 2, -0xE0, 0xE0, 0x80);

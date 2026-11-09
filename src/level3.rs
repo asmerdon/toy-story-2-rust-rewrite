@@ -36,6 +36,8 @@ pub struct Level3 {
     regrow: i32,
     taunt: i32,
     flash: i32,
+    /// 0x52F720: the rolling slime texture.
+    tex_roll: i32,
     /// The scene's ticks last frame (0x52F70C), for the crossings.
     last_look: i32,
     /// Special 0's drop after death: height and speed (0x52F6F4 / 0x52F6FC).
@@ -60,6 +62,7 @@ impl Level3 {
             regrow: 0xB4,
             taunt: 0xB4,
             flash: 0,
+            tex_roll: 0,
             last_look: 0,
             drop: (0, 0),
             wobble: 0,
@@ -105,6 +108,9 @@ impl Script for Level3 {
         }
         self.clock = self.clock.wrapping_add(1);
         self.common.lightning();
+        // 0x41AA10: the slime tile rolls (texture 0x18).
+        self.tex_roll = (self.tex_roll - 1) & 0x3F;
+        self.common.tex_blits.push(crate::texanim::Blit::new(0x18, 0, 0x40, 0x40, 0x40, 0, self.tex_roll, 0, 0x40));
         self.common.rain_splash(world, true, None);
         if cr.slots.get(SLIME).is_none_or(|c| c.id != 0x10) && self.phase < 1000 {
             return;

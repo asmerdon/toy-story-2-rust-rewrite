@@ -56,7 +56,7 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Paint puzzle (token 3) | `construction_paint_*` (2) | | confirmed |
 | Paint-room hatch folds open near Buzz (0x41C640, 0x52F7D0) | `paint_room_hatch_opens_for_buzz` | `cmp_hatch_play.png` | reported textured before fix |
 | Interior seen only through portals (0x4BC460, level 4 only) | `paint_room_seen_only_through_its_portals` | `cmp_far*.png`; Level 1 identical | reported before fix; creatures/pickups not room-gated yet |
-| Not ported: pipe flows, the crane's lamps, moving lights | | | |
+| Pipe drips, spray and lamps (0x41C640) | `pipes_drip_and_lamps_fade` | | |
 
 ## 5 Alleys and Gullies (`level5.rs`)
 | Interaction | Sim | Shot | User |
@@ -209,3 +209,10 @@ Time); the rest match. 11–15 load `data\level01`–`05\level1.*`.
 | Pause menu (0x49F4B0) | `pause::tests` | `pause.png` | |
 | Options, movie viewer, credits, loading pictures, attract demo | `frontend::tests` | | |
 | Level 8's boxes (0x4F2F44), also levels 5 and 7 | `level_8_boxes_are_loaded_and_push` | | reported unpushable |
+| Moving lights on flagged model parts (0x49EEE0, 0x4CE6C0) | `lights::tests`, `hardware_lights_shade_by_normal` | `lit_cmp.png` | |
+| Animated textures (0x49B260) | `texanim::tests` | | |
+| Passive camera, camera buttons (0x4045E0) | `camera::mode_tests` | | |
+| Control remapping (0x49C420) | `controls::tests`, `options_change_and_cancel_restores` | | |
+| Edges of surfaces (0x481FB0, 0x4813B0, 0x482A00's stop) | `reversing_on_an_edge_stays_out_of_it`, `reversing_at_a_ledge_keeps_him_on_it` | `edge_turns`, `clipsweep` | |
+| Camera behind a wall (0x48D530 → 0x48C030) | `a_camera_behind_a_wall_comes_back_to_it`, `a_wall_seen_from_its_front_is_left_alone` | `camera_poles` | |
+| No slime prints in the shield (deviation) | `no_slime_prints_in_the_shield` | | |

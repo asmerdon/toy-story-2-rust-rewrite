@@ -115,3 +115,26 @@ fn shield_cage_opens_with_the_ability() {
     assert_ne!(pk.items[shield].radius & 0x7F, 0);
     assert!(!l.world.mover_enabled(10), "cage gone");
 }
+
+/// A raised ledge in level 1's room 1: run off its open side, reverse in the skid. His body
+/// sinking into the ledge's edge let him through it, down to the floor below; he should come
+/// back round the edge and stay at its height.
+#[test]
+fn reversing_at_a_ledge_keeps_him_on_it() {
+    let Some(game) = std::env::var_os("TS2_GAME_DIR").map(std::path::PathBuf::from) else { return };
+    let t = ts2::formats::terrain::parse(&std::fs::read(game.join("data/level01/TERRAIN.ALL")).unwrap()).unwrap();
+    let w = ts2::game::World::from_terrain(&t);
+    let mut p = ts2::game::Player::new(glam::Vec3::new(4440.0, -677.0, -12780.0));
+    p.on_floor = true;
+    for _ in 0..3 {
+        p.tick(&w, [0.0; 2], false, false);
+    }
+    for tick in 0..60 {
+        p.tick(&w, if tick < 10 { [0.0, -1.0] } else { [0.0, 1.0] }, false, false);
+        assert!(p.pos.y < -600.0, "tick {tick}: fell off the ledge: {:?}", p.pos);
+        if tick > 10 && p.pos.z > -12800.0 {
+            return;
+        }
+    }
+    panic!("never got back onto the ledge: {:?}", p.pos);
+}

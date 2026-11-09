@@ -27,8 +27,7 @@
 //!   **Attract demo** (0x49D910): after 900 ticks on the title, levels 0, 3, 7, 10, 13 of the
 //!   campaign in turn played from `data\PAD\PATHnn.BIN`, two ticks a frame, until a button.
 //!
-//! Not ported yet: remapping the controls (the controller page shows them), and the level
-//! select's sound at each level (0x4A3B90).
+//! Not ported yet: the level select's sound at each level (0x4A3B90).
 
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
@@ -154,6 +153,8 @@ impl Pad {
     pub const LEFT: u32 = 0x80;
     pub const START: u32 = 8;
     pub const CANCEL: u32 = 0x1000;
+    /// Return, as distinct from jump: 0x49C420 reads the keys themselves.
+    pub const ENTER: u32 = 2;
     pub const JUMP: u32 = 0x4000;
 }
 
@@ -247,6 +248,12 @@ pub enum Event {
     LensFlare(bool),
     /// 0x52AD94 = 1: start the recorded pad for this level (internal id).
     Demo(usize),
+    /// The graphics page's settings.
+    Graphics { detail: i32, gamma: i32, animated_textures: bool },
+    /// The controller page: back to the saved keys, or save them, or the defaults.
+    ControlsReset,
+    ControlsSave,
+    ControlsDefault,
 }
 
 /// A character of 0x49D390's font: texture 31, a 32-pixel cell.
@@ -326,6 +333,8 @@ pub struct FrontEnd {
     pub results: Option<Results>,
     pub saves: Option<SaveScreen>,
     pub options: Options,
+    /// The keys on the controller page, row by row (set by the viewer).
+    pub key_names: Vec<String>,
     option_screen: OptionScreen,
     movies: Option<MovieList>,
     credits: Option<Credits>,
@@ -367,6 +376,7 @@ impl FrontEnd {
             results: None,
             saves: None,
             options: Options::default(),
+            key_names: Vec::new(),
             option_screen: OptionScreen::default(),
             movies: None,
             credits: None,
@@ -845,7 +855,7 @@ impl FrontEnd {
                     s.draw(&mut f);
                 }
             }
-            Screen::Options => self.option_screen.draw(&mut f, sprites, &self.options),
+            Screen::Options => self.option_screen.draw(&mut f, sprites, &self.options, &self.key_names),
             Screen::Movies => {
                 if let Some(m) = &self.movies {
                     m.draw(&mut f, sprites);
@@ -904,6 +914,12 @@ struct OptionScreen {
     /// The graphics page's chosen line and repeat delay.
     gfx_row: i32,
     gfx_wait: i32,
+    /// The controller page (0x830C6C row, 0x830C70 first row shown, 0x830C74 waiting for a
+    /// key, 0x500EC8 ticks ignoring the keys).
+    key_row: usize,
+    key_top: usize,
+    key_wait: bool,
+    key_pause: i32,
 }
 
 impl OptionScreen {
@@ -911,7 +927,7 @@ impl OptionScreen {
         OptionScreen { row: 1, y: OPTION_ROWS[1] << 8, ..Default::default() }
     }
 
-    fn draw(&self, f: &mut Frame, sprites: &[Option<SpriteDef>], o: &Options) {
+    fn draw(&self, f: &mut Frame, sprites: &[Option<SpriteDef>], o: &Options, keys: &[String]) {
         f.picture = Some(0x28);
         let q = &mut f.quads;
         let Some(page) = self.page else {
@@ -930,14 +946,27 @@ impl OptionScreen {
         match page {
             0 => {
                 small_text(q, sprites, 0x2E, "control configuration");
-                for (k, (name, key)) in [("up", "w"), ("down", "s"), ("left", "a"), ("right", "d"), ("jump", "space"), ("spin", "e"), ("laser", "mouse 1"), ("look", "q"), ("pause", "esc")].iter().enumerate() {
-                    let y = (k as i32 + 5) * 0x10;
-                    if y <= 0x90 {
-                        small_text_at(q, sprites, 0x96, y, name);
-                        small_text_at(q, sprites, 0xA0 + 0x40, y, key);
+                for k in self.key_top..crate::controls::ACTIONS.len() {
+                    let y = (k - self.key_top) as i32 * 0x10 + 0x50;
+                    if y > 0x90 {
+                        break;
+                    }
+                    // The chosen row's name blinks, or its key while waiting for one.
+                    let off = k == self.key_row && self.clock & 0x14 > 10;
+                    if !off || self.key_wait {
+                        small_text_at(q, sprites, 0x96 - crate::controls::ACTIONS[k].0.len() as i32 * 6, y, crate::controls::ACTIONS[k].0);
+                    }
+                    if !off || !self.key_wait {
+                        let name = keys.get(k).map_or("", String::as_str);
+                        small_text_at(q, sprites, 0xA0, y, if name.is_empty() { "none" } else { name });
                     }
                 }
-                small_text(q, sprites, 0xBA, "cancel go back");
+                if self.key_wait {
+                    small_text(q, sprites, 0xB6, "press desired key");
+                } else {
+                    small_text(q, sprites, 0xB2, "up down to select space to change");
+                    small_text(q, sprites, 0xBA, "return to accept esc to cancel");
+                }
             }
             1 | 2 => {
                 option_text(q, sprites, 0x32, if page == 1 { "music volume" } else { "sfx volume" });
@@ -959,7 +988,7 @@ impl OptionScreen {
                 option_text(q, sprites, 0x32, "graphics configuration");
                 option_text(q, sprites, 0x4B, if o.lens_flare { "lens flare on" } else { "lens flare off" });
                 option_text(q, sprites, 100, ["low detail", "medium detail", "high detail"][o.detail.clamp(0, 2) as usize]);
-                option_text(q, sprites, 0x7D, "gamma correction normal");
+                option_text(q, sprites, 0x7D, ["gamma correction normal", "gamma correction medium", "gamma correction high"][o.gamma.clamp(0, 2) as usize]);
                 option_text(q, sprites, 0x96, if o.animated_textures { "animated textures on" } else { "animated textures off" });
                 let y = self.gfx_row * 0x19 + 0x48;
                 put(q, sprites, 320.0, 0x32, y, 0x38, 3, [0xFF; 3], 0xFF, 0x800, 0x800);
@@ -1002,6 +1031,27 @@ fn small_text_at(q: &mut Vec<Quad>, sprites: &[Option<SpriteDef>], x: i32, y: i3
 }
 
 impl FrontEnd {
+    /// The controller page's row waiting for a key.
+    pub fn capturing(&self) -> Option<usize> {
+        let s = &self.option_screen;
+        (self.screen == Screen::Options && s.page == Some(0) && s.key_wait && s.key_pause == 0).then_some(s.key_row)
+    }
+
+    /// The key was refused or Escape was pressed: back to choosing a row (sound 2).
+    pub fn capture_cancelled(&mut self) {
+        self.option_screen.key_wait = false;
+        self.option_screen.key_pause = 0x1E;
+        self.events.push(Event::Sound(2));
+    }
+
+    /// The key was taken; `names` are the rows' keys now.
+    pub fn capture_done(&mut self, names: Vec<String>) {
+        self.key_names = names;
+        self.option_screen.key_wait = false;
+        self.option_screen.key_pause = 0x1E;
+        self.events.push(Event::Sound(0));
+    }
+
     /// 0x4371B0.
     fn options_tick(&mut self, pad: Pad, pressed: Pad) {
         let before = self.options;
@@ -1051,7 +1101,39 @@ impl FrontEnd {
             }
             Some(page) => {
                 let mut closed = false;
-                if hit(Pad::CANCEL) {
+                if page == 0 {
+                    if s.key_pause > 0 {
+                        s.key_pause -= 1;
+                    } else if !s.key_wait {
+                        if hit(Pad::UP) && s.key_row > 0 {
+                            self.events.push(Event::Sound(1));
+                            s.key_row -= 1;
+                            s.key_top = s.key_top.min(s.key_row);
+                        }
+                        if hit(Pad::DOWN) && s.key_row + 1 < crate::controls::ACTIONS.len() {
+                            self.events.push(Event::Sound(1));
+                            s.key_row += 1;
+                            if s.key_row >= s.key_top + 5 {
+                                s.key_top += 1;
+                            }
+                        }
+                        if hit(Pad::CANCEL) {
+                            s.key_pause = 0x1E;
+                            self.events.push(Event::ControlsReset);
+                            self.events.push(Event::Sound(2));
+                            closed = true;
+                        } else if hit(Pad::ENTER) {
+                            s.key_pause = 0x1E;
+                            self.events.push(Event::ControlsSave);
+                            self.events.push(Event::Sound(0));
+                            closed = true;
+                        } else if hit(Pad::JUMP) {
+                            s.key_wait = true;
+                            s.key_pause = 0x1E;
+                            self.events.push(Event::Sound(0));
+                        }
+                    }
+                } else if hit(Pad::CANCEL) {
                     self.options = s.saved.take().unwrap_or(self.options);
                     self.events.push(Event::Sound(2));
                     closed = true;
@@ -1098,6 +1180,8 @@ impl FrontEnd {
                                         0 => self.options.lens_flare = !self.options.lens_flare,
                                         1 if held(Pad::LEFT) => self.options.detail = (self.options.detail - 1).max(0),
                                         1 => self.options.detail = (self.options.detail + 1).min(2),
+                                        2 if held(Pad::LEFT) => self.options.gamma = (self.options.gamma - 1).max(0),
+                                        2 => self.options.gamma = (self.options.gamma + 1).min(2),
                                         3 => self.options.animated_textures = !self.options.animated_textures,
                                         _ => {}
                                     }
@@ -1116,6 +1200,7 @@ impl FrontEnd {
             let o = self.options;
             self.events.push(Event::Volumes { music: o.music, sfx: o.sfx });
             self.events.push(Event::LensFlare(o.lens_flare));
+            self.events.push(Event::Graphics { detail: o.detail, gamma: o.gamma, animated_textures: o.animated_textures });
         }
     }
 
@@ -2340,6 +2425,24 @@ mod tests {
         assert!(f.events.iter().any(|e| matches!(e, Event::Volumes { music: 9, sfx: 8 })));
         press(&mut f, Pad::CANCEL);
         assert_eq!((f.option_screen.page, f.options.music), (None, 8));
+        // The controller page: space waits for a key, which the viewer hands over.
+        f.option_screen.row = 1;
+        f.option_screen.y = OPTION_ROWS[1] << 8;
+        press(&mut f, Pad::JUMP);
+        assert_eq!(f.option_screen.page, Some(0));
+        press(&mut f, Pad::JUMP);
+        assert!(f.option_screen.key_wait);
+        for _ in 0..0x1F {
+            f.tick(Pad(0));
+        }
+        assert_eq!(f.capturing(), Some(0));
+        f.capture_done(vec!["j".into()]);
+        assert_eq!((f.capturing(), f.key_names[0].as_str()), (None, "j"));
+        for _ in 0..0x1F {
+            f.tick(Pad(0));
+        }
+        press(&mut f, Pad::CANCEL);
+        assert_eq!(f.option_screen.page, None);
         press(&mut f, Pad::CANCEL);
         for _ in 0..0x2D {
             f.tick(Pad(0));

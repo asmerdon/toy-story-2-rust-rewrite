@@ -54,6 +54,7 @@ fn lamp_list(level: usize) -> Option<(i16, [i32; 3], i32, i32)> {
         13 => (10, [0x30, 0x40, 0x50], 0x40, 1_000_000),  // 0x42CA60
         15 => (0, [0x80, 0x80, 0x80], 0x80, 0x100000),    // 0x42FC50
         14 => (40, [0; 3], 0x80, 0x40000),                // 0x42E790
+        4 => (6, [0; 3], 0x40, 1_000_000),                // 0x41C640, coloured by `tint`
         _ => return None,
     })
 }
@@ -66,13 +67,19 @@ pub struct Lamps {
     rgb: [i32; 3],
     size: i32,
     reach: i32,
+    /// Level 4's colour now (0x52F7C8); `None` while it's out.
+    pub tint: Option<[i32; 3]>,
 }
 
 impl Lamps {
+    pub fn level(&self) -> usize {
+        self.level
+    }
+
     pub fn new(level: usize, lists: &[PointList]) -> Lamps {
         let Some((kind, rgb, size, reach)) = lamp_list(level) else { return Lamps { level, ..Default::default() } };
         let points = lists.iter().find(|l| l.kind == kind).map(|l| l.points.clone()).unwrap_or_default();
-        Lamps { level, points, rgb, size, reach }
+        Lamps { level, points, rgb, size, reach, tint: None }
     }
 
     /// The lamps lit for a camera at `camera` (object units), in list order.
@@ -88,6 +95,10 @@ impl Lamps {
                 continue;
             }
             let rgb = match self.level {
+                4 => match self.tint {
+                    Some(t) => t,
+                    None => continue,
+                },
                 // 0x42E790: fades with distance, the first 16 green, the rest blue.
                 14 => {
                     let v = 0x80 - ((d2 as f32).sqrt() as i32 >> 2);
@@ -102,6 +113,40 @@ impl Lamps {
             };
             out.push(Flare { pos: p.map(|v| v * 0x20), rgb, size: self.size });
         }
+    }
+}
+
+impl Lamps {
+    /// The frame scripts' slot 1 (0x830D78…): of the lamps lit from `camera`, the nearest to
+    /// Buzz's middle if within 0x100 (× 256 object units), with its light colour.
+    pub fn nearest(&self, camera: [i32; 3], buzz: [i32; 3]) -> Option<([i32; 3], [i32; 3], i64)> {
+        let mut best: Option<(i32, usize)> = None;
+        for (k, p) in self.points.iter().enumerate() {
+            let c = [0, 1, 2].map(|i| (camera[i] - p[i] * 0x20) >> 8);
+            if c[0] * c[0] + c[1] * c[1] + c[2] * c[2] >= self.reach {
+                continue;
+            }
+            let b = [(buzz[0] - p[0] * 0x20) >> 8, (buzz[1] - p[1] * 0x20 - 0x2000) >> 8, (buzz[2] - p[2] * 0x20) >> 8];
+            let d = b[0] * b[0] + b[1] * b[1] + b[2] * b[2];
+            if best.is_none_or(|(e, _)| d < e) {
+                best = Some((d, k));
+            }
+        }
+        let (d, k) = best.filter(|(d, _)| *d < 0x10000)?;
+        let _ = d;
+        let rgb = match self.level {
+            4 => self.tint?,
+            5 => [0x80, 0x60, 0x40],
+            10 | 12 => [0xFF; 3],
+            11 => [0x7F; 3],
+            13 => [0x6F, 0x7F, 0x8F],
+            14 if k < 16 => [0xFF, 0xFF, 0],
+            14 => [0, 0xFF, 0xFF],
+            15 if k == 2 => [0xFF, 0, 0],
+            15 => [0xFF; 3],
+            _ => return None,
+        };
+        Some((self.points[k].map(|v| v << 5), rgb, k as i64 + 1))
     }
 }
 
@@ -183,6 +228,26 @@ mod tests {
         let b = white_wash(0xDD);
         assert_eq!(b.blend, crate::scene::Blend::Additive);
         assert_eq!(b.vertices[0].color, [0x45, 0x5D, 0x5D, 0x5D]);
+    }
+
+    #[test]
+    fn the_nearest_lamp_lights_buzz() {
+        let lists = [PointList { kind: 13, points: vec![[1000, 0, 0], [10, 0, 0]], quads: vec![] }];
+        let l = Lamps::new(10, &lists);
+        let (at, rgb, _) = l.nearest([0; 3], [0, 0x2000, 0]).unwrap();
+        assert_eq!((at, rgb), ([10 << 5, 0, 0], [0xFF; 3]));
+    }
+
+    #[test]
+    fn level_4s_lamps_follow_the_tint() {
+        let lists = [PointList { kind: 6, points: vec![[0, 0, 0]], quads: vec![] }];
+        let mut l = Lamps::new(4, &lists);
+        let mut out = Vec::new();
+        l.lit([0; 3], &mut out);
+        assert!(out.is_empty(), "out");
+        l.tint = Some([0x20, 0x20, 0]);
+        l.lit([0; 3], &mut out);
+        assert_eq!(out[0].rgb, [0x20, 0x20, 0]);
     }
 
     #[test]

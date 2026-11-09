@@ -395,3 +395,22 @@ fn print_drawbridge_fit() {
         eprintln!("z {z:#x}: drawn {lo:.0}..{hi:.0}; collision − drawn top over {} points: min {:?} median {:?} max {:?}", gaps.len(), gaps.first(), gaps.get(gaps.len() / 2), gaps.last());
     }
 }
+
+/// 0x41C640: drips run along the pipes near Buzz (list 0, particle 0x43), and the lamps fade.
+#[test]
+fn pipes_drip_and_lamps_fade() {
+    let Some(mut l) = load() else { return };
+    let at = *l.script.story.lists.get(&0).expect("list 0").first().unwrap();
+    let spot = Vec3::new(at[0] as f32, at[1] as f32 + 300.0, at[2] as f32);
+    let mut p = Player::new(spot);
+    let (mut drips, mut lit, mut out) = (0, false, false);
+    for _ in 0..4000 {
+        p.pos = spot;
+        l.script.step(&l.world, &mut l.specials, &mut p, &l.boxes);
+        drips += l.script.kicked.drain(..).filter(|k| k.1 == 0x43).count();
+        lit |= l.script.lamp_tint.is_some();
+        out |= l.script.lamp_tint.is_none();
+    }
+    assert!(drips > 0, "drips near the pipe");
+    assert!(lit && out, "the lamps go up and down");
+}

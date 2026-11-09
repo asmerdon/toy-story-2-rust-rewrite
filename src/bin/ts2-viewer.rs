@@ -92,6 +92,8 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
     if (mode == 2u) { shade = i.color.wzy * 2.0; }
     // w: the level's colours (0x54DD6C, 1.0 = normal); 0 leaves them alone (the HUD).
     if (u.params.w > 0.0) { shade = shade * u.params.w; }
+    // The gamma option (0x4B3740): a straight gain on the colours, 1.0 at the default.
+    shade = shade * u.range.w;
     // Byte 0 of the vertex colour is alpha (0x80 = PS1 50% semi-transparency); only the
     // blended pipelines use it.
     return vec4<f32>(t.rgb * shade, t.a * i.color.x);
@@ -107,7 +109,7 @@ struct Uniforms {
 }
 
 /// The original draws a level in two passes (0x4CDDD0): first the low-detail second mesh set,
-/// then, after clearing depth, the detailed first set within `NEAR_TO`, so the detailed set
+/// then, after clearing depth, the detailed first set within reach (`DETAIL`), so the detailed set
 /// always wins and the low-detail one only fills its gaps (the attic entrance has a face only
 /// in the low-detail set). The two sets overlap exactly (coplanar), so drawing both with one
 /// depth buffer flickers. The exe's defaults (detail level 2 of the table at 0x508D24) also
@@ -115,7 +117,9 @@ struct Uniforms {
 /// gaps showed as holes, so the far pass now starts at 0. View depth in game units.
 #[allow(dead_code)]
 const FAR_FROM: f32 = 10000.0;
-const NEAR_TO: f32 = 12000.0;
+/// 0x508D28, by detail level: (detailed set's reach, special objects' reach, low-detail set's
+/// nearest special; 0x4CDD10 → 0x4BC410). The high row is the constants this file started with.
+const DETAIL: [(f32, f32, f32); 3] = [(3500.0, 10000.0, 0.0), (6500.0, 10000.0, 0.0), (12000.0, 12000.0, 1000.0)];
 
 /// Game space (units, +Y down, +Z forward) to viewer world space (scaled, +Y up).
 fn game_to_world(p: [f32; 3]) -> Vec3 {
@@ -148,6 +152,47 @@ impl Demo {
         }
         self.pad = self.words.get(self.at as usize).copied().unwrap_or(0) as u32;
     }
+}
+
+/// The fixed keys behind the rows of `controls::ACTIONS`. Fire and the camera buttons have the
+/// original's own defaults (0x414F20); the others are the port's.
+const CONTROL_DEFAULTS: [KeyCode; 13] = [KeyCode::KeyW, KeyCode::KeyS, KeyCode::KeyA, KeyCode::KeyD, KeyCode::Space, KeyCode::ControlLeft, KeyCode::KeyE, KeyCode::Delete, KeyCode::PageDown, KeyCode::KeyQ, KeyCode::KeyX, KeyCode::Escape, KeyCode::Backspace];
+
+/// Keys a row can be put on, for saving them by name. 0x49C420 refuses the function keys, the
+/// arrows and Escape, so they aren't here.
+const BINDABLE: &[KeyCode] = &[
+    KeyCode::KeyA, KeyCode::KeyB, KeyCode::KeyC, KeyCode::KeyD, KeyCode::KeyE, KeyCode::KeyF, KeyCode::KeyG, KeyCode::KeyH, KeyCode::KeyI, KeyCode::KeyJ, KeyCode::KeyK, KeyCode::KeyL, KeyCode::KeyM,
+    KeyCode::KeyN, KeyCode::KeyO, KeyCode::KeyP, KeyCode::KeyQ, KeyCode::KeyR, KeyCode::KeyS, KeyCode::KeyT, KeyCode::KeyU, KeyCode::KeyV, KeyCode::KeyW, KeyCode::KeyX, KeyCode::KeyY, KeyCode::KeyZ,
+    KeyCode::Digit0, KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
+    KeyCode::Space, KeyCode::Tab, KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::AltLeft, KeyCode::AltRight, KeyCode::Backspace, KeyCode::Delete,
+    KeyCode::Insert, KeyCode::Home, KeyCode::End, KeyCode::PageUp, KeyCode::PageDown, KeyCode::Comma, KeyCode::Period, KeyCode::Slash, KeyCode::Semicolon, KeyCode::Quote, KeyCode::BracketLeft, KeyCode::BracketRight,
+];
+
+fn controls_path() -> std::path::PathBuf {
+    ts2::save::dir().join("controls.txt")
+}
+
+/// The saved bindings (one key name a row; `-` for none), or the defaults.
+fn load_controls() -> ts2::controls::Binds<KeyCode> {
+    let mut b = ts2::controls::Binds::new(CONTROL_DEFAULTS.to_vec());
+    let Ok(text) = fs::read_to_string(controls_path()) else { return b };
+    for (k, name) in text.lines().enumerate().take(CONTROL_DEFAULTS.len()) {
+        b.keys[k] = BINDABLE.iter().chain(CONTROL_DEFAULTS.iter()).copied().find(|c| format!("{c:?}") == name);
+    }
+    b
+}
+
+fn save_controls(b: &ts2::controls::Binds<KeyCode>) {
+    let text: String = b.keys.iter().map(|k| k.map_or("-".to_string(), |c| format!("{c:?}")) + "\n").collect();
+    if let Err(e) = fs::write(controls_path(), text) {
+        eprintln!("controls not saved: {e}");
+    }
+}
+
+/// A key's name for the controller page: lower case letters and digits only.
+fn key_label(c: KeyCode) -> String {
+    let s = format!("{c:?}");
+    s.trim_start_matches("Key").trim_start_matches("Digit").chars().flat_map(|ch| if ch.is_uppercase() && !s.starts_with("Key") { vec![' ', ch.to_ascii_lowercase()] } else { vec![ch.to_ascii_lowercase()] }).collect::<String>().trim().to_string()
 }
 
 /// Sound output: the level's samples, mixed with the original's volume and pan.
@@ -316,7 +361,8 @@ struct GpuBatch {
 const ANY_ROOM: u32 = u32::MAX;
 
 /// Levels drawn by room: only the rooms seen from the camera's room through its portals
-/// (0x4BC460). Other levels draw every room until this is checked there.
+/// (0x4BC460). The owner tried it on level 1 and chose to keep every other level drawing every
+/// room: modern hardware doesn't need it, and only level 4 has been played with it.
 const ROOM_CULLED_LEVELS: [usize; 1] = [4];
 
 /// Room-by-room drawing (0x4CDDD0 → 0x4BC460) for a level in `ROOM_CULLED_LEVELS`.
@@ -339,16 +385,6 @@ impl RoomCull {
         room == ANY_ROOM || (room < 64 && self.mask & (1 << room) != 0)
     }
 }
-
-/// Layer-0 instances whose centre is further than this from the camera are skipped
-/// (0x4BC460 / 0x4BC720 against 0x5088B0, set by 0x4BC410 from detail level 2 of the table
-/// at 0x508D24: 12000). Applied to special objects on every level (`special_in_view`); the
-/// static detailed set is clipped at `NEAR_TO` instead.
-const NEAR_CULL: f32 = 12000.0;
-
-/// Layer-1 (low-detail) instances whose centre is nearer than this are skipped (0x4BC460 /
-/// 0x4BC720 against 0x5088B4, the second argument of 0x4BC410).
-const FAR_SKIP: f32 = 1000.0;
 
 #[derive(Clone, Copy)]
 struct Camera {
@@ -393,6 +429,9 @@ struct Gfx {
     uniform_bgs: [wgpu::BindGroup; 5],
     /// One bind group per level texture, plus a white one at the end for untextured geometry.
     texture_bgs: Vec<wgpu::BindGroup>,
+    /// The textures themselves and their pixels, for the animated ones (0x49B260).
+    textures: Vec<wgpu::Texture>,
+    images: Vec<bmp::Image>,
     depth: wgpu::TextureView,
     /// Detailed level geometry (first mesh set) and the low-detail set drawn far away.
     level: Vec<GpuBatch>,
@@ -541,6 +580,8 @@ struct Viewer {
     /// Lens flares: 0x4F72D8, the level's lamps, and the graphics option (0x508D70 bit 0).
     flare_table: Vec<[i16; 6]>,
     lamps: ts2::flares::Lamps,
+    /// The light on Buzz (0x830D60).
+    lights: ts2::lights::Lights,
     lens_flare: bool,
     /// Escape in a level, and the level's end, for the front end to act on.
     quit_level: bool,
@@ -552,6 +593,12 @@ struct Viewer {
     /// 0x52F0CD / 0x52F0CE and 0x52F0CC bit 0x40.
     volumes: (i32, i32),
     active_camera: bool,
+    /// The detail and gamma options (0x508D74, 0x508D78 in steps).
+    detail: i32,
+    gamma: i32,
+    /// The animated textures option (0x508D70 bit 2).
+    animated_textures: bool,
+    controls: ts2::controls::Binds<KeyCode>,
     /// The attract demo's recorded pad (0x52B820): words, read position, ticks left, last bits.
     demo: Option<Demo>,
     /// Loaded by the front end for the scene about to start.
@@ -739,7 +786,7 @@ fn update_rooms(cull: &mut Option<RoomCull>, world: &game::World, cam: &Camera, 
 /// within `NEAR_CULL` of the eye for the detailed set (layer 0, against 0x5088B0) or beyond
 /// `FAR_SKIP` for the low-detail set (layer 1, against 0x5088B4). The exe treats special
 /// objects as ordinary instances, so these hold on every level.
-fn special_in_view(ngn: &ngn::Ngn, s: &ts2::specials::Special, rooms: u64, eye: Vec3) -> bool {
+fn special_in_view(ngn: &ngn::Ngn, s: &ts2::specials::Special, rooms: u64, eye: Vec3, detail: usize) -> bool {
     let Some(inst) = ngn.layers.get(s.layer).and_then(|l| l.instances.get(s.instance)) else { return true };
     let room = inst.flags & 0xFF;
     if room < 64 && rooms & (1 << room) == 0 {
@@ -748,7 +795,8 @@ fn special_in_view(ngn: &ngn::Ngn, s: &ts2::specials::Special, rooms: u64, eye: 
     let Some(mesh) = ngn.layers[s.layer].meshes.get(inst.mesh as usize) else { return true };
     let placed = ngn::Instance { pos: s.pos, rot: s.angles, scale: s.scale, ..*inst };
     let d2 = Vec3::from(scene::instance_centre(mesh, &placed)).distance_squared(eye);
-    if s.layer == 0 { d2 < NEAR_CULL * NEAR_CULL } else { d2 > FAR_SKIP * FAR_SKIP }
+    let (_, near, far) = DETAIL[detail];
+    if s.layer == 0 { d2 < near * near } else { d2 > far * far }
 }
 
 /// The camera a script's look-at scene (0x4020F0) or conversation holds, if one is on.
@@ -1014,6 +1062,7 @@ impl Gfx {
             .chain(backdrop.map(|(w, h, rgba)| bmp::Image { width: *w, height: *h, rgba: rgba.clone() }))
             .chain(std::iter::once(white.clone()))
             .collect();
+        let mut textures = Vec::new();
         let texture_bgs = images
             .iter()
             .map(|img| {
@@ -1027,12 +1076,13 @@ impl Gfx {
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
                         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                         view_formats: &[],
                     },
                     wgpu::util::TextureDataOrder::LayerMajor,
                     &img.rgba,
                 );
+                textures.push(tex.clone());
                 let view = tex.create_view(&Default::default());
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: None,
@@ -1048,7 +1098,7 @@ impl Gfx {
         let depth = depth_view(&device, &config);
         let level = upload(&device, level, texture_bgs.len() - 1);
         let level_far = upload(&device, level_far, texture_bgs.len() - 1);
-        Gfx { window, surface, target, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), specials: [Vec::new(), Vec::new()], hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1], texture_layout, sampler, movie: None, rooms: u64::MAX }
+        Gfx { textures, images, window, surface, target, device, queue, config, pipelines, uniform_bufs, uniform_bgs, texture_bgs, depth, level, level_decal: Vec::new(), level_two_sided: Vec::new(), level_far_two_sided: Vec::new(), level_far, billboards: [Vec::new(), Vec::new()], creature: Vec::new(), specials: [Vec::new(), Vec::new()], hud: Vec::new(), sky: Vec::new(), clear: [0.05, 0.06, 0.1], texture_layout, sampler, movie: None, rooms: u64::MAX }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -1114,6 +1164,28 @@ impl Gfx {
         }
     }
 
+    /// 0x4AFD30: a tile copied within texture `index`.
+    fn blit_texture(&mut self, index: usize, b: &ts2::texanim::Blit) {
+        let (Some(tex), Some(img)) = (self.textures.get(index), self.images.get_mut(index)) else { return };
+        let Some(px) = b.pixels(&img.rgba, img.width, img.height) else { return };
+        let [w, h] = b.size.map(|v| v as u32);
+        let [x, y] = b.dst.map(|v| v as u32);
+        if x + w > img.width || y + h > img.height {
+            return;
+        }
+        for row in 0..h {
+            let from = (row * w * 4) as usize;
+            let to = (((y + row) * img.width + x) * 4) as usize;
+            img.rgba[to..to + (w * 4) as usize].copy_from_slice(&px[from..from + (w * 4) as usize]);
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d { x, y, z: 0 }, aspect: wgpu::TextureAspect::All },
+            &px,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: None },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+
     /// Draws the movie frame alone, as large as fits, on black.
     fn render_movie(&mut self) {
         let Some((_, bg, [w, h])) = &self.movie else { return };
@@ -1143,7 +1215,7 @@ impl Gfx {
         let hud = Uniforms {
             view_proj: Mat4::from_cols(glam::Vec4::new(2.0, 0.0, 0.0, 0.0), glam::Vec4::new(0.0, 2.0, 0.0, 0.0), glam::Vec4::ZERO, glam::Vec4::new(-1.0, 1.0, 0.5, 1.0)).to_cols_array_2d(),
             params: [1.0, 0.0, 1.0, 0.0],
-            range: [0.0, f32::MAX, 0.0, 0.0],
+            range: [0.0, f32::MAX, 0.0, 1.0],
         };
         self.queue.write_buffer(&self.uniform_bufs[3], 0, bytemuck::bytes_of(&hud));
         let mut enc = self.device.create_command_encoder(&Default::default());
@@ -1192,18 +1264,18 @@ impl Gfx {
         };
         // Far set beyond FAR_FROM, detailed set within NEAR_TO, everything else unclipped.
         let s = uniforms.params[2];
-        let ranges = [[0.0, f32::MAX], [0.0, NEAR_TO * s], [0.0, f32::MAX]];
+        let ranges = [[0.0, f32::MAX], [0.0, uniforms.range[1] * s], [0.0, f32::MAX]];
         for (buf, r) in self.uniform_bufs.iter().zip(ranges) {
-            let u = Uniforms { range: [r[0], r[1], 0.0, 0.0], ..*uniforms };
+            let u = Uniforms { range: [r[0], r[1], 0.0, uniforms.range[3]], ..*uniforms };
             self.queue.write_buffer(buf, 0, bytemuck::bytes_of(&u));
         }
-        let decal = Uniforms { range: [0.0, NEAR_TO * s, DECAL_BIAS, 0.0], ..*uniforms };
+        let decal = Uniforms { range: [0.0, uniforms.range[1] * s, DECAL_BIAS, uniforms.range[3]], ..*uniforms };
         self.queue.write_buffer(&self.uniform_bufs[4], 0, bytemuck::bytes_of(&decal));
         // The HUD: screen (x, y) in 0..1, y down, straight to clip space (the shader negates y).
         let hud = Uniforms {
             view_proj: Mat4::from_cols(glam::Vec4::new(2.0, 0.0, 0.0, 0.0), glam::Vec4::new(0.0, 2.0, 0.0, 0.0), glam::Vec4::ZERO, glam::Vec4::new(-1.0, 1.0, 0.5, 1.0)).to_cols_array_2d(),
             params: [1.0, 0.0, 1.0, 0.0],
-            range: [0.0, f32::MAX, 0.0, 0.0],
+            range: [0.0, f32::MAX, 0.0, uniforms.range[3]],
         };
         self.queue.write_buffer(&self.uniform_bufs[3], 0, bytemuck::bytes_of(&hud));
         let view = match (&frame, &self.target) {
@@ -1282,6 +1354,26 @@ impl Viewer {
 
     fn held(&self, k: KeyCode) -> bool {
         self.keys.contains(&k)
+    }
+
+    /// The controller page waiting for a key (0x49C420): takes `raw`, true if it did.
+    fn capture_key(&mut self, raw: KeyCode) -> bool {
+        let Some(row) = self.front.as_ref().and_then(|f| f.state.capturing()) else { return false };
+        if raw == KeyCode::Escape {
+            if let Some(f) = self.front.as_mut() {
+                f.state.capture_cancelled();
+            }
+            return true;
+        }
+        if !BINDABLE.contains(&raw) {
+            return true;
+        }
+        self.controls.bind(row, raw);
+        let names = self.controls.keys.iter().map(|k| k.map_or(String::new(), key_label)).collect();
+        if let Some(f) = self.front.as_mut() {
+            f.state.capture_done(names);
+        }
+        true
     }
 
     /// 0x49F4B0: the pause menu's tick; `true` keeps it open.
@@ -1488,6 +1580,13 @@ impl Viewer {
             // last runs below, with its focus.
             let mut ran = 0;
             let (orig_cam, follow) = (&mut self.orig_cam, self.use_orig_cam);
+            if let Some(c) = orig_cam.as_mut() {
+                c.passive = !self.active_camera;
+                c.pad = [(KeyCode::KeyW, 0x10), (KeyCode::KeyS, 0x40), (KeyCode::KeyA, 0x80), (KeyCode::KeyD, 0x20), (KeyCode::Delete, 0x100), (KeyCode::PageDown, 0x200), (KeyCode::Backspace, 0x1000)]
+                    .iter()
+                    .filter(|(k, _)| self.keys.contains(k))
+                    .fold(0, |a, (_, b)| a | b);
+            }
             if let (Some(l), Some(c)) = (script.as_mut(), orig_cam.as_ref()) {
                 l.view = (c.pos, c.look_yaw);
             }
@@ -1497,6 +1596,10 @@ impl Viewer {
                 if ran > 0 {
                     if let Some(c) = orig_cam.as_mut().filter(|_| follow && p.first_person == 0) {
                         c.tick(p, w);
+                        let t = std::mem::take(&mut c.turn_buzz);
+                        if t != 0 {
+                            p.set_facing((p.facing + t) & 0xFFF);
+                        }
                     }
                 }
                 ran += 1;
@@ -1565,6 +1668,10 @@ impl Viewer {
                         cam_before = Some(c.clone());
                     }
                     c.tick(player, &self.world);
+                    let t = std::mem::take(&mut c.turn_buzz);
+                    if t != 0 {
+                        player.set_facing((player.facing + t) & 0xFFF);
+                    }
                 }
             }
             // Sounds come from Buzz; the listener is the camera.
@@ -1809,6 +1916,7 @@ impl Viewer {
                 let cam_obj = cam_game.map(|v| (v * 32.0) as i32);
                 cr.discs_out = player.disc_ammo != 0 && self.particles.discs_in_flight() > 0;
                 cr.buzz_firing = player.laser != 0;
+                cr.flares.clear();
                 for k in 0..ticks {
                     if k + 1 == ticks {
                         self.interp.creatures_prev = cr.slots.iter().map(|c| c.pos).collect();
@@ -1993,7 +2101,11 @@ impl Viewer {
                     }
                 }
                 for ev in cr.events.drain(..) {
-                    let ts2::creatures::Event::Died { pos, coin, centre, burst, .. } = ev;
+                    let ts2::creatures::Event::Died { pos, coin, centre, burst, slot } = ev;
+                    // 0x405D20: fireballs come with a flash.
+                    if burst > 0 {
+                        self.lights.add((centre, 0xF08000, 0x20, slot as i64));
+                    }
                     // 0x405D20's burst: fireballs, or sparkles and smoke.
                     for n in 0..burst.unsigned_abs() as i32 {
                         if burst > 0 {
@@ -2052,9 +2164,39 @@ impl Viewer {
                     self.jingles.push(Jingle { steps: a.bank.jingle(id).to_vec(), next: 0, timer: 0, pos });
                 }
             }
+            // The light on Buzz (0x49EE50, 0x49EEE0) and what feeds it.
+            {
+                if let Some(cr) = self.creatures.as_mut() {
+                    for f in cr.lights.drain(..) {
+                        self.lights.add(f);
+                    }
+                }
+                if let Some(l) = self.script.as_mut() {
+                    for f in l.lights.drain(..) {
+                        self.lights.add(f);
+                    }
+                    self.lamps.tint = l.lamp_tint;
+                }
+                let buzz = player.pos_obj();
+                let camera = world_to_game(self.cam.pos).map(|v| (v * 32.0) as i32);
+                if self.lamps.level() == 3 {
+                    // 0x41AA10: lit from one spot, or green by a '?' blob while there is one.
+                    let d = [0x348D - buzz[0], -0x336DB - buzz[1], -0x30D5 - buzz[2]].map(|v| (v >> 7) as f32);
+                    let n = Vec3::from(d).normalize_or_zero() * 4096.0;
+                    self.lights.set_base([(n.x as i32) >> 2, (n.y as i32) >> 2, (n.z as i32) >> 2], 0xC0C000);
+                    let blob = self.particles.slots.iter().find(|p| p.typ == 0x3F && p.life > 0).map(|p| (p.pos, [0, 0xFF, 0], -3));
+                    self.lights.set_lamp(blob);
+                } else {
+                    self.lights.set_lamp(self.lamps.nearest(camera, buzz));
+                }
+                for _ in 0..ticks {
+                    self.lights.tick(buzz);
+                }
+            }
             for ev in self.particles.events.drain(..) {
                 match ev {
                     ts2::particles::Event::Sound(id, at) => creature_sounds.push((id, at)),
+                    ts2::particles::Event::Light(f) => self.lights.add(f),
                     ts2::particles::Event::Coin(at) => {
                         if let Some(pk) = self.pickups.as_mut() {
                             pk.coins = (pk.coins + 1).min(99);
@@ -2387,6 +2529,26 @@ impl Viewer {
         let mut placed: Vec<(usize, [f32; 3], f32, usize)> =
             self.creature_pos.map(|p| (self.creature_idx, p, 0.0, self.creature_anim[self.creature_idx])).into_iter().collect();
         let mut batches = Vec::new();
+        // The hardware lights on flagged parts (0x4CE6C0) in play; models elsewhere stay baked.
+        scene::set_model_light(self.player.is_some().then(|| scene::ModelLight::new(self.lights.direction, self.lights.colour)));
+        // Animated textures (0x49B260; option 0x508D70 bit 2). A shield in use flickers too (0x4A5170).
+        {
+            let mut blits = self.script.as_mut().map_or_else(Vec::new, |l| std::mem::take(&mut l.tex_blits));
+            if let (Some(p), Some(l)) = (self.player.as_ref(), self.script.as_ref())
+                && p.shield > 0
+            {
+                let c = l.clock as i32;
+                blits.push(ts2::texanim::Blit::new(0x10, 0x80, 0xC0, 0x40, 0x40, (c & 0xF) << 2, (c & 0x1F) << 1, 0, -0x40));
+            }
+            if self.animated_textures {
+                for b in blits {
+                    let name = format!("tex{:02}", b.texture);
+                    if let Some(i) = self.ngn.textures.iter().position(|t| t.name.eq_ignore_ascii_case(&name)) {
+                        gfx.blit_texture(i, &b);
+                    }
+                }
+            }
+        }
         if self.show_spawns {
             match (&self.creatures, self.player.is_some()) {
                 // Play mode: the creatures as their scripts move and animate them.
@@ -2512,6 +2674,13 @@ impl Viewer {
                     cr.shadows(&self.world, &mut list);
                 }
                 self.particles.shadows(&mut list);
+                if let Some(l) = self.script.as_ref() {
+                    for s in &l.shadows {
+                        if list.len() < ts2::shadows::LIMIT {
+                            list.push(*s);
+                        }
+                    }
+                }
                 scene::merge(&mut batches, ts2::shadows::batches(&list, tex, size));
             }
             let f = self.cam.forward();
@@ -2546,7 +2715,7 @@ impl Viewer {
         gfx.rooms = rooms;
         let eye = Vec3::from(world_to_game(self.cam.pos));
         for (&id, s) in &self.specials.objects {
-            if !special_in_view(&self.ngn, s, if self.cull.is_some() { rooms } else { u64::MAX }, eye) {
+            if !special_in_view(&self.ngn, s, if self.cull.is_some() { rooms } else { u64::MAX }, eye, self.detail.clamp(0, 2) as usize) {
                 continue;
             }
             let far = s.layer != 0;
@@ -2602,6 +2771,9 @@ impl Viewer {
                     let mut flares = Vec::new();
                     self.lamps.lit(cam_game.to_array().map(|v| (v * 32.0) as i32), &mut flares);
                     self.particles.flares(&mut flares);
+                    if let Some(cr) = self.creatures.as_ref() {
+                        flares.extend_from_slice(&cr.flares);
+                    }
                     let aspect = gfx.config.width as f32 / gfx.config.height as f32;
                     let m = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), aspect, 0.05) * self.cam.view();
                     let mut shown = 0;
@@ -2775,6 +2947,11 @@ impl Viewer {
             // Circle (stomp). The original's keyboard default is F, which toggles play mode here.
             KeyCode::KeyE if self.player.is_some() => self.stomp_pressed = true,
             KeyCode::KeyQ if self.player.is_some() => self.look_pressed = true,
+            // The fire row's key (the mouse button does the same).
+            KeyCode::ControlLeft if self.player.is_some() => {
+                self.fire_held = true;
+                self.fire_pressed = true;
+            }
             KeyCode::KeyX if self.player.is_some() => self.r1_pressed = true,
             // Menu navigation (the token menu).
             KeyCode::KeyW if self.player.is_some() => self.menu_nav = -1,
@@ -2906,7 +3083,14 @@ impl Viewer {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let PhysicalKey::Code(code) = event.physical_key {
+                if let PhysicalKey::Code(raw) = event.physical_key {
+                    // The options' controller page takes the next key.
+                    if event.state == ElementState::Pressed && !event.repeat && self.capture_key(raw) {
+                        return;
+                    }
+                    // In a level the keys go through the player's bindings (0x49C420).
+                    let code = if self.player.is_some() && self.pause.is_none() { self.controls.translate(raw) } else { Some(raw) };
+                    let Some(code) = code else { return };
                     if event.state == ElementState::Pressed {
                         if !event.repeat {
                             if self.key(code) {
@@ -2916,6 +3100,10 @@ impl Viewer {
                         self.keys.insert(code);
                     } else {
                         self.keys.remove(&code);
+                        // The fire key held; the mouse has its own event.
+                        if code == KeyCode::ControlLeft {
+                            self.fire_held = false;
+                        }
                     }
                 }
             }
@@ -2992,7 +3180,7 @@ impl Viewer {
         let u = Uniforms {
             view_proj: (proj * self.cam.view()).to_cols_array_2d(),
             params: [self.color_mode as f32, if self.alpha_test { 1.0 } else { 0.0 }, WORLD_SCALE, self.script.as_ref().and_then(|l| l.ambient).map_or(1.0, |a| a as f32 / 128.0)],
-            range: [0.0, f32::MAX, 0.0, 0.0],
+            range: [0.0, DETAIL[self.detail.clamp(0, 2) as usize].0, 0.0, 1.0 + self.gamma as f32 * 0.25],
         };
         g.render(&u);
     }
@@ -3200,8 +3388,10 @@ impl Viewer {
                 next.front = Some(front);
                 // The settings and the demo about to start outlive the scene.
                 let (volumes, lens_flare, active_camera, demo_file) = (self.volumes, self.lens_flare, self.active_camera, self.demo_file.take());
+                let (detail, gamma, animated_textures, controls) = (self.detail, self.gamma, self.animated_textures, self.controls.clone());
                 *self = next;
                 (self.volumes, self.lens_flare, self.active_camera, self.demo_file) = (volumes, lens_flare, active_camera, demo_file);
+                (self.detail, self.gamma, self.animated_textures, self.controls) = (detail, gamma, animated_textures, controls);
                 if attached {
                     self.attach(window);
                 }
@@ -3228,6 +3418,7 @@ impl Viewer {
             (&[KeyCode::ArrowLeft, KeyCode::KeyA], Pad::LEFT),
             (&[KeyCode::ArrowRight, KeyCode::KeyD], Pad::RIGHT),
             (&[KeyCode::Space, KeyCode::Enter, KeyCode::NumpadEnter], Pad::JUMP),
+            (&[KeyCode::Enter, KeyCode::NumpadEnter], Pad::ENTER),
             (&[KeyCode::Escape, KeyCode::Backspace], Pad::CANCEL),
         ];
         let pad = Pad(bits.iter().filter(|(keys, _)| keys.iter().any(|k| self.keys.contains(k))).fold(0, |a, (_, b)| a | b));
@@ -3257,6 +3448,10 @@ impl Viewer {
                 Event::Movie(_) => {}
                 Event::Volumes { music, sfx } => pending_volumes = Some((music, sfx)),
                 Event::LensFlare(on) => self.lens_flare = on,
+                Event::Graphics { detail, gamma, animated_textures } => (self.detail, self.gamma, self.animated_textures) = (detail, gamma, animated_textures),
+                Event::ControlsReset => self.controls = load_controls(),
+                Event::ControlsSave => save_controls(&self.controls),
+                Event::ControlsDefault => self.controls.reset(),
                 Event::Demo(level) => pending_demo = Some(level),
             }
         }
@@ -3875,6 +4070,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         flare_table: game_exe.as_ref().map(ts2::flares::table).unwrap_or_default(),
         lamps: level_no.map_or_else(Default::default, |lv| ts2::flares::Lamps::new(lv, &level_lists)),
         lens_flare: true,
+        lights: level_no.map_or_else(Default::default, |lv| ts2::lights::Lights::new(game_exe.as_ref(), lv)),
         level_lists,
         quit_level: false,
         pause: None,
@@ -3883,6 +4079,10 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         quit_app: false,
         volumes: (8, 8),
         active_camera: true,
+        detail: 2,
+        gamma: 0,
+        animated_textures: true,
+        controls: load_controls(),
         demo: None,
         demo_file: None,
         out_of_lives: false,
@@ -4193,10 +4393,10 @@ mod room_tests {
         // 0x3F: the hatch's inside face (room 2); 0x40: its outside face (room 1).
         let (inside, outside) = (specials.get(0x3F).unwrap(), specials.get(0x40).unwrap());
         let near = Vec3::new(10500.0, -2400.0, 9000.0);
-        assert!(special_in_view(&n, outside, 0b011, near));
-        assert!(!special_in_view(&n, inside, 0b011, near), "room 2 not in view");
-        assert!(special_in_view(&n, inside, 0b111, near));
-        assert!(!special_in_view(&n, outside, 0b111, near - Vec3::Z * 12000.0), "too far");
+        assert!(special_in_view(&n, outside, 0b011, near, 2));
+        assert!(!special_in_view(&n, inside, 0b011, near, 2), "room 2 not in view");
+        assert!(special_in_view(&n, inside, 0b111, near, 2));
+        assert!(!special_in_view(&n, outside, 0b111, near - Vec3::Z * 12000.0, 2), "too far");
     }
 
     /// On every level, a special object of the detailed set is drawn only within 12000 of the
@@ -4212,10 +4412,10 @@ mod room_tests {
         let (detailed, low) = (specials.get(0x08).unwrap(), specials.get(0x17).unwrap());
         assert_eq!((detailed.layer, low.layer), (0, 1));
         let start = Vec3::new(-10010.0, 0.0, 30728.0);
-        assert!(!special_in_view(&n, detailed, u64::MAX, start), "detailed copy beyond 12000");
-        assert!(special_in_view(&n, low, u64::MAX, start));
+        assert!(!special_in_view(&n, detailed, u64::MAX, start, 2), "detailed copy beyond 12000");
+        assert!(special_in_view(&n, low, u64::MAX, start, 2));
         let under = Vec3::new(-10414.0, -3000.0, 1800.0);
-        assert!(special_in_view(&n, detailed, u64::MAX, under));
-        assert!(!special_in_view(&n, low, u64::MAX, under), "low-detail copy within 1000");
+        assert!(special_in_view(&n, detailed, u64::MAX, under, 2));
+        assert!(!special_in_view(&n, low, u64::MAX, under, 2), "low-detail copy within 1000");
     }
 }

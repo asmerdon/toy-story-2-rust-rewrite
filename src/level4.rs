@@ -30,7 +30,8 @@ use crate::creatures::Creatures;
 use crate::formats::exe::Exe;
 use crate::formats::leveldat::PointList;
 use crate::game::{Player, World};
-use crate::script::{near, near_sq, touched, Common, PathRunner, Script, Tilt};
+use crate::creatures::ParticleRequest;
+use crate::script::{near, near_sq, near_xz, sin_table, touched, Common, PathRunner, Script, Tilt};
 use crate::specials::Specials;
 use glam::Vec3;
 
@@ -66,6 +67,14 @@ const SNAP_X: [i32; 4] = [-0x52354, -0x26A53, -0x1F994, 0xC02D];
 const SNAP_Z: [i32; 4] = [-0x791DE, -0x4D95D, -0x46B9E, -0x1B29D];
 
 pub struct Level4 {
+    /// 0x52F83C / 0x52F8A4: the next pipe drip; 0x52F7EC: the next spray.
+    flow_wait: i32,
+    flow_at: usize,
+    spray_wait: i32,
+    /// 0x52F7C8, 0x52F810, 0x52F7F4: the lamps' level, where it's heading, ticks to the next change.
+    lamp: i32,
+    lamp_target: i32,
+    lamp_wait: i32,
     tilts: [Tilt; 4],
     rigs: [PathRunner; 4],
     shuttles: [PathRunner; 4],
@@ -136,6 +145,12 @@ impl Level4 {
         specials.turn_from_own(0x1D, [0, 0, 0x266]);
         let load = |va: u32| exe.map(|e| PathRunner::load(e, va)).unwrap_or_default();
         Level4 {
+            flow_wait: 0,
+            flow_at: 0,
+            spray_wait: 0,
+            lamp: 0,
+            lamp_target: 0,
+            lamp_wait: 0,
             tilts: Default::default(),
             rigs: RIG_PATHS.map(load),
             shuttles: SHUTTLES.map(|(.., va)| load(va)),
@@ -620,9 +635,72 @@ impl std::ops::DerefMut for Level4 {
     }
 }
 
+impl Level4 {
+    /// 0x41C640: water running along the pipes (list 0, pairs of points; particle 0x43 every
+    /// 16–47 ticks), spray falling between list 1's pairs near the lock (0x54 with gravity),
+    /// and the lamps (list 6) that fade up and down at random.
+    fn flows(&mut self, b: [i32; 3]) {
+        let list = |s: &Self, k: i16| s.common.story.lists.get(&k).cloned().unwrap_or_default();
+        self.flow_wait -= 1;
+        if self.flow_wait < 0 {
+            let l = list(self, 0);
+            if let (Some(p), Some(q)) = (l.get(self.flow_at), l.get(self.flow_at + 1)) {
+                let at = p.map(|v| v << 5);
+                if near_xz(at, b, 0x500) && at[1] < b[1] && b[1] - at[1] < 0x32000 {
+                    let spin = (self.common.rand() & 1) * 0x80 - 0x40;
+                    let (dx, dz) = (p[0] - q[0], p[2] - q[2]);
+                    let vel = if dz.abs() < dx.abs() {
+                        [if q[0] < p[0] { -0x180 } else { 0x180 }, 0, 0]
+                    } else {
+                        [0, 0, if q[2] < p[2] { -0x180 } else { 0x180 }]
+                    };
+                    self.common.kicked.push((at, 0x43, 0x13, vel, spin));
+                }
+            }
+            self.flow_wait = (self.common.rand() & 0x1F) + 0x10;
+            self.flow_at += 2;
+            if l.len() < self.flow_at {
+                self.flow_at = 0;
+            }
+        }
+        self.spray_wait -= 1;
+        if self.spray_wait < 0 {
+            let at = [0x783B, -0x7D05B, -0x742C4];
+            if near_xz(at, b, 900) && at[1] < b[1] + 0x25800 && b[1] - 0x19000 < at[1] {
+                let l = list(self, 1);
+                let k = (self.common.rand() & 0xE) as usize;
+                if let (Some(p), Some(q)) = (l.get(k), l.get(k + 1)) {
+                    let from = p.map(|v| v << 5);
+                    let (dx, dz) = ((from[0] - (q[0] << 5)) >> 8, (from[2] - (q[2] << 5)) >> 8);
+                    let u = crate::boxes::angle12(dx as f32, dz as f32) - 0x800;
+                    let d = ((dx * dx + dz * dz) as f64).sqrt() as i32;
+                    let speed = (d * 6 / 2).max(1);
+                    let time = ((d << 12) / speed).max(1);
+                    let spin = (self.common.rand() & 1) * 0x80 - 0x40;
+                    let vel = [sin_table(u) * speed >> 13, (((q[1] << 5) - from[1]) * 0x20) / time - time * 0x90 / 64, sin_table(u + 0x400) * speed >> 13];
+                    self.common.particles.push(ParticleRequest { pos: from, vel, gravity: 0x90, angle: 0, spin, typ: 0x54 });
+                }
+            }
+            self.spray_wait = (self.common.rand() & 0x1F) + 0x40;
+        }
+        self.lamp_wait -= 1;
+        if self.lamp_wait < 0 {
+            self.lamp_target = (self.lamp_target - 0x80) & 0x80;
+            self.lamp_wait = self.common.rand() & 0x3F;
+        }
+        self.lamp += (self.lamp_target - self.lamp).clamp(-2, 2);
+        self.common.lamp_tint = match self.lamp {
+            0 => None,
+            c if c < 0x41 => Some([c * 2, c * 2, 0]),
+            c => Some([0x80, 0x80, c * 2 - 0x80]),
+        };
+    }
+}
+
 impl Script for Level4 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
+        self.flows(player.pos_obj());
         // Special 0xD, the far-set copy of 0xC, goes where it is.
         if let Some(p) = specials.pos_obj(0xC) {
             specials.set_pos(0xD, p.map(|v| v >> 5));

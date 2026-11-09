@@ -527,6 +527,15 @@ impl World {
         out
     }
 
+    /// For tests: makes every face solid from its front only, as the original's data is.
+    #[cfg(test)]
+    pub fn one_sided(mut self) -> World {
+        for t in &mut self.tris {
+            t.two_sided = false;
+        }
+        self
+    }
+
     /// Plain triangles, two-sided, normals from the winding.
     pub fn from_triangles(tris: Vec<[Vec3; 3]>) -> World {
         let tris = tris
@@ -661,6 +670,45 @@ impl World {
         self.sweep_in(p0, d, r, None, 0x200)
     }
 
+    /// 0x48D530 → 0x48C030 (and 0x4882F0 for boundary walls), the camera's look at Buzz: a thin
+    /// ray from `p0` along `d` crossing faces either way. The fraction of `d` to the first face
+    /// it crosses, only if that face was crossed from behind: the camera has gone through a
+    /// wall. Objects flagged 0x200 don't count.
+    pub fn camera_behind_wall(&self, p0: Vec3, d: Vec3) -> Option<f32> {
+        let p1 = p0 + d;
+        let mut best = (f32::MAX, false);
+        for t in self.candidates(p0.min(p1) - Vec3::ONE, p0.max(p1) + Vec3::ONE) {
+            if self.objects.get(t.obj as usize).is_some_and(|o| o.flags & 0x200 != 0) {
+                continue;
+            }
+            let (d0, d1) = (t.n.dot(p0 - t.a), t.n.dot(p1 - t.a));
+            let back = d0 < d1;
+            let (s0, s1) = if back { (-d0, -d1) } else { (d0, d1) };
+            if s0 >= 0.0 && s1 < 0.0 {
+                let s = s0 / (s0 - s1);
+                if s < best.0 && inside(p0 + d * s, t.a, t.b, t.c, t.n) {
+                    best = (s, back);
+                }
+            }
+        }
+        let (p, v) = (glam::Vec2::new(p0.x, p0.z), glam::Vec2::new(d.x, d.z));
+        for &[a, b] in &self.bounds {
+            let (a, b) = (glam::Vec2::from(a), glam::Vec2::from(b));
+            let n = glam::Vec2::new(a.y - b.y, b.x - a.x).normalize_or_zero();
+            let (d0, d1) = (n.dot(p - a), n.dot(p + v - a));
+            let back = d0 < d1;
+            let (s0, s1) = if back { (-d0, -d1) } else { (d0, d1) };
+            if s0 >= 0.0 && s1 < 0.0 {
+                let s = s0 / (s0 - s1);
+                let q = p + v * s;
+                if s < best.0 && (q - a).dot(b - a) >= 0.0 && (b - q).dot(b - a) >= 0.0 {
+                    best = (s, back);
+                }
+            }
+        }
+        (best.1 && best.0 <= 1.0).then_some(best.0)
+    }
+
     /// As `sweep`, against one object's triangles only (no boundary walls) when `only`, and
     /// skipping objects with any flag in `skip`.
     fn sweep_in(&self, p0: Vec3, d: Vec3, r: f32, only: Option<usize>, skip: u16) -> Option<Hit> {
@@ -700,12 +748,15 @@ impl World {
                 }
                 // Edges and corners only near the plane, as the original limits them.
                 let near = (d0 < 8.0 || d1 < 8.0) && (d0 >= -8.0 - r / 2.0 || d1 >= -8.0 - r / 2.0);
-                if near && d.dot(n) < 0.0 {
+                if near {
+                    // 0x4813B0 / 0x481D00 take any motion, but a contact must come from this
+                    // face's front (−0x80000 against normals of 2^14 × 2^14).
+                    let front = |h: &Hit| h.normal.dot(n) > -0x80000 as f32 / (1u32 << 28) as f32;
                     for (e0, e1) in [(t.a, t.b), (t.b, t.c), (t.c, t.a)] {
-                        keep(sweep_edge(p0, d, e0, e1, r + 1.0).map(|h| Hit { mover, surface, ..h }));
+                        keep(sweep_edge(p0, d, e0, e1, r + 1.0).filter(front).map(|h| Hit { mover, surface, ..h }));
                     }
                     for v in [t.a, t.b, t.c] {
-                        keep(sweep_point(p0, d, v, r + 2.0).map(|h| Hit { mover, surface, ..h }));
+                        keep(sweep_point(p0, d, v, r + 2.0).filter(front).map(|h| Hit { mover, surface, ..h }));
                     }
                 }
             }
@@ -815,6 +866,14 @@ fn sweep_point(p0: Vec3, d: Vec3, v: Vec3, r: f32) -> Option<Hit> {
     }
     let normal = (p0 + d * t - v).normalize_or_zero();
     Some(Hit { t, normal, depth: 0.0, mover: None, surface: None })
+}
+
+/// 0x482A00 stops a contact a set distance short measured along its normal (local_54 − 0x20),
+/// not along the motion. Stopped at fraction `s` of `d`, what's still needed to be SKIN clear of
+/// the contact. Motion almost along an edge's surface otherwise stops inside the edge's
+/// cylinder, where the next tick's sweep doesn't see it and his body sinks in.
+fn clearance(h: &Hit, s: f32, d: Vec3) -> Vec3 {
+    h.normal * (SKIN - (h.t - s) * (-d.dot(h.normal)).max(0.0)).max(0.0)
 }
 
 /// Sphere centre moving p0 → p0+d against segment e0–e1 (a cylinder of radius r).
@@ -1411,7 +1470,13 @@ impl Player {
     /// floor (no surface, or 0xD) each step then leaves a print turned his way. Coming out of
     /// water starts them too. Each step sounds at that foot: 0 on ordinary floor, else by
     /// the prints' kind (1 → 1, 2 → 3, 3 → 4, 0x18 → 5).
+    ///
+    /// Deviation (owner's request): in the shield's ball (0x52F398) nothing sticks to his feet;
+    /// 0x4A2D80 doesn't look at the shield.
     fn foot_effects(&mut self) {
+        if self.shield > 0 {
+            self.footprints = 0;
+        }
         let feet = self.anim.as_mut().map_or(0, |a| std::mem::take(&mut a.feet));
         let feet = if self.on_floor { feet } else { 0 };
         let y = self.y_obj();
@@ -1464,6 +1529,9 @@ impl Player {
                     _ => {}
                 }
             }
+        }
+        if self.shield > 0 {
+            self.footprints = 0;
         }
         self.last_y = y;
         if feet != 0 {
@@ -2449,6 +2517,8 @@ impl Player {
             // Started inside the surface: back out of it first.
             if h.depth > 0.0 {
                 c += n * (h.depth + SKIN);
+            } else {
+                c += clearance(&h, s, d);
             }
             let rest = d * (1.0 - s);
             d = rest - n * rest.dot(n).min(0.0);
@@ -2476,7 +2546,8 @@ impl Player {
             if let Some(h) = world.sweep(c, down, BODY_RADIUS)
                 && h.normal.y < FLOOR_NY
             {
-                c += down * (h.t - SKIN / STICK_DOWN).max(0.0) + h.normal * h.depth;
+                let s = (h.t - SKIN / STICK_DOWN).max(0.0);
+                c += down * s + if h.depth > 0.0 { h.normal * h.depth } else { clearance(&h, s, down) };
                 floor = true;
                 self.floor_mover = h.mover.map(|m| (m, h.normal));
                 self.surface = h.surface;
@@ -3890,4 +3961,51 @@ mod power_tests {
     }
 }
 
+#[cfg(test)]
+mod edge_and_print_tests {
+    use super::*;
 
+    /// A table top at y = 0, from z = 0 to 2000, its edge along z = 0, and a floor far below.
+    fn table() -> World {
+        let (a, b, c, d) = (Vec3::new(-2000.0, 0.0, 0.0), Vec3::new(2000.0, 0.0, 0.0), Vec3::new(2000.0, 0.0, 2000.0), Vec3::new(-2000.0, 0.0, 2000.0));
+        World::from_triangles(vec![[a, b, c], [a, c, d]]).one_sided()
+    }
+
+    /// 0x482A00 stops a contact short along its normal, so one that rolls him round an edge
+    /// leaves him outside it and the next tick still sees it. Reversing there used to sink his
+    /// body into the corner, where nothing stops it.
+    #[test]
+    fn reversing_on_an_edge_stays_out_of_it() {
+        let w = table();
+        for run in 8..40 {
+            let mut p = Player::new(Vec3::new(0.0, -1.0, 100.0));
+            p.on_floor = true;
+            for tick in 0..70 {
+                let stick = if tick < run { [0.0, -1.0] } else { [0.0, 1.0] };
+                p.tick(&w, stick, false, false);
+                let c = p.pos - Vec3::Y * (BODY_LIFT + BODY_RADIUS);
+                // Past half his radius below the top the exe stops testing the face's edges too.
+                if c.z < 0.0 && c.y < -71.0 {
+                    let d = c.y.hypot(c.z);
+                    assert!(d > BODY_RADIUS - 1.0, "run {run} tick {tick}: centre {d} from the edge, at {c:?}");
+                }
+            }
+        }
+    }
+
+    /// Deviation (owner's request): in the shield's ball slime leaves no prints on him.
+    #[test]
+    fn no_slime_prints_in_the_shield() {
+        let mut p = Player::new(Vec3::ZERO);
+        p.water = (2, 100);
+        p.last_y = 200;
+        p.foot_effects();
+        assert_eq!(p.footprints, 0xB4 << 16 | 0x18, "out of the slime, prints");
+        p.shield = 100;
+        p.foot_effects();
+        assert_eq!(p.footprints, 0, "the ball wipes them");
+        p.last_y = 200;
+        p.foot_effects();
+        assert_eq!(p.footprints, 0, "and none start");
+    }
+}

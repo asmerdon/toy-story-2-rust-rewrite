@@ -252,6 +252,9 @@ impl Script for Level5 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
         self.common.rain_splash(world, false, (player.water.0 == 1).then_some(player.water.1));
+        // 0x41E880: the river (texture 5).
+        let oy = (self.common.clock & 0x3F) as i32;
+        self.common.tex_blits.push(crate::texanim::Blit::new(5, 0xC0, 0x80, 0x40, 0x40, 0, oy, 0, 0x40));
         if !std::mem::replace(&mut self.placed, true) {
             for (k, g) in GLIDES.iter().enumerate() {
                 if let (Some(pts), Some(at)) = (self.story.lists.get(&g.1), world.mover_pos(g.0)) {

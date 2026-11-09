@@ -141,6 +141,8 @@ struct Boat {
 }
 
 pub struct Level11 {
+    /// 0x52FDA8: the fountain tile's phase.
+    tex_wave: i32,
     common: Common,
     paths: HashMap<i16, Vec<[i32; 3]>>,
     routes: [[i16; 4]; 13],
@@ -205,6 +207,7 @@ impl Level11 {
         let paths: HashMap<i16, Vec<[i32; 3]>> = lists.iter().map(|l| (l.kind, l.points.clone())).collect();
         let start = paths.get(&1).and_then(|l| l.get(6)).copied().unwrap_or_default().map(|v| v << 5);
         let mut s = Level11 {
+            tex_wave: 0,
             common: Common { show_collectables: Some(false), ..Default::default() },
             paths,
             routes: ROUTES,
@@ -866,6 +869,12 @@ impl Level11 {
 impl Script for Level11 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
+        // 0x42A130, the camera in room 5: the tile swells (texture 7).
+        if world.room_at(glam::Vec3::from(self.common.view.0.map(|v| v as f32 / 32.0))) == Some(5) {
+            let oy = (sin_table(self.tex_wave) >> 9) & 0x1F;
+            self.common.tex_blits.push(crate::texanim::Blit::new(7, 0x80, 0xA0, 0x20, 0x20, 0, oy, 0x20, 0));
+            self.tex_wave = (self.tex_wave + 8) & 0xFFF;
+        }
         let room = world.room_at(player.pos);
         // The shield swaps movers 0x19 and 0x1A.
         if player.shield == 0 {

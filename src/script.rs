@@ -73,6 +73,14 @@ pub struct Common {
     pub ambient: Option<i32>,
     /// The camera (object units) and its yaw (0x52ADC0, +0x22), set by the caller.
     pub view: ([i32; 3], i32),
+    /// Texture blits for this tick (0x49B260).
+    pub tex_blits: Vec<crate::texanim::Blit>,
+    /// Shadows a script draws itself, replaced each tick (0x54F098).
+    pub shadows: Vec<crate::shadows::Shadow>,
+    /// Flashes on Buzz (0x49EE50).
+    pub lights: Vec<crate::lights::Flash>,
+    /// Level 4's lamps' colour, 0 when they're out (0x52F7C8).
+    pub lamp_tint: Option<[i32; 3]>,
     /// Lightning (levels 3 and 14: 0x52FFA8 / 0x52F708): ticks to the flash (first 200), then
     /// to the thunder (0x70) and where it rolls.
     pub flash: i32,

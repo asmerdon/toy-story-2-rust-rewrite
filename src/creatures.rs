@@ -237,6 +237,9 @@ pub struct Creatures {
     pub wall_mice: bool,
     /// Particles the type routines made this tick.
     pub particles: Vec<ParticleRequest>,
+    /// Flashes on Buzz (0x49EE50) and green glows (0x44F200).
+    pub lights: Vec<crate::lights::Flash>,
+    pub flares: Vec<crate::flares::Flare>,
     /// Particles made with a life of their own (the routine wrote +0x24 after 0x40FAE0).
     pub lasting: Vec<(ParticleRequest, i32)>,
     /// Particles to spawn by type and mode (0x40FDF0), with a spin.
@@ -380,6 +383,8 @@ impl Creatures {
             buzz_firing: false,
             wall_mice: false,
             particles: Vec::new(),
+            lights: Vec::new(),
+            flares: Vec::new(),
             lasting: Vec::new(),
             spawns: Vec::new(),
             sheep: 0,
@@ -908,6 +913,7 @@ impl Creatures {
                         let spin = self.rand() as i32 - 0x80;
                         self.spawns.push((at, 0x23, 0xE, spin));
                     }
+                    self.lights.push((at, 0xF08000, 0x20, slot as i64));
                     self.boss.jingles.push((-2, c.pos));
                     self.boss.state = 3;
                 } else {
@@ -1120,6 +1126,11 @@ impl Creatures {
             if self.clock.is_multiple_of(4) {
                 self.spawns.push((hit, 0x46, 2, 0));
             }
+            // 0x406620: a green flash every 0x20 ticks, and its glow.
+            if self.clock.is_multiple_of(0x20) {
+                self.lights.push((hit, 0xC000, 0x10, -2));
+            }
+            self.flares.push(crate::flares::Flare { pos: hit, rgb: [0, 0x80, 0], size: 0x20 });
             let b = self.buzz;
             let d = [0, 1, 2].map(|k| (b[k] - hit[k]) >> 8);
             if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 25 * 25 {
@@ -1389,6 +1400,7 @@ impl Creatures {
                 let spin = self.rand() as i32 - 0x80;
                 self.spawns.push((at, 0x23, 0xE, spin));
             }
+            self.lights.push((at, 0xF08000, 0x20, c.id as i64));
             self.boss.jingles.push((-2, c.pos));
             self.boss.state = 3;
         }
@@ -1491,6 +1503,7 @@ impl Creatures {
                 let spin = self.rand() as i32 - 0x80;
                 self.spawns.push((at, 0x23, 0xE, spin));
             }
+            self.lights.push((at, 0xF08000, 0x20, slot as i64));
             self.boss.jingles.push((-2, c.pos));
             self.boss.state = 3;
         }

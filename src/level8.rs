@@ -61,6 +61,8 @@ pub struct Level8 {
     claw: Option<Claw>,
     /// The two arcs (0x52FA60 / 0x52FAFC / 0x52FB90 / 0x52FBAC).
     arcs: [Arc; 2],
+    /// 0x52FA90: the glowing texture's scroll.
+    tex_roll: i32,
     /// Room 4's swaying specials: phases (0x52FB78, 0x52FB6C, 0x52FB68, 0x52FB70) and the time
     /// to the next creak (0x52FB80).
     sway: [i32; 4],
@@ -164,6 +166,7 @@ impl Level8 {
                 let life = (self.common.rand() & 0xF) * 2 + 0x18;
                 self.common.spawns.push((a.at, 4, 4, 0, Some(life)));
             }
+            self.common.lights.push((a.at, if k == 0 { 0xF00000 } else { 0x78F0 }, 0x10, a.at[0] as i64));
             self.common.sounds.push((7, a.at));
             if near(buzz, a.at, 0x19) {
                 cr.hurts.push((crate::boxes::angle12((buzz[0] - a.at[0]) as f32, (buzz[2] - a.at[2]) as f32), 2));
@@ -228,7 +231,7 @@ impl Level8 {
     }
 
     pub fn new() -> Level8 {
-        Level8 { spin: [(0, 0); 8], t: 0, speed: 0, bob: 0, claw: None, arcs: Default::default(), sway: [0; 4], creak: 0, lob_wait: 0, lob_next: 0, taunt: 0x3C, common: Common { given: [false, false, false, true, false], ..Default::default() } }
+        Level8 { tex_roll: 0, spin: [(0, 0); 8], t: 0, speed: 0, bob: 0, claw: None, arcs: Default::default(), sway: [0; 4], creak: 0, lob_wait: 0, lob_next: 0, taunt: 0x3C, common: Common { given: [false, false, false, true, false], ..Default::default() } }
     }
 
     /// See [`Claw`].
@@ -244,7 +247,11 @@ impl Level8 {
         let buzz = player.pos_obj();
         let Some(c) = self.claw.as_mut() else { return };
         let common = &mut self.common;
+        common.shadows.clear();
         if world.room_at(player.pos) == Some(4) {
+            // 0x423200: the claw's shadow on the machine's floor, half size 0x100.
+            let fold = |v: i32| if v > 0x7FFF { 0x10000 - v } else { v };
+            crate::shadows::flat(&mut common.shadows, [fold(c.sweep[0]) + c.base[0], -0xFA00, fold(c.sweep[1]) + c.base[2]], 0x100);
             // First time near: the prize and the sweeps start somewhere random.
             if !c.met && near_xz(c.prize, buzz, 1000) {
                 let r: [i32; 4] = std::array::from_fn(|_| common.rand());
@@ -533,6 +540,9 @@ impl Script for Level8 {
     fn step(&mut self, world: &World, specials: &mut Specials, player: &mut Player, _boxes: &Boxes) {
         self.clock = self.clock.wrapping_add(1);
         self.claw(world, specials, player);
+        // 0x423200: the glow (texture 5).
+        self.common.tex_blits.push(crate::texanim::Blit::new(5, 0, 0, 0x40, 0x40, 0, self.tex_roll / 2, 0, 0x40));
+        self.tex_roll = (self.tex_roll + 1) & 0x7F;
         // The spinners: phase + k a tick, angle + sin(phase) >> 10.
         for k in 0..8 {
             let (a, ph) = &mut self.spin[k];
@@ -552,6 +562,11 @@ impl Script for Level8 {
     }
 
     fn step_creatures(&mut self, world: &World, _specials: &mut Specials, player: &Player, cr: &mut Creatures, coins: i32) {
+        // 0x423200: while slot 2 is out, texture 0x12 scrolls.
+        if cr.slots.get(2).is_some_and(|c| c.flags & 1 != 0) {
+            let oy = (self.common.clock & 0x3F) as i32;
+            self.common.tex_blits.push(crate::texanim::Blit::new(0x12, 0x40, 0, 0x14, 0x40, 0, oy, 0x14, 0));
+        }
         self.boss_hud = false;
         let b = player.pos_obj();
         if in_box(b, (0x29EA3, 0x9AB23), (-0x6F3F3, -0x6273)) {
