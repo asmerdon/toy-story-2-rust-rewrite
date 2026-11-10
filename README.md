@@ -102,7 +102,7 @@ The numbers follow the campaign order, so 3 is Bombs Away and 6 is Slime Time. `
 | E | Spin attack on the ground (hold to charge), stomp in the air |
 | Left mouse | Wrist laser (hold to charge) |
 | Q | First person (mouse to look); X locks on to a target |
-| Escape | Back in menus; in a level, quit to the main menu |
+| Escape (or F2) | Back in menus; in a level, the pause menu |
 | Space, Enter or Escape | Skip a movie |
 | M | Mute or unmute the music |
 | V | Switch between the original camera and a free follow camera |
@@ -150,9 +150,8 @@ When a level is opened with `--level`, F toggles between playing and a free came
 ## Not done yet
 
 - A final sign-off pass over levels 2–15; see HANDOFF's open issues.
-- The countdown's tick sound; room culling outside level 4.
-- The pause menu (Escape quits to the main menu for now), options, the movie viewer, the credits, the loading pictures and the attract demo.
-- A few small gadgets: level 8's electric arcs and cannon, drips, dynamic lights, floor shadows and the stomp's camera shake; level 11's lights; level 12's lighting.
+- A few small things: creature room gating, some one-off light flashes (level 8's boss hitting Buzz among them), and the shield slowing Buzz down.
+- Level 8's "cannon" is still to be checked against the original.
 - Health isn't carried between levels yet, and the sound and music volume settings aren't saved.
 
 ## Deviations from the original

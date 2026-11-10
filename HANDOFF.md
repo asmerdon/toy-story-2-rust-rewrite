@@ -25,17 +25,17 @@ exe functions) and `docs/formats/*.md`.
 
 ---
 
-## Current state (2026-11-07)
+## Current state (2026-11-10)
 
 - **Campaign:** all 15 levels and the front end are ported and playable in `ts2-viewer`.
 - **Level 1:** signed off by the user.
-- **Levels 2–15:** the user has sent seven rounds of playtest reports (the latest on levels 2, 4 and 10); every reproduced report has been fixed (see the list below and MODLOG). Rounds 5–7 are pushed (commit 199b9d8) but not yet re-played.
+- **Levels 2–15:** the user has sent nine rounds of playtest reports (the latest: Level 1's shield prints, turning on edges and the camera in tight spaces); every reproduced report has been fixed (see the list below and MODLOG). Round 9 (commit 2ec09fe) is pushed but not yet re-played.
 - **Not done:** no level other than 1 has a full sign-off.
 - **Tests:** 280 pass with `TS2_GAME_DIR` and `TS2_DISC_IMAGE` set (269 engine + 11 launcher), 2026-11-09; on the last run the launcher exe was locked, so its 3 end-to-end tests were not re-run. `cargo build --release` builds the viewer, tool and launcher without warnings.
-- **Git:** work is on `dev` (local `master` tracks `origin/dev`); last push 199b9d8. The user asks before each push.
+- **Git:** work is on `dev` (local `master` tracks `origin/dev`); last push 2ec09fe. The user asks before each commit and push.
 
 ### Fixed from the user's playtests
-Every fix below comes from the original's code, has a regression test, and was mostly checked with offscreen shots. The user has only re-played the first round's fixes.
+Every fix below comes from the original's code, has a regression test, and was mostly checked with offscreen shots. The user re-plays as they go; MODLOG says which rounds are unplayed.
 
 **Collision and movement**
 - Boundary walls: TERRAIN kind 0x101 lists (0x484380 / 0x48C860). These close the final arena's back and the airport's conveyor ends. See docs/formats/terrain.md.
@@ -103,7 +103,7 @@ Every fix below comes from the original's code, has a regression test, and was m
 - Power-ups return 400 ticks (6.7 s) after being taken, one at a time (0x4A0F80); the user thought hooks came back too fast.
 
 **Collision**
-- If the body starts slightly inside an edge cylinder, it ignores that edge (`sweep_edge` / `sweep_point`). A naive fix broke the boundary walls.
+- If the body starts inside an edge cylinder it ignores that edge (`sweep_edge` / `sweep_point`), as 0x4813B0 does. Since round 9 contacts stop clear along their normal (0x482A00), so this should no longer arise from his own moves; a naive tolerance fix once broke the boundary walls.
 - The mover carry (`pos += mover_motion`) is not swept against static walls, as in the original (0x488E10 adds the motion to 0x52F300 directly). Turning movers carry Buzz only where a script calls `ride_turn` (tilts, level 4's scoop, level 14's plane), not generally as 0x4896A0 does.
 - Open edges in L5/7/8/10, found by `examples/clipsweep.rs`, are unverified against the original.
 
@@ -132,7 +132,7 @@ Every fix below comes from the original's code, has a regression test, and was m
 **Unconfirmed**
 - Level 8's "cannon": the exe's list 16 points lob a yellow particle (type 0x60, sprite 0x34) at Buzz; the arcs (0x422D20) are the bolts. The user thinks there are lasers in a section of the map and will check the original; not signed off.
 - The new menus, flares, shadows and the demo haven't been played.
-- Level 14's "things not animated": the user didn't say which. Rain is ported (round 4); lightning isn't.
+- Level 14's "things not animated": the user didn't say which. Rain (round 4) and the lightning flashes (round 8) are ported.
 
 ### OpenTS2 (phase 1 done: launcher and installer)
 The project is distributed as **OpenTS2**, modelled on OpenMW. Design, OpenMW research and the data model for phases 2–3: [docs/opents2-design.md](docs/opents2-design.md). (The original brief is in git history: `docs/opents2-brief.md` at commit 3d75407.) The owner is going back to polishing the port; OpenTS2's next phases wait until levels 2–15 settle.
@@ -238,7 +238,7 @@ cargo run --release --bin ts2-viewer -- "C:\Program Files\Disney Interactive\Toy
 set TS2_GAME_DIR=C:\Program Files\Disney Interactive\Toy Story 2
 cargo test --release
 ```
-(196 tests; those needing game data skip without `TS2_GAME_DIR`, which doesn't count as coverage. `TS2_DISC_IMAGE` enables the launcher's disc-image tests.)
+(280 tests; those needing game data skip without `TS2_GAME_DIR`, which doesn't count as coverage. `TS2_DISC_IMAGE` enables the launcher's disc-image tests.)
 
 Some functions aren't in the Ghidra dump (level 10's start-up 0x425B60 wasn't): disassemble those.
 

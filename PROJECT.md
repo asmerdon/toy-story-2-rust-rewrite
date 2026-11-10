@@ -50,12 +50,12 @@ Rendering is wgpu + winit, sound rodio, movies `oxideav-mpeg12video` + Symphonia
 2. **Formats:** `.ngn` (textures, geometry, instances, specials, creatures, animations, patches), `.raw` packets, `level.dat`, `TERRAIN.ALL`, `.all` hit shapes, saves.
 3. **Reverse engineering:** Ghidra 12 headless dump (`tools/ghidra/DumpAround.java`) of all functions to `re/out/`; findings in `docs/re/functions.md`.
 4. **Engine and gameplay:** the viewer grew into the game: Buzz's controller, collision, creatures, every level's script, bosses, HUD, front end, saves, music and movies.
-5. **Playtesting:** Level 1 signed off; levels 2–15 through two rounds of the owner's reports (`docs/coverage.md`).
+5. **Playtesting:** Level 1 signed off; levels 2–15 through nine rounds of the owner's reports (`docs/coverage.md`).
 6. **OpenTS2 phase 1:** launcher and installer (`docs/opents2-design.md`).
 
 ## Roadmap
 
-1. **Finish the port:** sign off levels 2–15; the missing features in HANDOFF (pause menu, options, movie viewer, credits, loading pictures, attract demo, a few gadgets).
+1. **Finish the port:** sign off levels 2–15; the missing features in HANDOFF (now a few small ones: creature room gating, some light sources, the shield's slowing).
 2. **OpenTS2 0.1 release:** the installer as built now, once the port is signed off.
 3. **Modding (OpenTS2 phase 3, after the port settles):** a layered virtual file system (mods over the game's data), asset overrides, playing as other creatures, scripted behaviour. Design in `docs/opents2-design.md`.
 4. **Level editor (phase 2):** `opents2-editor`, a free camera for placing objects, creatures, pickups and paths, saved as mod files.
