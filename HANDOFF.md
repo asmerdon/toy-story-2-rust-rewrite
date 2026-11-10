@@ -407,6 +407,7 @@ These cost real time. Most are worth checking first when something similar turns
 - The push animation only plays while the box moves (the grunt still plays on grab, as the
   original).
 - The pickup jingle plays its first note only (the user hears it once in the original).
+- Mods only (opt-in): `[play_as]` in a mod.toml draws Buzz as another creature, retargeting his moves, and can disable the laser / first-person mode (`src/modding.rs`, `build_play_as` in the viewer).
 
 ## 8. How to finish a level (the method for levels 2–15)
 
@@ -489,3 +490,44 @@ shadows are the biggest unported systems.
 - `docs/formats/`: the file formats.
 - Each `src/levelN.rs` module doc: that level's script, objects, and what's not ported.
 - `git log`: one commit per fix, with the reason in the message.
+
+## 2026-11-10: play-as mods, parts 1 and 2 (standard-tier helper)
+
+- Done: `ts2-viewer --mod <dir>` (repeatable) and `OPENTS2_MODS`; `mod.toml` parsed in `src/modding.rs` (unknown keys are an error naming the file; the launcher's reader ignores `[play_as]`, tested). `[play_as]` with `animation = "retarget"`: Woody (from `data/level05/level1.ngn`, textures imported under a `mod:` prefix) is drawn in place of Buzz; Buzz's controller, collision and camera are unchanged. `laser = false` blocks fire, charge and first-person mode. `mods/play-as-woody`, `mods/README.md`.
+- Retarget: automatic node map by rest-pose bounding boxes plus the manifest's `map` overrides; centre-anchored formula from the brief. Addition beyond the brief: `[[play_as.rest]]` turns node groups about a pivot first, because Woody's rest pose holds his arms out (without it the arms stay T-posed while running).
+- Not done, for the next helper: the Tin Man hop gait. Extension point: `AnimationMode::Hop` in `src/modding.rs` (`idle`/`hop` are parsed already); `build_play_as` in `src/bin/ts2-viewer.rs` refuses it for now; the draw branch `match &self.play_as` in the viewer's batch building (next to `creature_batches_layered`) is where the creature's own animation (`idle`/`hop`) would be drawn, and the hop's auto-jump belongs in the per-tick `game::Input` built just above (`no_laser` is built there too).
+- Shots: `local/shots/mods/w_stand.png`, `w_run.png`, `w_run_front.png`, `w_jump.png`.
+
+## 2026-11-10: play-as mods, part 3: the Tin Man hop gait (standard-tier helper)
+
+- Done: `animation = "hop"` and `mods/play-as-tinman/` (TINMAN, `data/level01/level.ngn`, `idle = 0`, `hop = 2`, `scale = 0.4`, no laser). Gait lives in `game::Player` behind `hop_gait` (default off, set by the viewer only for this mode): a direction held on the ground presses a jump each tick with `hop_low`, launching at -0x377 instead of -0x600 (about 0.32 of the height: 174 vs 548 units in the test), held while rising so it is not cut short; Space still gives the full jump and double jump. Viewer draws the creature's own animations via `creature_batches_scaled`: hop animation stretched over the airtime (26 ticks low, 47 full), idle (loop) otherwise.
+- Animation choice: from `creatures.rs` (the boss routine plays 0 waiting, 1 wind-up 46 ticks, 2 charge/travel, 3 and 5 open, 4 close, 7 death) and the `tinman` example's sequence; 0 is the waiting loop, 2 is the one it plays while it travels. Chosen by eye in side shots; 1, 4, 5 and 6 were tried and look like crouches or leans.
+- Shots (`local/shots/mods/`): `t_idle.png`, `t_hop.png`, `t_land.png`, `t_level02.png` (cross-file loading in level 2), `w_regress.png` (Woody still fine).
+- Checks: release build clean; 290 tests pass, 5 ignored; new test `hop_gait_bounces_forward_and_space_still_jumps_full`.
+- Not verified: interactive feel (animation timing against real frame rate), turning/slopes/pushing boxes with the gait.
+
+## 2026-11-10: play-as mods, part 4: the right robot (main agent)
+
+- The owner's reference picture is ZURG1 (Zurg's red spring robot with claws, level 1's hopping enemy), not TINMAN (the grey boss). Added `mods/play-as-zurg-robot/` (ZURG1, `data/level01/level.ngn`, `idle = 0`, `hop = 1`, `scale = 1.0`, no laser), no code change: it uses the hop gait. Shots `local/shots/mods/z_side.png` (mid-hop, side), `z_idle.png`, `z_level02.png` (loads in level 2). `play-as-tinman` stays as an extra.
+- Next: the owner plays both; tune `hop` (0–2 for ZURG1) and `scale` by feel in the toml.
+
+## 2026-11-10: play-as mods, part 5: owner's first play (main agent)
+
+- Owner played both. Woody's forearms and hands came apart when turning (centre-anchored parts with longer limbs than Buzz's), and stood with his hands at his crotch. Fixed with `[play_as] joints` (`modding::Joint`): a listed part turns as its Buzz part does but is placed so its joint point stays where the parent's pose puts it (`t = J*P - J*R`, parents first). Woody's mod lists neck, shoulders, elbows, wrists and knees; the arm rest correction is now 60 degrees (was 80). Shots `local/shots/mods/w_joints_{stand,turn,jump}.png`. Test `joints_stay_together_when_limbs_are_longer_than_buzz`.
+- Zurg robot's walking hop was too small: new `hop_height` (multiple of the low hop's height; `Player::hop_vy`, launch speed × sqrt). The robot mod sets 4.0: 736 units against 174 default and 548 for Buzz's jump (test `hop_height_scales_with_launch_speed_squared`). The hop animation's airtime scales with it.
+- New diagnostic `examples/nodes.rs` (a creature's node bounds). Not yet re-played by the owner.
+
+## 2026-11-10: play-as mods in the launcher (main agent)
+
+- The launcher copies the example mods once into the player's mods folder (`mods::install_examples`; source: `mods\` beside `opents2.exe`, else a source checkout's `mods\` found from `target\release`). Copied ids are kept in `opents2.toml` `examples = [...]`, so a deleted example isn't put back. They join the load order disabled.
+- Mods tab: "coming soon" note replaced; each mod shows "plays as <CREATURE>"; a warning when more than one enabled mod sets `[play_as]` (the last wins).
+- Installer: `mods\*` goes to `{app}\mods`. Rebuilt `target\installer\OpenTS2-0.1.0-setup.exe`.
+- The installed copy from before has an engine without mod support: reinstall, or run `target\release\opents2.exe`. Launcher not run by the agent (owner tests).
+
+## 2026-11-10: Tin Man at boss size, touch damage, modded level tester (main agent)
+
+- `play-as-tinman` 0.2.0: `scale = 1.0` (the boss's size, about 2.6 × Buzz), `camera_distance = 2.5`, `touch_damage = true`. New `[play_as]` keys:
+  - `touch_damage`: `Player::touch_reach` > 0 makes `attack()` report a spin hit (kind 1) when he isn't attacking, so `Creatures::contact` hits attackable creatures and harmful ones don't hurt him. Reach = 400 × drawn height / Buzz's (min 400). Test `touch_reach_makes_a_plain_touch_a_spin_hit`. Not seen hitting an enemy in a shot.
+  - `camera_distance`: `Camera::target_distance` (default `DISTANCE`, 0x4B0) is what the distance eases back to and what the standing wall check uses. Shots `t_big_hop.png`, `t_big_l2.png`.
+- Launcher: an example whose `version` is newer than the player's copy replaces it (old manifest kept as `mod.toml.old`); same version leaves the player's edits. Level tester: with mods enabled the button reads "Play N. Name (modded)" and passes them (`Mode::LevelTester(n, dirs)`, `OPENTS2_MODS` only when non-empty).
+- Installer rebuilt. Collision stays Buzz's sphere, so the big Tin Man's body goes through walls and low ceilings.

@@ -7,7 +7,7 @@
 //! level = 4                       # the level tester's last pick
 //!
 //! # The modded game's load order, first to last: later mods override earlier ones,
-//! # as OpenMW's data= lines do. Phase 1 records it; the engine doesn't load mods yet.
+//! # as OpenMW's data= lines do. The engine gets the enabled ones in OPENTS2_MODS.
 //! [[mods]]
 //! id = "hd-buzz"
 //! enabled = true
@@ -29,6 +29,9 @@ pub struct Config {
     pub cd_dir: Option<PathBuf>,
     pub level: usize,
     pub mods: Vec<ModEntry>,
+    /// Ids of the example mods already copied into the mods folder once, so one the player
+    /// deletes isn't put back.
+    pub examples: Vec<String>,
 }
 
 /// One mod in the load order.
@@ -45,7 +48,7 @@ fn yes() -> bool {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { version: CONFIG_VERSION, game_dir: None, cd_dir: None, level: 1, mods: Vec::new() }
+        Self { version: CONFIG_VERSION, game_dir: None, cd_dir: None, level: 1, mods: Vec::new(), examples: Vec::new() }
     }
 }
 

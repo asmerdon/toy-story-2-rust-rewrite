@@ -4,7 +4,8 @@
 //! ```text
 //! %APPDATA%\OpenTS2\            (Linux: $XDG_CONFIG_HOME/opents2, macOS: ~/Library/Application Support/OpenTS2)
 //!   opents2.toml                settings written by the launcher
-//!   mods\<id>\mod.toml          one folder per mod, with its manifest
+//!   mods\<id>\mod.toml          one folder per mod, with its manifest (the example mods
+//!                               are copied here once from `mods\` beside the launcher)
 //!   disc\audio, disc\rtlibs     music and movies copied from a disc image
 //!   last-run.log                the engine's output from the last launch
 //! ```
@@ -45,6 +46,18 @@ pub fn disc_copy_dir() -> PathBuf {
 
 pub fn log_file() -> PathBuf {
     home().join("last-run.log")
+}
+
+/// The example mods that come with OpenTS2: `mods\` beside the launcher (the installer puts
+/// them there), else, when running from a source checkout (`target\release\`), the
+/// checkout's `mods\` folder.
+pub fn bundled_mods_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    if dir.join("mods").is_dir() {
+        return Some(dir.join("mods"));
+    }
+    dir.ancestors().take(4).find(|d| d.join("Cargo.toml").is_file() && d.join("mods").is_dir()).map(|d| d.join("mods"))
 }
 
 /// The engine executable, installed beside the launcher.

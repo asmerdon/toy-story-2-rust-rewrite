@@ -38,6 +38,7 @@ pub mod level8;
 pub mod level9;
 pub mod lights;
 pub mod look;
+pub mod modding;
 pub mod particles;
 pub mod pause;
 pub mod pickups;

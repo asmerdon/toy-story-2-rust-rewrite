@@ -52,6 +52,8 @@ const FRICTION: i32 = 0x30;
 const AIR_FRICTION: i32 = 0x10;
 const ACCEL: i32 = 0x28;
 const JUMP_VY: i32 = -0x600;
+/// Deviation (mod): the bounce gait's low hop, -0x600 × 0.577 (a third of the height).
+pub const HOP_VY: i32 = -0x377;
 const MAX_SPEED: i32 = 0x380;
 const MAX_FORWARD: i32 = 0x400;
 const TURN_CAP: i32 = 0x300;
@@ -1157,6 +1159,16 @@ pub struct Player {
     /// 0x53C5E0: rocket boots ticks left (250 from the pickup, 0x4A4D60). He charges forward
     /// on his own at up to 0x800, steering without skids, and jumps at −0x640.
     pub rocket: i32,
+    /// Deviation (mod): the Tin Man's bounce gait (`animation = "hop"`, docs/play-as-mods.md):
+    /// holding a direction on the ground makes a low hop on every landing. Off by default.
+    pub hop_gait: bool,
+    /// Deviation (mod): the current jump is the gait's low hop, not a pressed jump.
+    pub hop_low: bool,
+    /// Deviation (mod): the low hop's launch speed (`HOP_VY` unless a mod's `hop_height` changes it).
+    pub hop_vy: i32,
+    /// Deviation (mod): `touch_damage`: the reach (level units) within which touching a
+    /// creature hits it as the spin does; 0 = off.
+    pub touch_reach: i32,
     /// 0x882920: hover boots ticks left (600, 0x4A4B70), and the height he holds above the
     /// floor (0x882928, 0x2000–0xC000; jump held raises it).
     pub hover: i32,
@@ -1291,6 +1303,10 @@ impl Player {
             in_water: false,
             floating: false,
             rocket: 0,
+            hop_gait: false,
+            hop_low: false,
+            hop_vy: HOP_VY,
+            touch_reach: 0,
             hover: 0,
             hover_height: 0x2000,
             grapple: 0,
@@ -1862,6 +1878,19 @@ impl Player {
         let (stick, dpad) = if locked { ([0.0; 2], 0) } else { (stick, dpad) };
         let still = locked || self.first_person != 0;
         let (jump_held, jump_pressed, stomp_pressed) = if still { (false, false, false) } else { (jump_held, jump_pressed, stomp_pressed) };
+        // Deviation (mod): the bounce gait. A direction held on the ground starts a low hop by
+        // itself (the jump is held while it rises, so it is not cut short); a pressed or held
+        // jump is Buzz's own full jump.
+        let (mut jump_held, mut jump_pressed) = (jump_held, jump_pressed);
+        if self.hop_gait && !still {
+            if jump_pressed || jump_held {
+                self.hop_low = false;
+            } else if self.on_floor && self.coyote != 0 && self.climb == 0 && stick != [0.0, 0.0] {
+                (jump_held, jump_pressed, self.hop_low) = (true, true, true);
+            } else if self.hop_low && self.jump == JumpPhase::Holding && self.vel[1] < 0 {
+                jump_held = true;
+            }
+        }
         if locked {
             self.fire_latch = false;
             self.fire_held = false;
@@ -2376,7 +2405,15 @@ impl Player {
                     self.on_floor = false;
                     self.coyote = 0;
                     self.state = state::JUMP;
-                    *vy = if self.rocket > 0 { -0x640 } else { JUMP_VY } * K / k;
+                    *vy = if self.rocket > 0 {
+                        -0x640
+                    } else if self.hop_gait && self.hop_low {
+                        // Deviation (mod): about a third of the jump's height by default (height
+                        // goes as vy²); a mod's `hop_height` scales it.
+                        self.hop_vy
+                    } else {
+                        JUMP_VY
+                    } * K / k;
                     self.skid = 0;
                     self.jump_start = Some(y);
                     self.sounds.push(Sound { id: 0x19, voice: true });
@@ -2906,6 +2943,11 @@ impl Player {
         if self.stomp < -0x1E {
             kind = 5;
             reach = 400;
+        }
+        // Deviation (mod): `touch_damage`: a plain touch is a spin hit, over the mod's reach.
+        if self.touch_reach > 0 && kind == 0 {
+            kind = 1;
+            reach = self.touch_reach;
         }
         (kind, reach)
     }
@@ -3441,6 +3483,94 @@ mod tests {
     fn flat_world() -> World {
         let (a, b, c, d) = (Vec3::new(-20000., 0., -20000.), Vec3::new(20000., 0., -20000.), Vec3::new(20000., 0., 20000.), Vec3::new(-20000., 0., 20000.));
         World::from_triangles(vec![[a, b, c], [a, c, d]])
+    }
+
+    /// Deviation (mod): with `touch_reach` set, standing still counts as a spin hit.
+    #[test]
+    fn touch_reach_makes_a_plain_touch_a_spin_hit() {
+        let mut p = Player::new(Vec3::ZERO);
+        assert_eq!(p.attack(), (0, 150));
+        p.touch_reach = 900;
+        assert_eq!(p.attack(), (1, 900));
+    }
+
+    /// Deviation (mod): a mod's `hop_height` = 4 doubles the launch speed and gives about four
+    /// times the default hop's height.
+    #[test]
+    fn hop_height_scales_with_launch_speed_squared() {
+        let w = flat_world();
+        let peak = |vy: i32| {
+            let mut p = Player::new(Vec3::ZERO);
+            p.hop_gait = true;
+            p.hop_vy = vy;
+            (0..10).for_each(|_| p.tick(&w, [0.0; 2], false, false));
+            let mut top = 0.0f32;
+            for _ in 0..200 {
+                p.tick_pad(&w, [0.0, 1.0], pad::UP, false, false, false);
+                top = top.max(-p.pos.y);
+            }
+            top
+        };
+        let (low, high) = (peak(HOP_VY), peak(HOP_VY * 2));
+        println!("hop peaks: default {low:.1}, x4 {high:.1}");
+        assert!((3.5..4.5).contains(&(high / low)), "x4 hop {high} vs {low}");
+    }
+
+    /// Deviation (mod): the Tin Man's bounce gait. Holding forward on flat ground hops on
+    /// every landing and makes headway; the hop is well under a normal jump; Space is the
+    /// normal jump; with no direction he stands still.
+    #[test]
+    fn hop_gait_bounces_forward_and_space_still_jumps_full() {
+        let w = flat_world();
+        let settle = |p: &mut Player| (0..10).for_each(|_| p.tick(&w, [0.0; 2], false, false));
+        let mut p = Player::new(Vec3::ZERO);
+        p.hop_gait = true;
+        settle(&mut p);
+        let (start, mut landings, mut peak, mut air, mut longest, mut was_air) = (p.pos.z, 0, 0.0f32, 0, 0, false);
+        for _ in 0..600 {
+            p.tick_pad(&w, [0.0, 1.0], pad::UP, false, false, false);
+            peak = peak.max(-p.pos.y);
+            if p.on_floor {
+                landings += was_air as i32;
+                longest = longest.max(air);
+                air = 0;
+            } else {
+                air += 1;
+            }
+            was_air = !p.on_floor;
+        }
+        assert!(landings >= 8, "{landings} landings in 10 s");
+        assert!((p.pos.z - start).abs() > 200.0, "moved {}", p.pos.z - start);
+        println!("hop gait: peak {peak:.1}, longest airtime {longest} ticks, {landings} landings");
+        // A normal pressed jump on the same floor, for comparison.
+        let mut q = Player::new(Vec3::ZERO);
+        settle(&mut q);
+        let (mut full, mut full_air) = (0.0f32, 0);
+        for i in 0..200 {
+            q.tick_pad(&w, [0.0; 2], 0, i < 40, i == 0, false);
+            full = full.max(-q.pos.y);
+            if !q.on_floor {
+                full_air += 1;
+            }
+        }
+        println!("normal jump: peak {full:.1}, airtime {full_air} ticks");
+        assert!(peak < full * 0.5, "hop peak {peak} vs jump {full}");
+        // Space gives Buzz's own jump even with the gait on.
+        let mut g = Player::new(Vec3::ZERO);
+        g.hop_gait = true;
+        settle(&mut g);
+        let mut gpeak = 0.0f32;
+        for i in 0..200 {
+            g.tick_pad(&w, [0.0; 2], 0, i < 40, i == 0, false);
+            gpeak = gpeak.max(-g.pos.y);
+        }
+        assert!((gpeak - full).abs() < 0.5, "Space jump {gpeak} vs {full}");
+        // No direction: still.
+        let z = g.pos.z;
+        for _ in 0..60 {
+            g.tick_pad(&w, [0.0; 2], 0, false, false, false);
+        }
+        assert!(g.on_floor && (g.pos.z - z).abs() < 0.01);
     }
 
     /// Rocket boots: with the stick let go he still charges forward, past his normal top

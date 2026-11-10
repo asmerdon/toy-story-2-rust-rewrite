@@ -3390,7 +3390,9 @@ dependencies = [
  "oxideav-mpeg12video",
  "pollster",
  "rodio",
+ "serde",
  "symphonia",
+ "toml 0.8.23",
  "wgpu",
  "winit",
 ]

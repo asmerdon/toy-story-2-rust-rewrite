@@ -232,3 +232,30 @@ Dated history of the work, newest at the bottom. Current state is in HANDOFF.md;
 - Grappling hook: in first person the target lock no longer breaks on any mouse movement (40 pixels of movement does), so the hook can be thrown with a hand on the mouse.
 - Level tester: levels opened on their own start with every ability, so gadget cages are open.
 - Checks: workspace release build clean; 216 tests pass.
+
+## 2026-11-10: play-as mods (parts 1 and 2)
+
+- New `src/modding.rs`: `mod.toml` with `[play_as]` (creature, model, animation, scale, laser, idle, hop, map, rest), mod folder loading, node map and retargeting. `scene::layered_matrices` and `creature_batches_matrices` split out of the creature drawing (default output unchanged).
+- Viewer: `--mod`, `OPENTS2_MODS`, `build_play_as`, drawing and input lock (`laser = false`). Launcher manifest test for `[play_as]`.
+- `mods/play-as-woody/`, `mods/README.md`; README deviation line.
+
+## 2026-11-10: play-as mods (part 3, Tin Man hop gait)
+
+- `src/game.rs`: `Player::hop_gait` / `hop_low` (Deviation (mod), off by default): auto low hop while a direction is held on the ground; test added.
+- `src/bin/ts2-viewer.rs`: `animation = "hop"` in `build_play_as`, own-animation drawing (idle / hop timed to airtime), `HOP_AIR_*` constants.
+- `mods/play-as-tinman/mod.toml`, `mods/README.md`, README deviation line.
+
+## 2026-11-10: play-as mods (part 4, Zurg robot)
+- `mods/play-as-zurg-robot/mod.toml`: the owner's reference robot (ZURG1) with the hop gait; Tin Man mod kept as an extra. Docs updated.
+
+## 2026-11-10: play-as mods (part 5, owner feedback)
+- `joints` in `[play_as]` keep retargeted limbs attached; Woody's arms lowered 60 degrees instead of 80.
+- `hop_height` for the hop gait; the Zurg robot hops 4x higher.
+- `examples/nodes.rs`.
+
+## 2026-11-10: launcher loads the example mods
+- Example mods ship with the installer and are copied once into `%APPDATA%\OpenTS2\mods`; Mods tab shows the play-as character and warns about two play-as mods; "coming soon" note removed.
+
+## 2026-11-10: Tin Man 0.2.0, touch damage, modded level tester
+- `touch_damage` and `camera_distance` play-as keys; Tin Man mod at boss size.
+- Launcher updates example mods when a newer version ships; level tester plays with the enabled mods ("(modded)").

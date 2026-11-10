@@ -10,11 +10,11 @@ use std::process::{Child, Command, Stdio};
 pub enum Mode {
     /// The full game from the startup screens.
     Original,
-    /// The full game with these mod folders, in load order. The engine doesn't read them
-    /// yet; they go in `OPENTS2_MODS` so the layered file system can pick them up later.
+    /// The full game with these mod folders, in load order, passed in `OPENTS2_MODS`.
     Modded(Vec<PathBuf>),
-    /// One campaign level (1–15) in the free camera; F plays as Buzz.
-    LevelTester(usize),
+    /// One campaign level (1–15) in the free camera; F plays (as Buzz, or as a play-as mod's
+    /// character). With mod folders, they go in `OPENTS2_MODS` as for `Modded`.
+    LevelTester(usize, Vec<PathBuf>),
 }
 
 /// A resolved launch: the program, its arguments and environment.
@@ -28,7 +28,7 @@ pub struct Plan {
 
 pub fn plan(engine: &Path, game: &Path, cd: Option<&Path>, home: &Path, mode: &Mode) -> Plan {
     let mut args: Vec<OsString> = Vec::new();
-    if let Mode::LevelTester(n) = mode {
+    if let Mode::LevelTester(n, _) = mode {
         args.push("--level".into());
         args.push(n.to_string().into());
     }
@@ -37,7 +37,9 @@ pub fn plan(engine: &Path, game: &Path, cd: Option<&Path>, home: &Path, mode: &M
     if let Some(cd) = cd {
         env.push(("TS2_CD_DIR", cd.into()));
     }
-    if let Mode::Modded(dirs) = mode {
+    if let Mode::Modded(dirs) | Mode::LevelTester(_, dirs) = mode
+        && !dirs.is_empty()
+    {
         env.push(("OPENTS2_MODS", std::env::join_paths(dirs).unwrap_or_default()));
     }
     // The engine also reads a `ts2-media.txt` from its working directory; start it in the
@@ -76,9 +78,14 @@ mod tests {
         assert_eq!(p.env, [("TS2_GAME_DIR", "G".into())]);
         assert_eq!(p.cwd, home);
 
-        let p = plan(engine, game, Some(Path::new("CD")), home, &Mode::LevelTester(12));
+        let p = plan(engine, game, Some(Path::new("CD")), home, &Mode::LevelTester(12, vec![]));
         assert_eq!(p.args, ["--level", "12", "G"]);
         assert_eq!(p.env[1], ("TS2_CD_DIR", "CD".into()));
+        assert_eq!(p.env.len(), 2, "no mods: no OPENTS2_MODS");
+
+        let p = plan(engine, game, None, home, &Mode::LevelTester(4, vec![PathBuf::from("m1")]));
+        assert_eq!(p.args, ["--level", "4", "G"]);
+        assert_eq!(p.env[1].0, "OPENTS2_MODS");
 
         let mods = vec![PathBuf::from("m1"), PathBuf::from("m2")];
         let p = plan(engine, game, None, home, &Mode::Modded(mods.clone()));

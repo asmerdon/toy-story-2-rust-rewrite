@@ -42,6 +42,120 @@ const WORLD_SCALE: f32 = 1.0 / 256.0;
 const SHOT_SIZE: [u32; 2] = [1280, 720];
 /// No sound output (set for `--shot`).
 static SILENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Deviation (mod): the mods named by `OPENTS2_MODS` and `--mod`, loaded once at start-up.
+static MODS: std::sync::OnceLock<Vec<ts2::modding::Mod>> = std::sync::OnceLock::new();
+
+/// Deviation (mod): the player drawn as another creature (`[play_as]`, docs/play-as-mods.md).
+/// Buzz's controller, collision and camera are unchanged; only the drawn model differs.
+struct PlayAsState {
+    /// The substitute, with its textures renamed into the level's texture table.
+    creature: ngn::Creature,
+    retarget: ts2::modding::Retarget,
+    scale: f32,
+    /// False: no firing, charging or first-person mode.
+    laser: bool,
+    mode: ts2::modding::AnimationMode,
+    /// Deviation (mod), hop gait: the creature's own animations, and the numbers of its idle
+    /// and hop ones.
+    anims: Vec<anim::Animation>,
+    idle: usize,
+    hop: usize,
+    /// `hop_height` as a launch-speed factor (height goes as speed², airtime as speed).
+    hop_speed: f32,
+    /// `touch_damage`: the touch reach in level units (0 = off), from the drawn height.
+    touch_reach: i32,
+    /// `camera_distance`, as the follow camera's target distance.
+    camera_distance: i32,
+    /// Seconds in the air (0 on the ground), and a free clock for the idle loop.
+    air: f32,
+    clock: f32,
+}
+
+/// Deviation (mod), hop gait: seconds a low hop and a full jump stay in the air, which the
+/// hop animation is stretched over (26 and 47 ticks at 60 Hz, printed by the hop gait test in game.rs).
+const HOP_AIR_LOW: f32 = 0.43;
+const HOP_AIR_FULL: f32 = 0.78;
+
+/// Deviation (mod): the creature's rest-pose height over Buzz's, from their parts' bounds.
+fn height_ratio(buzz: &[Option<ts2::modding::Bounds>], other: &[Option<ts2::modding::Bounds>]) -> f32 {
+    let h = |b: &[Option<ts2::modding::Bounds>]| {
+        let (lo, hi) = b.iter().flatten().fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x.lo[1]), hi.max(x.hi[1])));
+        (hi - lo).max(1.0)
+    };
+    h(other) / h(buzz)
+}
+
+/// Deviation (mod): finds `want` (a creature name) in the current level, else in `model`
+/// (relative to the game folder), else in every level's `.ngn`. A creature from another file
+/// brings its textures into the level's table, renamed so they cannot clash.
+fn build_play_as(ngn: &mut ngn::Ngn, game: Option<&std::path::Path>) -> Option<PlayAsState> {
+    let mods = MODS.get()?;
+    let (m, pa) = ts2::modding::active_play_as(mods)?;
+    println!("play_as: {} from mod {} ({})", pa.creature, m.manifest.id, m.dir.display());
+    if !ngn.creatures.iter().any(|c| c.id == 0) {
+        println!("play_as: this scene has no Buzz; playing as Buzz");
+        return None;
+    }
+    let by_name = |g: &ngn::Ngn| g.creatures.iter().position(|c| c.name.eq_ignore_ascii_case(&pa.creature));
+    let mut source: Option<(ngn::Creature, Option<Vec<ngn::Texture>>)> = None;
+    if pa.model.is_none() && let Some(i) = by_name(ngn) {
+        source = Some((ngn.creatures[i].clone(), None));
+    }
+    if source.is_none() {
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        match (&pa.model, game) {
+            (Some(model), Some(g)) => files.push(g.join(model)),
+            (None, Some(g)) => files.extend((0..=20).flat_map(|n| ["level.ngn", "level1.ngn"].map(|f| g.join(format!("data/level{n:02}/{f}"))))),
+            _ => {}
+        }
+        for f in files {
+            if let Some(g) = fs::read(&f).ok().and_then(|b| ngn::parse(&b).ok())
+                && let Some(i) = by_name(&g)
+            {
+                println!("play_as: model from {}", f.display());
+                source = Some((g.creatures[i].clone(), Some(g.textures)));
+                break;
+            }
+        }
+    }
+    let Some((mut creature, textures)) = source else {
+        println!("play_as: no creature named {} found; playing as Buzz", pa.creature);
+        return None;
+    };
+    if let Some(textures) = textures {
+        // Textures are looked up by name in the level's table: bring the creature's own,
+        // under a prefix.
+        let mut renamed = Vec::new();
+        let mut rename = |name: &mut String| {
+            if let Some(t) = textures.iter().find(|t| t.name == *name) {
+                let new = format!("mod:{}", t.name);
+                if !renamed.contains(&new) {
+                    renamed.push(new.clone());
+                    ngn.textures.push(ngn::Texture { name: new.clone(), bmp: t.bmp.clone() });
+                }
+                *name = new;
+            }
+        };
+        creature.nodes.iter_mut().filter_map(|n| n.mesh.as_mut()).flat_map(|m| m.textures.iter_mut()).for_each(&mut rename);
+        creature.shared_textures.iter_mut().for_each(&mut rename);
+    }
+    let bounds = |c: &ngn::Creature| -> Vec<Option<ts2::modding::Bounds>> {
+        c.nodes.iter().map(|n| n.mesh.as_ref().and_then(|m| ts2::modding::Bounds::of(m.vertices.iter().map(|v| v.pos)))).collect()
+    };
+    let buzz = ngn.creatures.iter().find(|c| c.id == 0)?;
+    let anims: Vec<anim::Animation> = creature.animations.iter().filter_map(|a| anim::parse(a).ok()).collect();
+    let (idle, hop) = (pa.idle.unwrap_or(0), pa.hop.unwrap_or(1));
+    if pa.animation == ts2::modding::AnimationMode::Hop && (idle >= anims.len() || hop >= anims.len()) {
+        println!("play_as: {} has {} animations; idle {idle} / hop {hop} out of range; playing as Buzz", pa.creature, anims.len());
+        return None;
+    }
+    // Deviation (mod): touch damage reaches as far as Buzz's spin (400), scaled up with the
+    // drawn height over Buzz's (the Tin Man at full size is about 2.6 times as tall).
+    let touch_reach = if pa.touch_damage { (400.0 * (height_ratio(&bounds(buzz), &bounds(&creature)) * pa.scale).max(1.0)).round() as i32 } else { 0 };
+    let retarget = ts2::modding::Retarget::new(&bounds(buzz), &bounds(&creature), &pa.map, &pa.rest, &pa.joints);
+    println!("play_as: node map (creature node -> Buzz node): {:?}", retarget.map);
+    Some(PlayAsState { creature, retarget, scale: pa.scale, laser: pa.laser, mode: pa.animation, anims, idle, hop, hop_speed: pa.hop_height.max(0.0).sqrt(), touch_reach, camera_distance: (ts2::camera::DISTANCE as f32 * pa.camera_distance.max(0.1)).round() as i32, air: 0.0, clock: 0.0 })
+}
 /// Animation playback rate in frames per second. The original rate is not confirmed yet.
 const ANIM_FPS: f32 = 30.0;
 
@@ -512,6 +626,8 @@ struct Viewer {
     /// Animation indices for idle, run and jump. Placeholders until the real ones are identified.
     /// Buzz's move table from toy2.exe; drives his animations in play mode.
     buzz: Option<buzz::BuzzAnimator>,
+    /// Deviation (mod): draw the player as another creature.
+    play_as: Option<PlayAsState>,
     audio: Option<AudioOut>,
     player_yaw_offset: f32,
     jump_pressed: bool,
@@ -1555,15 +1671,27 @@ impl Viewer {
             }
             let move_xz = if talking { [0.0; 2] } else { move_xz };
             let free = !talking && !self.jump_blocked;
+            let no_laser = self.play_as.as_ref().is_some_and(|p| !p.laser);
+            // Deviation (mod): the bounce gait (`animation = "hop"`) is a Player flag; the
+            // viewer only times the hop animation over the airtime.
+            if let Some(pa) = self.play_as.as_mut() {
+                player.hop_gait = pa.mode == ts2::modding::AnimationMode::Hop;
+                player.hop_vy = (game::HOP_VY as f32 * pa.hop_speed).round() as i32;
+                player.touch_reach = pa.touch_reach;
+                pa.clock += dt;
+                pa.air = if player.on_floor { 0.0 } else { pa.air + dt };
+            }
             let input = game::Input {
                 move_xz,
                 jump: free && std::mem::take(&mut self.jump_pressed),
                 jump_held: free && self.keys.contains(&KeyCode::Space),
                 stomp: !talking && std::mem::take(&mut self.stomp_pressed),
                 stomp_held: !talking && self.keys.contains(&KeyCode::KeyE),
-                fire: !talking && std::mem::take(&mut self.fire_pressed),
-                fire_held: !talking && self.fire_held,
-                look: !talking && player.first_person == 0 && self.look_pressed,
+                // Deviation (mod): a play-as mod with `laser = false` has no firing, charging
+                // or first-person mode.
+                fire: !talking && std::mem::take(&mut self.fire_pressed) && !no_laser,
+                fire_held: !talking && self.fire_held && !no_laser,
+                look: !talking && player.first_person == 0 && self.look_pressed && !no_laser,
                 dpad: [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
                     .iter()
                     .filter(|(k, _)| self.keys.contains(k))
@@ -1667,6 +1795,8 @@ impl Viewer {
                     if ticks > 1 {
                         cam_before = Some(c.clone());
                     }
+                    // Deviation (mod): a play-as mod's `camera_distance`.
+                    c.target_distance = self.play_as.as_ref().map_or(ts2::camera::DISTANCE, |p| p.camera_distance);
                     c.tick(player, &self.world);
                     let t = std::mem::take(&mut c.turn_buzz);
                     if t != 0 {
@@ -2618,17 +2748,45 @@ impl Viewer {
                             overlay = (0x1A, f);
                         }
                     }
-                    scene::merge(
-                        &mut batches,
-                        scene::creature_batches_layered(
-                            &self.ngn,
-                            c,
-                            self.interp.buzz(p.pos).to_array(),
-                            yaw,
-                            layer(pose.base),
-                            layer(overlay),
+                    match &self.play_as {
+                        // Deviation (mod): the bounce gait, drawn from the creature's own
+                        // animations: the hop one stretched over the airtime, else its idle.
+                        Some(pa) if pa.mode == ts2::modding::AnimationMode::Hop => {
+                            let airborne = !p.on_floor && pa.air > 0.0;
+                            let (ai, f) = if airborne {
+                                let a = &pa.anims[pa.hop];
+                                let total = if p.hop_low { HOP_AIR_LOW * pa.hop_speed } else { HOP_AIR_FULL };
+                                (pa.hop, (pa.air / total).min(1.0) * (a.frame_count.max(2) - 1) as f32)
+                            } else {
+                                let a = &pa.anims[pa.idle];
+                                (pa.idle, (pa.clock * ANIM_FPS) % (a.frame_count.max(2) - 1) as f32)
+                            };
+                            scene::merge(
+                                &mut batches,
+                                scene::creature_batches_scaled(&self.ngn, &pa.creature, self.interp.buzz(p.pos).to_array(), [0.0, yaw, 0.0], pa.scale, Some((&pa.anims[ai], f))),
+                            );
+                        }
+                        // Deviation (mod): Buzz's pose retargeted onto the substitute creature.
+                        Some(pa) => {
+                            let buzz_pose = scene::layered_matrices(c.nodes.len(), layer(pose.base), layer(overlay));
+                            let matrices = pa.retarget.matrices(&buzz_pose);
+                            scene::merge(
+                                &mut batches,
+                                scene::creature_batches_matrices(&self.ngn, &pa.creature, self.interp.buzz(p.pos).to_array(), yaw, pa.scale, &matrices),
+                            );
+                        }
+                        None => scene::merge(
+                            &mut batches,
+                            scene::creature_batches_layered(
+                                &self.ngn,
+                                c,
+                                self.interp.buzz(p.pos).to_array(),
+                                yaw,
+                                layer(pose.base),
+                                layer(overlay),
+                            ),
                         ),
-                    );
+                    }
                 }
                 (preview, _) => placed.push((ci, p.pos.to_array(), yaw, preview.unwrap_or(0))),
             }
@@ -3709,6 +3867,36 @@ fn run(mut viewer: Viewer, shot: Option<Shot>) {
 fn main() {
     let mut args: Vec<String> = env::args().collect();
     let shot = Shot::take(&mut args);
+    // Deviation (mod): `--mod <dir>` (repeatable) and OPENTS2_MODS.
+    let mut mod_args = Vec::new();
+    while let Some(i) = args.iter().position(|a| a == "--mod") {
+        let words: Vec<String> = args.drain(i..(i + 2).min(args.len())).collect();
+        match words.get(1) {
+            Some(d) => mod_args.push(std::path::PathBuf::from(d)),
+            None => {
+                eprintln!("--mod requires a folder");
+                process::exit(2);
+            }
+        }
+    }
+    let loaded: Result<Vec<_>, String> = ts2::modding::mod_dirs(env::var_os("OPENTS2_MODS").as_deref(), &mod_args).iter().filter(|d| {
+        // A mod folder that is gone (the launcher's list can lag) is skipped with a note; one
+        // that is there but broken is an error.
+        let there = d.join(ts2::modding::MANIFEST).is_file();
+        if !there {
+            eprintln!("mod {}: no {}; skipped", d.display(), ts2::modding::MANIFEST);
+        }
+        there
+    }).map(|d| ts2::modding::load_mod(d)).collect();
+    match loaded {
+        Ok(mods) => {
+            let _ = MODS.set(mods);
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(2);
+        }
+    }
     SILENT.store(shot.is_some(), std::sync::atomic::Ordering::Relaxed);
     if args.get(1).is_some_and(|s| s == "--level") {
         let selected = args.get(2).and_then(|s| s.parse().ok()).and_then(ts2::campaign::level);
@@ -3786,6 +3974,8 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
             }
         }
     }
+    // Deviation (mod): a play-as creature's textures join the level's table before it is uploaded.
+    let play_as = build_play_as(&mut ngn, std::path::Path::new(path).ancestors().nth(3));
     let anims: Vec<Vec<anim::Animation>> =
         ngn.creatures.iter().map(|c| c.animations.iter().filter_map(|a| anim::parse(a).ok()).collect()).collect();
     let creature_idx = creature
@@ -3994,6 +4184,7 @@ fn load(path: &str, creature: Option<&str>) -> Result<Viewer, String> {
         world,
         player: None,
         player_creature,
+        play_as,
         start,
         buzz,
         audio,

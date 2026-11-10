@@ -112,6 +112,10 @@ impl Launcher {
             (None, Some(dir)) => iso::images_in(dir).into_iter().find_map(|p| iso::media_size(&p).ok().filter(|&n| n > 0).map(|n| (p, n))),
             _ => None,
         };
+        if let Some(bundled) = paths::bundled_mods_dir() {
+            let copied = mods::install_examples(&bundled, &paths::mods_dir(), &self.config.examples);
+            self.config.examples.extend(copied);
+        }
         self.found_mods = mods::scan(&paths::mods_dir());
         self.config.mods = mods::reconcile(&self.config.mods, &self.found_mods);
         self.save();
@@ -262,13 +266,23 @@ impl Launcher {
         }
     }
 
-    fn start_modded(&mut self) {
-        let dirs: Vec<PathBuf> = self
-            .config
+    /// The enabled mods' folders, in load order.
+    fn enabled_mod_dirs(&self) -> Vec<PathBuf> {
+        self.config
             .enabled_mods()
             .filter_map(|id| self.found_mods.iter().find(|m| m.id() == id).map(|m| m.dir.clone()))
-            .collect();
+            .collect()
+    }
+
+    fn start_modded(&mut self) {
+        let dirs = self.enabled_mod_dirs();
         self.start(Mode::Modded(dirs), "Modded Toy Story 2");
+    }
+
+    /// The level tester, with the enabled mods if any.
+    fn start_level(&mut self, n: usize) {
+        let dirs = self.enabled_mod_dirs();
+        self.start(Mode::LevelTester(n, dirs), "Level Tester");
     }
 
     fn game_files_tab(&mut self, ui: &mut egui::Ui) {
@@ -365,8 +379,8 @@ impl Launcher {
 
     fn mods_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Mods");
-        ui.colored_label(ui.visuals().warn_fg_color, "Coming soon: mods are listed and ordered here, but the engine doesn't load them yet.");
-        ui.label("Each mod is a folder with a mod.toml, kept outside the game. Later mods override earlier ones.");
+        ui.label("Each mod is a folder with a mod.toml, kept outside the game. Tick the ones you want, then Play Modded. Later mods override earlier ones.");
+        ui.label("The engine loads play-as mods (one character at a time). Replacing the game's files is coming later.");
         ui.horizontal(|ui| {
             ui.label(format!("Folder: {}", paths::mods_dir().display()));
             if ui.button("Open").clicked() {
@@ -399,6 +413,9 @@ impl Launcher {
                     Some(Ok(m)) => {
                         ui.label(egui::RichText::new(&m.name).strong());
                         ui.label(format!("{} {}", m.id, m.version));
+                        if let Some(p) = &m.play_as {
+                            ui.label(format!("plays as {}", p.creature));
+                        }
                         if !m.description.is_empty() {
                             ui.label(&m.description);
                         }
@@ -419,6 +436,12 @@ impl Launcher {
         for p in mods::order_problems(&self.config.mods, &self.found_mods) {
             ui.colored_label(ui.visuals().warn_fg_color, p);
         }
+        let play_as = mods::play_as_mods(&self.config.mods, &self.found_mods);
+        if let [.., (id, creature)] = play_as[..] {
+            if play_as.len() > 1 {
+                ui.colored_label(ui.visuals().warn_fg_color, format!("{} enabled mods change who you play as; the last one, {id}, wins ({creature}).", play_as.len()));
+            }
+        }
         if changed {
             self.save();
         }
@@ -431,11 +454,17 @@ impl Launcher {
     fn level_tester_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Level Tester");
         ui.label("Opens one level in a free camera. WASD flies, F plays as Buzz and back, Escape closes.");
+        let enabled: Vec<String> = self.config.enabled_mods().map(str::to_owned).collect();
+        let modded = !enabled.is_empty();
+        if modded {
+            ui.label(format!("With mods: {} (change them on the Mods tab). F plays as the mod's character.", enabled.join(", ")));
+        }
         ui.add_space(8.0);
         let name = ts2::campaign::level(self.config.level).map_or("", |l| l.name);
         let ready = self.game.is_ok() && self.running.is_none();
-        if ui.add_enabled(ready, play_button(&format!("▶  Play {}. {name}", self.config.level))).on_hover_text("Or double-click a level").clicked() {
-            self.start(Mode::LevelTester(self.config.level), "Level Tester");
+        let label = format!("▶  Play {}. {name}{}", self.config.level, if modded { " (modded)" } else { "" });
+        if ui.add_enabled(ready, play_button(&label)).on_hover_text("Or double-click a level").clicked() {
+            self.start_level(self.config.level);
         }
         ui.add_space(8.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -447,7 +476,7 @@ impl Launcher {
                     self.save();
                 }
                 if r.double_clicked() && ready {
-                    self.start(Mode::LevelTester(l.number), "Level Tester");
+                    self.start_level(l.number);
                 }
             }
         });

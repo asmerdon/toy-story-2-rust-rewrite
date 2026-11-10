@@ -21,7 +21,7 @@ fn shoot(mode: Mode, frames: &str) -> Option<PathBuf> {
     let name = match &mode {
         Mode::Original => "original".to_string(),
         Mode::Modded(_) => "modded".to_string(),
-        Mode::LevelTester(n) => format!("level{n}"),
+        Mode::LevelTester(n, _) => format!("level{n}"),
     };
     let shot = home.join(format!("{name}.png"));
     let _ = std::fs::remove_file(&shot);
@@ -49,5 +49,5 @@ fn modded_game_starts() {
 
 #[test]
 fn level_tester_starts() {
-    shoot(Mode::LevelTester(4), "30");
+    shoot(Mode::LevelTester(4, vec![]), "30");
 }

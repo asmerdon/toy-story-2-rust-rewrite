@@ -53,6 +53,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#Root}\target\release\opents2.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\target\release\ts2-viewer.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "disclaimer.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion
+; The example mods (manifests only, no game data). The launcher copies them once into the
+; player's mods folder, where they can be edited.
+Source: "{#Root}\mods\*"; DestDir: "{app}\mods"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 Name: "{autoprograms}\OpenTS2"; Filename: "{app}\opents2.exe"; Comment: "Play Toy Story 2 with OpenTS2"

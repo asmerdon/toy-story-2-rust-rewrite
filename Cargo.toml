@@ -29,7 +29,9 @@ glam = "0.29"
 oxideav-mpeg12video = "0.0.13"
 pollster = "0.4"
 rodio = { version = "0.19", default-features = false }
+serde = { version = "1", features = ["derive"] }
 symphonia = { version = "0.6.1", default-features = false, features = ["mp2"] }
+toml = "0.8"
 wgpu = "24.0"
 winit = "0.30"
 

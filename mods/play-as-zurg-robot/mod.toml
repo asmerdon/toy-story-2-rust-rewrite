@@ -1,0 +1,16 @@
+id = "play-as-zurg-robot"
+name = "Play as a Zurg robot"
+version = "0.1.0"
+authors = ["lewiloon2k"]
+description = "Bounce through any level as one of Zurg's spring robots: hold a direction to hop."
+engine = "0.1"
+
+[play_as]
+creature = "ZURG1"
+model = "data/level01/level.ngn"
+animation = "hop"
+scale = 1.0
+laser = false
+idle = 0
+hop = 1
+hop_height = 4.0   # walking hop: 4x the default low hop (a little higher than Buzz's full jump)

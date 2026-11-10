@@ -1,0 +1,17 @@
+id = "play-as-tinman"
+name = "Play as the Tin Man"
+version = "0.2.0"
+authors = ["lewiloon2k"]
+description = "Bounce through any level as the level 1 boss, at full size, flattening enemies you touch."
+engine = "0.1"
+
+[play_as]
+creature = "TINMAN"
+model = "data/level01/level.ngn"
+animation = "hop"
+scale = 1.0            # the boss's own size (about 2.6 times Buzz's height); collision stays Buzz's
+laser = false
+idle = 0
+hop = 2
+camera_distance = 2.5  # the follow camera further back, to see all of him
+touch_damage = true    # touching an enemy hits it as Buzz's spin does; harmful ones don't hurt him

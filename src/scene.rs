@@ -401,10 +401,11 @@ pub fn creature_batches_layered(
     creature_batches_placed(ngn, c, Place::new(origin, yaw), base, overlay)
 }
 
-fn creature_batches_placed(ngn: &Ngn, c: &Creature, place: Place, base: Option<(&Animation, f32)>, overlay: Option<(&Animation, f32)>) -> Vec<Batch> {
-    let mut out = Vec::new();
+/// Per-node matrices of a base animation with an overlay on top (the move table's two layers),
+/// the overlay moved by the base's root offset. `None` = the node stays at rest.
+pub fn layered_matrices(nodes: usize, base: Option<(&Animation, f32)>, overlay: Option<(&Animation, f32)>) -> Vec<Option<[[f32; 4]; 4]>> {
     let offset = root_offset(base, overlay).unwrap_or([0.0; 3]);
-    let matrices: Vec<Option<[[f32; 4]; 4]>> = (0..c.nodes.len())
+    (0..nodes)
         .map(|n| {
             let over = overlay.and_then(|(a, t)| a.matrix_at(n, t)).map(|mut m| {
                 (0..3).for_each(|k| m[3][k] += offset[k]);
@@ -412,7 +413,28 @@ fn creature_batches_placed(ngn: &Ngn, c: &Creature, place: Place, base: Option<(
             });
             over.or_else(|| base.and_then(|(a, t)| a.matrix_at(n, t)))
         })
-        .collect();
+        .collect()
+}
+
+/// Deviation (mod): draws creature `c` with explicit per-node matrices (a retargeted pose),
+/// placed like [`creature_batches_layered`] but scaled by `scale` about its origin.
+pub fn creature_batches_matrices(ngn: &Ngn, c: &Creature, origin: [f32; 3], yaw: f32, scale: f32, matrices: &[Option<[[f32; 4]; 4]>]) -> Vec<Batch> {
+    let mut place = Place::new(origin, yaw);
+    for row in place.m.iter_mut() {
+        for v in row.iter_mut() {
+            *v *= scale;
+        }
+    }
+    creature_batches_with_matrices(ngn, c, place, matrices)
+}
+
+fn creature_batches_placed(ngn: &Ngn, c: &Creature, place: Place, base: Option<(&Animation, f32)>, overlay: Option<(&Animation, f32)>) -> Vec<Batch> {
+    let matrices = layered_matrices(c.nodes.len(), base, overlay);
+    creature_batches_with_matrices(ngn, c, place, &matrices)
+}
+
+fn creature_batches_with_matrices(ngn: &Ngn, c: &Creature, place: Place, matrices: &[Option<[[f32; 4]; 4]>]) -> Vec<Batch> {
+    let mut out = Vec::new();
     for (n, node) in c.nodes.iter().enumerate() {
         if node.hidden {
             continue;

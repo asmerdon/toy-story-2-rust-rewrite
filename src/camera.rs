@@ -41,7 +41,7 @@ fn diff12(a: i32, b: i32) -> i32 {
 }
 
 /// Camera distance target (0x50A128) and lag (0x52AD98) as 0x403450 sets them.
-const DISTANCE: i32 = 0x4B0;
+pub const DISTANCE: i32 = 0x4B0;
 const LAG: i32 = 0x10;
 const REST_PITCH: i32 = 0x40;
 /// Auto-follow rate divisor while running (0x2A; 0x60 while skidding).
@@ -80,6 +80,9 @@ pub struct Camera {
     prev_pad: u32,
     /// What the camera buttons have turned Buzz by, for the caller to apply.
     pub turn_buzz: i32,
+    /// Deviation (mod): the distance the camera eases back to (`DISTANCE` unless a play-as
+    /// mod's `camera_distance` scales it for a bigger character).
+    pub target_distance: i32,
 }
 
 impl Camera {
@@ -88,7 +91,7 @@ impl Camera {
         let b = obj_pos(buzz);
         let f = buzz.facing;
         let pos = [b[0] + ((sin12(f - 0x800) * 4) * DISTANCE >> 9), b[1] - 0x3200, b[2] + ((sin12(f - 0x400) * 4) * DISTANCE >> 9)];
-        Camera { pos, height_target: b[1], height: b[1], yaw: f, pitch: REST_PITCH, distance: DISTANCE, look_yaw: f, look_pitch: 0, idle: 0, swing: 0, focus: None, ride: 0, whisker: 0, whisker_rate: 0, passive: false, pad: 0, prev_pad: 0, turn_buzz: 0 }
+        Camera { pos, height_target: b[1], height: b[1], yaw: f, pitch: REST_PITCH, distance: DISTANCE, look_yaw: f, look_pitch: 0, idle: 0, swing: 0, focus: None, ride: 0, whisker: 0, whisker_rate: 0, passive: false, pad: 0, prev_pad: 0, turn_buzz: 0, target_distance: DISTANCE }
     }
 
     /// One game tick.
@@ -107,7 +110,7 @@ impl Camera {
             self.ride = (self.ride - 1).max(0);
         }
         // Distance eases back to its target at 0x20 per tick.
-        self.distance += (DISTANCE - self.distance).clamp(-0x20, 0x20);
+        self.distance += (self.target_distance - self.distance).clamp(-0x20, 0x20);
         let still = (buzz.vel[0].abs() < 4 && buzz.vel[2].abs() < 4 && buzz.mantle == 0 && buzz.coyote != 0) || (buzz.climb > 0 && buzz.state == crate::buzz::state::CLIMB_HANG);
         if still {
             // Standing: after a moment, swing round behind Buzz.
@@ -170,7 +173,7 @@ impl Camera {
             self.turn_to_focus(b);
             // Where the camera would go, seen from Buzz: a wall in the way shortens the
             // distance at once. The ball swept grows the longer he has stood (0x4045E0).
-            let off = self.offset(DISTANCE);
+            let off = self.offset(self.target_distance);
             let delta = [off[0], self.height - b[1] + off[1], off[2]];
             let r = if self.idle < 0x42 { (self.idle / 2) * 0x50 + 200 } else { 0xB18 };
             if let Some((cut, _)) = camera_ray(world, [b[0], b[1] - 0x1F00, b[2]], delta, r) {

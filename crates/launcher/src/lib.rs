@@ -4,7 +4,7 @@
 //! - [`install`]: finding and checking the player's game folder and disc folder.
 //! - [`iso`]: copying the music and movies out of a disc image.
 //! - [`config`]: the per-user settings file, `opents2.toml`.
-//! - [`mods`]: the mod folder and its manifests (phase 1: listed, not yet loaded).
+//! - [`mods`]: the mod folder, its manifests and the example mods.
 //! - [`launch`]: the command lines that start `ts2-viewer`.
 //!
 //! See docs/opents2-design.md for the model these follow (OpenMW's launcher and config).
