@@ -1,3 +1,5 @@
+# This project can now be found here: https://github.com/opents2-project/OpenToyStory2
+
 # Toy Story 2 – Rust Rewrite
 
 A clean-room reimplementation of the 1999 PC game *Toy Story 2: Buzz Lightyear to the Rescue*, written in Rust.
