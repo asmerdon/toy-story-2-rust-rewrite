@@ -32,6 +32,37 @@ pub struct Beam {
     pub width: u8,
 }
 
+/// Deviation (mod): a weapon mod's bullet: a short tracer that flies from `from` to `to`
+/// (object units) instead of the laser's long fading beam.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bullet {
+    pub from: [i32; 3],
+    pub to: [i32; 3],
+    /// Distance the head has flown from `from` (object units).
+    pub flown: f32,
+    pub color: [u8; 3],
+    pub width: u8,
+}
+
+/// Tracer speed and length, level units: it covers the 4096-unit range in about 27 ticks.
+const BULLET_SPEED: f32 = 150.0 * 32.0;
+const BULLET_LENGTH: f32 = 160.0 * 32.0;
+
+impl Bullet {
+    /// The tracer's two ends as a ribbon (drawn like a beam, at full brightness).
+    fn ribbon(&self) -> Option<Beam> {
+        let (a, b) = (Vec3::from(self.from.map(|v| v as f32)), Vec3::from(self.to.map(|v| v as f32)));
+        let total = a.distance(b);
+        let u = (b - a) / total.max(1.0);
+        let (head, tail) = (self.flown.min(total), (self.flown - BULLET_LENGTH).max(0.0));
+        (head - tail > 32.0).then(|| Beam { start: (a + u * tail).to_array().map(|v| v as i32), end: (a + u * head).to_array().map(|v| v as i32), life: 0x20, steps: 1, color: self.color, width: self.width, ..Default::default() })
+    }
+
+    fn done(&self) -> bool {
+        self.flown - BULLET_LENGTH >= Vec3::from(self.from.map(|v| v as f32)).distance(Vec3::from(self.to.map(|v| v as f32)))
+    }
+}
+
 /// Something a shot did that the caller plays or shows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Event {
@@ -47,6 +78,8 @@ pub struct Lasers {
     pub beams: [Beam; 4],
     /// Ribbons queued for this frame only (0x44E100: creatures' beams), drawn like beams.
     pub ribbons: Vec<Beam>,
+    /// Deviation (mod): tracers in flight (a weapon mod's `shot = "bullet"`); empty otherwise.
+    pub bullets: Vec<Bullet>,
     /// The game's random bytes and read position (0x52ADAC).
     random: Vec<u8>,
     rpos: usize,
@@ -174,8 +207,22 @@ impl Lasers {
         (bits & 4 != 0).then_some(end)
     }
 
+    /// Deviation (mod): turns the beams a shot just made (full life) into tracers that leave
+    /// from the muzzle and fly to where the beam ended. A charged beam (wide) gives a fatter one.
+    pub fn bulletize(&mut self) {
+        for b in self.beams.iter_mut().filter(|b| b.life == 0x20) {
+            let charged = b.width > 0x20;
+            self.bullets.push(Bullet { from: b.start, to: b.end, flown: 0.0, color: if charged { [0xFF, 0x98, 0x18] } else { [0xFF, 0xC8, 0x30] }, width: if charged { 0x1C } else { 0x12 } });
+            b.life = 0;
+        }
+    }
+
     /// 0x4A5C40's movement for one tick.
     pub fn tick(&mut self) {
+        for b in &mut self.bullets {
+            b.flown += BULLET_SPEED;
+        }
+        self.bullets.retain(|b| !b.done());
         for b in &mut self.beams {
             if b.life == 0 {
                 continue;
@@ -198,7 +245,8 @@ impl Lasers {
     /// height across it (0x4B9100's corner order); additive, fading with life.
     pub fn beams_batches(&self, camera: Vec3, texture: Option<(usize, [f32; 2], [f32; 2], [[f32; 2]; 3])>) -> Vec<Batch> {
         let mut out = Vec::new();
-        for b in self.beams.iter().chain(self.ribbons.iter()).filter(|b| b.life > 0) {
+        let tracers: Vec<Beam> = self.bullets.iter().filter_map(Bullet::ribbon).collect();
+        for b in self.beams.iter().chain(self.ribbons.iter()).chain(tracers.iter()).filter(|b| b.life > 0) {
             let end = Vec3::from(b.end.map(|v| v as f32 / 32.0));
             let start = Vec3::from(b.start.map(|v| v as f32 / 32.0));
             let dir = start - end;

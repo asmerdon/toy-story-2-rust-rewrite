@@ -428,6 +428,12 @@ pub fn creature_batches_matrices(ngn: &Ngn, c: &Creature, origin: [f32; 3], yaw:
     creature_batches_with_matrices(ngn, c, place, matrices)
 }
 
+/// Deviation (mod): where a point of a creature's model space lands when the creature is drawn
+/// by `creature_batches_matrices` with the same `origin`, `yaw` and `scale`.
+pub fn creature_point(origin: [f32; 3], yaw: f32, scale: f32, p: [f32; 3]) -> [f32; 3] {
+    Place::new(origin, yaw).apply(p.map(|v| v * scale))
+}
+
 fn creature_batches_placed(ngn: &Ngn, c: &Creature, place: Place, base: Option<(&Animation, f32)>, overlay: Option<(&Animation, f32)>) -> Vec<Batch> {
     let matrices = layered_matrices(c.nodes.len(), base, overlay);
     creature_batches_with_matrices(ngn, c, place, &matrices)

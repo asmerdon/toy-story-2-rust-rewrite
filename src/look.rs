@@ -68,6 +68,10 @@ pub struct FirstPerson {
     /// The level's hook points (`level.dat` list 59, level units); with hooks in hand they
     /// can be targeted too, as target 1000 + their index.
     pub hooks: Vec<[i32; 3]>,
+    /// Deviation (mod), `[first_person]`: the view (and the arms) follow the mouse at once
+    /// instead of easing (`smoothing = false`), and no breathing (sounds and bob).
+    pub snap: bool,
+    pub no_breath: bool,
 }
 
 /// Targets from here on are hook points (0x50A4FC ≥ 1000).
@@ -316,8 +320,13 @@ impl FirstPerson {
         }
         self.pitch = (v - 0x400) & 0xFFF;
         // 0x50A510's shake tips the view here too.
-        self.cam_pitch = (self.cam_pitch + wrap(self.pitch - self.cam_pitch + crate::camera::shake_wobble(world)) / 8) & 0xFFF;
-        self.cam_yaw = (self.cam_yaw + wrap(p.facing - self.cam_yaw) / 8) & 0xFFF;
+        if self.snap {
+            self.cam_pitch = (self.pitch + crate::camera::shake_wobble(world)) & 0xFFF;
+            self.cam_yaw = p.facing;
+        } else {
+            self.cam_pitch = (self.cam_pitch + wrap(self.pitch - self.cam_pitch + crate::camera::shake_wobble(world)) / 8) & 0xFFF;
+            self.cam_yaw = (self.cam_yaw + wrap(p.facing - self.cam_yaw) / 8) & 0xFFF;
+        }
         p.look = [self.cam_pitch, self.cam_yaw];
         // Locked on a hook point (0x50A540 with 0x50A4FC ≥ 1000): firing throws the hook.
         p.hook_target = match self.target {
@@ -357,19 +366,23 @@ impl FirstPerson {
             specials.set_scale(id, [0x800; 3]);
             specials.set_pos(id, eye.map(|v| v >> 5));
         }
-        self.lag[0] = (self.lag[0] - wrap(self.lag[0] - self.pitch) / 6) & 0xFFF;
-        self.lag[1] = (self.lag[1] - wrap(self.lag[1] - p.facing) / 6) & 0xFFF;
-        let bob = sin14(self.breath) >> 10;
+        if self.snap {
+            self.lag = [self.pitch, p.facing];
+        } else {
+            self.lag[0] = (self.lag[0] - wrap(self.lag[0] - self.pitch) / 6) & 0xFFF;
+            self.lag[1] = (self.lag[1] - wrap(self.lag[1] - p.facing) / 6) & 0xFFF;
+        }
+        let bob = if self.no_breath { 0 } else { sin14(self.breath) >> 10 };
         let half = bob / 2;
         specials.turn_from_own(MODEL[0], [0, (p.facing - 0x400) & 0xFFF, (self.pitch + half) & 0xFFF]);
         specials.turn_from_own(MODEL[1], [0, (self.lag[1] - 0x400) & 0xFFF, (self.lag[0] + bob) & 0xFFF]);
         specials.turn_from_own(MODEL[2], [0, (self.lag[1] - 0x400) & 0xFFF, (half + self.lag[0]) & 0xFFF]);
         let before = self.breath;
         self.breath += if p.health < 2 { 0x40 } else { 0x20 };
-        if before < 0x800 && self.breath >= 0x800 {
+        if before < 0x800 && self.breath >= 0x800 && !self.no_breath {
             self.sounds.push(0x13);
         }
-        if before < 0x1000 && self.breath >= 0x1000 {
+        if before < 0x1000 && self.breath >= 0x1000 && !self.no_breath {
             self.sounds.push(0x14);
         }
         self.breath &= 0xFFF;

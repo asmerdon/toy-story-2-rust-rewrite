@@ -957,6 +957,9 @@ pub fn dpad_heading(dpad: u8, camera_to_buzz: i32) -> Option<i32> {
     (dpad & 0xF0 != 0).then(|| (TABLE[(dpad >> 4) as usize] + camera_to_buzz) & 0xFFF)
 }
 
+/// Deviation (mod): first-person walking speed, as a share of his running top speed.
+const FP_WALK: f32 = 1.0;
+
 /// D-pad bits as `Input::dpad` holds them (the PS1 pad layout).
 pub mod pad {
     pub const UP: u8 = 0x10;
@@ -1169,6 +1172,10 @@ pub struct Player {
     /// Deviation (mod): `touch_damage`: the reach (level units) within which touching a
     /// creature hits it as the spin does; 0 = off.
     pub touch_reach: i32,
+    /// Deviation (mod): `[first_person] move`: in first person he moves as out of it (the
+    /// stick strafes, the view keeps his facing; jumps, ledges, zip lines, poles, the mantle,
+    /// the hook's pull and the boots all work) instead of standing still.
+    pub fp_move: bool,
     /// 0x882920: hover boots ticks left (600, 0x4A4B70), and the height he holds above the
     /// floor (0x882928, 0x2000–0xC000; jump held raises it).
     pub hover: i32,
@@ -1307,6 +1314,7 @@ impl Player {
             hop_low: false,
             hop_vy: HOP_VY,
             touch_reach: 0,
+            fp_move: false,
             hover: 0,
             hover_height: 0x2000,
             grapple: 0,
@@ -1617,8 +1625,8 @@ impl Player {
                 }
                 self.grapple = 2;
                 self.grapple_t = 0;
-                // Pulled, he leaves first person.
-                if self.first_person != 0 {
+                // Pulled, he leaves first person (Deviation (mod): not when moving in it).
+                if self.first_person != 0 && !self.fp_move {
                     self.first_person = 5;
                 }
             } else {
@@ -1876,7 +1884,9 @@ impl Player {
         }
         world.set_hold(self.mantle_mover);
         let (stick, dpad) = if locked { ([0.0; 2], 0) } else { (stick, dpad) };
-        let still = locked || self.first_person != 0;
+        // Deviation (mod): moving in first person (`fp_move`) nothing is held back.
+        let fpm = self.first_person != 0 && self.fp_move;
+        let still = locked || (self.first_person != 0 && !fpm);
         let (jump_held, jump_pressed, stomp_pressed) = if still { (false, false, false) } else { (jump_held, jump_pressed, stomp_pressed) };
         // Deviation (mod): the bounce gait. A direction held on the ground starts a low hop by
         // itself (the jump is held while it rises, so it is not cut short); a pressed or held
@@ -2008,6 +2018,11 @@ impl Player {
         }
         // Movement modes in the original's order (0x436220): zip line, ledge, pole; each
         // returns 2 (it moved Buzz itself) or 1 (steer and accelerate, no gravity this tick).
+        // Deviation (mod): moving in first person, the view sets where he faces; nothing
+        // turns him towards a stick direction.
+        if fpm {
+            self.target = self.facing;
+        }
         let mut mode = self.zip_tick(world, jump_pressed, jump_held);
         let mut steer = mode == 1;
         if mode == 0 {
@@ -2021,10 +2036,12 @@ impl Player {
             // by the hook, its velocity alone.
             _ if climb == 2 || self.grapple == 2 => {}
             // First person (code 8 of 0x436220): gravity and slowing down only.
-            0 if self.first_person != 0 => {
+            0 if self.first_person != 0 && !fpm => {
                 self.airborne(jump_held);
                 self.accelerate(side_decel, friction, top, false);
             }
+            // Deviation (mod): off a ledge or a zip line in first person: strafing.
+            _ if climb == 1 && steer && fpm => self.fp_steer(stick, magnitude, top, side_decel, friction),
             // Off a ledge or a zip line: steer with the stick, accelerate, no gravity.
             _ if climb == 1 && steer => {
                 let mut max = top;
@@ -2040,7 +2057,9 @@ impl Player {
             // Just let go of a pole: steer and accelerate, no airborne step this tick.
             _ if climb == 1 => {
                 let max = top;
-                self.turn(None);
+                if !fpm {
+                    self.turn(None);
+                }
                 self.accelerate(side_decel, friction, max, false);
             }
             0 => {
@@ -2054,13 +2073,17 @@ impl Player {
                 }
                 let mut max = top;
                 if rocket {
-                    // Always thrusting at up to 0x800; the stick only steers.
-                    if pushing {
+                    // Always thrusting at up to 0x800; the stick only steers (in first person,
+                    // a mod's: the view steers).
+                    if pushing && !fpm {
                         let angle = (stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32;
                         self.target = angle & 0xFFF;
                     }
                     self.rocket_turn();
                     self.accelerate(side_decel, friction, 0x800, true);
+                } else if fpm {
+                    // Deviation (mod): running in first person: strafing.
+                    self.fp_steer(stick, magnitude, max, side_decel, friction);
                 } else {
                     if pushing {
                         let angle = (stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32;
@@ -2278,12 +2301,17 @@ impl Player {
             }
             // Jump off, pushed along the stick (or the facing).
             self.vel[1] = -0x400;
+            let mut push = self.facing;
             if stick[0] != 0.0 || stick[1] != 0.0 {
-                self.facing = ((stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32) & 0xFFF;
-                self.target = self.facing;
+                push = ((stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32) & 0xFFF;
+                // Deviation (mod): moving in first person the view keeps his facing.
+                if !(self.first_person != 0 && self.fp_move) {
+                    self.facing = push;
+                    self.target = self.facing;
+                }
             }
-            self.vel[0] = (sin12(self.facing) * 4) / 2;
-            self.vel[2] = (cos12(self.facing) * 4) / 2;
+            self.vel[0] = (sin12(push) * 4) / 2;
+            self.vel[2] = (cos12(push) * 4) / 2;
             self.jump = JumpPhase::Holding;
         } else {
             // Over the top: a full jump straight up.
@@ -2483,6 +2511,44 @@ impl Player {
         let diff = (self.facing - self.target) & 0xFFF;
         let (amount, sign) = if diff > 0x7FF { (0x1000 - diff, 1) } else { (diff, -1) };
         self.facing = (self.facing + sign * amount.min(TURN_CAP) / 8) & 0xFFF;
+    }
+
+    /// Deviation (mod): first-person movement: towards the stick's heading, or slowing down.
+    fn fp_steer(&mut self, stick: [f32; 2], magnitude: f32, top: i32, side_decel: i32, friction: i32) {
+        if magnitude > 0.0 {
+            let angle = (stick[0].atan2(stick[1]) / std::f32::consts::TAU * 4096.0).round() as i32;
+            self.fp_walk(angle & 0xFFF, (top as f32 * FP_WALK * magnitude) as i32);
+        } else {
+            self.accelerate(side_decel, friction, top, false);
+        }
+    }
+
+    /// Deviation (mod): first-person walking: the velocity eases straight towards `angle` at
+    /// `max` (so he strafes and backs up), the facing left to the view.
+    fn fp_walk(&mut self, angle: i32, max: i32) {
+        // The caps `accelerate` puts on him first: a pole's or a zip line's jump-off speed
+        // (up to 0x2000) comes down to running pace at once, as it does out of first person.
+        let cap = if self.launched && !self.on_floor {
+            0xB80
+        } else if self.rocket > 0 {
+            0x800
+        } else {
+            MAX_FORWARD
+        };
+        let speed = (self.vel[0] as f32).hypot(self.vel[2] as f32);
+        if speed > cap as f32 {
+            let k = cap as f32 / speed;
+            self.vel[0] = (self.vel[0] as f32 * k) as i32;
+            self.vel[2] = (self.vel[2] as f32 * k) as i32;
+        }
+        let want = [sin12(angle) * max / 4096, cos12(angle) * max / 4096];
+        let step = self.accel_now + FRICTION;
+        for (k, w) in [(0, want[0]), (2, want[1])] {
+            let v = self.vel[k];
+            self.vel[k] = if v < w { (v + step).min(w) } else { (v - step).max(w) };
+        }
+        self.forward = 0;
+        self.side = 0;
     }
 
     /// 0x4343D0: accelerate along the facing and bleed off sideways speed.
@@ -2779,7 +2845,9 @@ impl Player {
         f |= if self.fall_timer < 0 || self.fall_timer == FALL_PANIC { 0x20 } else { 0 };
         f |= if self.stomp != 0 { 0x40 } else { 0 };
         f |= if self.laser != 0 { 0x80 } else { 0 };
-        f |= if self.first_person != 0 { 0x100 } else { 0 };
+        // Deviation (mod): moving in first person doesn't count, so ledges, zip lines and the
+        // mantle still take him.
+        f |= if self.first_person != 0 && !self.fp_move { 0x100 } else { 0 };
         f |= if self.pushing { 0x200 } else { 0 };
         f |= if self.ledge > 0xF { 0x400 } else { 0 };
         f
@@ -3643,6 +3711,42 @@ mod tests {
         assert!(p.forward > 0x300, "forward {:#x}", p.forward);
     }
 
+    /// Deviation (mod): `fp_move`: in first person the stick walks him (sideways here) and the
+    /// facing stays the view's; without it he stands still, as the original.
+    #[test]
+    fn first_person_walks_only_with_fp_move() {
+        let w = flat_world();
+        for fp_move in [false, true] {
+            let mut p = Player::new(Vec3::ZERO);
+            for _ in 0..5 {
+                p.tick(&w, [0.0; 2], false, false);
+            }
+            p.first_person = 4;
+            p.fp_move = fp_move;
+            let (start, facing) = (p.pos, p.facing);
+            for _ in 0..60 {
+                p.tick(&w, [1.0, 0.0], false, false);
+            }
+            let d = p.pos - start;
+            if fp_move {
+                assert!(d.x > 100.0 && d.z.abs() < 5.0, "moved {d:?}");
+                assert_eq!(p.facing, facing);
+            } else {
+                assert!(d.x.abs() + d.z.abs() < 1.0, "moved {d:?}");
+            }
+            // The view isn't pulled round by the stick.
+            assert_eq!(p.target, p.facing);
+            // Space: only walking in first person jumps.
+            let y = p.pos.y;
+            p.tick(&w, [0.0; 2], true, true);
+            for _ in 0..10 {
+                p.tick(&w, [0.0; 2], true, false);
+            }
+            assert_eq!(p.pos.y < y - 20.0, fp_move, "{fp_move}: y {} from {y}", p.pos.y);
+            assert_ne!(p.first_person, 0);
+        }
+    }
+
     /// The grappling hook: fired in first person at a locked hook point, it flies out, pulls
     /// him in and puts him on the point (0xC0 above it, less the 0x1600 hand), using a hook.
     #[test]
@@ -3693,6 +3797,76 @@ mod tests {
         eprintln!("peak {peak}, end {:?}, caught {caught}", p.pos);
         assert!(caught, "no mantle (peak {peak})");
         assert!((p.pos.y + 800.0).abs() < 20.0 && p.pos.x > 1000.0, "not on the ledge: {:?}", p.pos);
+    }
+
+    /// Deviation (mod): moving in first person (`fp_move`), the mantle still takes him onto a
+    /// high ledge, and he stays in first person.
+    #[test]
+    fn first_person_mantles_onto_a_high_ledge() {
+        let w = ledge_world(800.0);
+        let mut p = Player::new(Vec3::new(800.0, 0.0, 0.0));
+        for _ in 0..10 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        p.set_facing(0x400);
+        p.first_person = 4;
+        p.fp_move = true;
+        let mut caught = false;
+        for i in 0..200 {
+            let jump = (i < 12) || (30..42).contains(&i);
+            p.update(&w, Input { move_xz: [1.0, 0.0], jump: i == 0 || i == 30, jump_held: jump, ..Default::default() }, 1.0 / 60.0);
+            caught |= p.mantle > 0;
+        }
+        assert!(caught, "no mantle");
+        assert!((p.pos.y + 800.0).abs() < 20.0 && p.pos.x > 1000.0, "not on the ledge: {:?}", p.pos);
+        assert_eq!(p.first_person, 4);
+    }
+
+    /// Deviation (mod): moving in first person, a jump-off speed far over running pace (a
+    /// pole's 0x2000) comes down to it at once, as out of first person, and the view's facing
+    /// stays.
+    #[test]
+    fn first_person_jump_off_speed_is_capped() {
+        let w = flat_world();
+        let mut p = Player::new(Vec3::ZERO);
+        for _ in 0..5 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        p.first_person = 4;
+        p.fp_move = true;
+        p.vel = [0x2000, -0x400, 0];
+        p.on_floor = false;
+        p.coyote = 0;
+        let facing = p.facing;
+        p.tick(&w, [1.0, 0.0], false, false);
+        assert!(p.vel[0] <= MAX_FORWARD && p.vel[0] > 0x200, "vel {:?}", p.vel);
+        assert_eq!(p.facing, facing);
+    }
+
+    /// Deviation (mod): moving in first person, the hook pulls him in without leaving it.
+    #[test]
+    fn first_person_hook_pull_keeps_the_view() {
+        let w = flat_world();
+        let mut p = Player::new(Vec3::ZERO);
+        for _ in 0..5 {
+            p.tick(&w, [0.0; 2], false, false);
+        }
+        p.first_person = 4;
+        p.fp_move = true;
+        p.hook_ammo = 1;
+        p.hook_target = Some([2000, -1500, 300]);
+        p.update(&w, Input { fire: true, fire_held: true, ..Default::default() }, 1.0 / 60.0);
+        let (mut pulled, mut landed) = (false, None);
+        for _ in 0..400 {
+            p.update(&w, Input::default(), 1.0 / 60.0);
+            pulled |= p.grapple == 2;
+            if pulled && p.grapple == 0 && landed.is_none() {
+                landed = Some((p.pos, p.first_person));
+            }
+        }
+        let (at, fp) = landed.expect("never pulled in");
+        assert!((at - Vec3::new(2000.0, -1516.0, 300.0)).length() < 4.0, "at {at:?}");
+        assert_eq!(fp, 4);
     }
 
     #[test]

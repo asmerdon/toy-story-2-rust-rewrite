@@ -54,12 +54,19 @@ struct PlayAsState {
     scale: f32,
     /// False: no firing, charging or first-person mode.
     laser: bool,
+    /// A gun held in a hand; firing works with it even without `laser`.
+    weapon: Option<WeaponState>,
     mode: ts2::modding::AnimationMode,
     /// Deviation (mod), hop gait: the creature's own animations, and the numbers of its idle
     /// and hop ones.
     anims: Vec<anim::Animation>,
     idle: usize,
     hop: usize,
+    /// `walk`: the animation while moving on the floor; `auto_hop`: hop while walking.
+    walk: usize,
+    auto_hop: bool,
+    /// `voice`: Buzz's voice lines play.
+    voice: bool,
     /// `hop_height` as a launch-speed factor (height goes as speed², airtime as speed).
     hop_speed: f32,
     /// `touch_damage`: the touch reach in level units (0 = off), from the drawn height.
@@ -69,6 +76,20 @@ struct PlayAsState {
     /// Seconds in the air (0 on the ground), and a free clock for the idle loop.
     air: f32,
     clock: f32,
+}
+
+/// Deviation (mod): `[play_as.weapon]`, loaded.
+struct WeaponState {
+    spec: ts2::modding::Weapon,
+    /// The gun parts only (everything else stripped), textures renamed into the level's table.
+    creature: ngn::Creature,
+    muzzle_local: [f32; 3],
+    /// The holding hand's rest-pose centre (the play-as creature's model units), for `grip`.
+    hand_centre: [f32; 3],
+    /// First person: the play-as creature with only `view.nodes` left (the arm in view).
+    view_arm: Option<ngn::Creature>,
+    /// Where the muzzle was drawn last (game space, level units): the next shot leaves from there.
+    muzzle: std::cell::Cell<Option<[f32; 3]>>,
 }
 
 /// Deviation (mod), hop gait: seconds a low hop and a full jump stay in the air, which the
@@ -85,6 +106,44 @@ fn height_ratio(buzz: &[Option<ts2::modding::Bounds>], other: &[Option<ts2::modd
     h(other) / h(buzz)
 }
 
+/// Deviation (mod): finds creature `want` in the current level (unless `model` names a file),
+/// else in `model` (relative to the game folder), else in every level's `.ngn`. A creature from
+/// another file brings its textures into the level's table, renamed under `prefix` so they
+/// cannot clash.
+fn find_creature(ngn: &mut ngn::Ngn, game: Option<&std::path::Path>, want: &str, model: Option<&str>, prefix: &str) -> Option<ngn::Creature> {
+    let by_name = |g: &ngn::Ngn| g.creatures.iter().position(|c| c.name.eq_ignore_ascii_case(want));
+    if model.is_none() && let Some(i) = by_name(ngn) {
+        return Some(ngn.creatures[i].clone());
+    }
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    match (model, game) {
+        (Some(model), Some(g)) => files.push(g.join(model)),
+        (None, Some(g)) => files.extend((0..=20).flat_map(|n| ["level.ngn", "level1.ngn"].map(|f| g.join(format!("data/level{n:02}/{f}"))))),
+        _ => {}
+    }
+    for f in files {
+        let Some(g) = fs::read(&f).ok().and_then(|b| ngn::parse(&b).ok()) else { continue };
+        let Some(i) = by_name(&g) else { continue };
+        println!("play_as: model {want} from {}", f.display());
+        let mut creature = g.creatures[i].clone();
+        // Textures are looked up by name in the level's table: bring the creature's own,
+        // under a prefix.
+        let mut rename = |name: &mut String| {
+            if let Some(t) = g.textures.iter().find(|t| t.name == *name) {
+                let new = format!("{prefix}{}", t.name);
+                if !ngn.textures.iter().any(|x| x.name == new) {
+                    ngn.textures.push(ngn::Texture { name: new.clone(), bmp: t.bmp.clone() });
+                }
+                *name = new;
+            }
+        };
+        creature.nodes.iter_mut().filter_map(|n| n.mesh.as_mut()).flat_map(|m| m.textures.iter_mut()).for_each(&mut rename);
+        creature.shared_textures.iter_mut().for_each(&mut rename);
+        return Some(creature);
+    }
+    None
+}
+
 /// Deviation (mod): finds `want` (a creature name) in the current level, else in `model`
 /// (relative to the game folder), else in every level's `.ngn`. A creature from another file
 /// brings its textures into the level's table, renamed so they cannot clash.
@@ -96,57 +155,53 @@ fn build_play_as(ngn: &mut ngn::Ngn, game: Option<&std::path::Path>) -> Option<P
         println!("play_as: this scene has no Buzz; playing as Buzz");
         return None;
     }
-    let by_name = |g: &ngn::Ngn| g.creatures.iter().position(|c| c.name.eq_ignore_ascii_case(&pa.creature));
-    let mut source: Option<(ngn::Creature, Option<Vec<ngn::Texture>>)> = None;
-    if pa.model.is_none() && let Some(i) = by_name(ngn) {
-        source = Some((ngn.creatures[i].clone(), None));
-    }
-    if source.is_none() {
-        let mut files: Vec<std::path::PathBuf> = Vec::new();
-        match (&pa.model, game) {
-            (Some(model), Some(g)) => files.push(g.join(model)),
-            (None, Some(g)) => files.extend((0..=20).flat_map(|n| ["level.ngn", "level1.ngn"].map(|f| g.join(format!("data/level{n:02}/{f}"))))),
-            _ => {}
-        }
-        for f in files {
-            if let Some(g) = fs::read(&f).ok().and_then(|b| ngn::parse(&b).ok())
-                && let Some(i) = by_name(&g)
-            {
-                println!("play_as: model from {}", f.display());
-                source = Some((g.creatures[i].clone(), Some(g.textures)));
-                break;
-            }
-        }
-    }
-    let Some((mut creature, textures)) = source else {
+    let Some(creature) = find_creature(ngn, game, &pa.creature, pa.model.as_deref(), "mod:") else {
         println!("play_as: no creature named {} found; playing as Buzz", pa.creature);
         return None;
     };
-    if let Some(textures) = textures {
-        // Textures are looked up by name in the level's table: bring the creature's own,
-        // under a prefix.
-        let mut renamed = Vec::new();
-        let mut rename = |name: &mut String| {
-            if let Some(t) = textures.iter().find(|t| t.name == *name) {
-                let new = format!("mod:{}", t.name);
-                if !renamed.contains(&new) {
-                    renamed.push(new.clone());
-                    ngn.textures.push(ngn::Texture { name: new.clone(), bmp: t.bmp.clone() });
-                }
-                *name = new;
-            }
-        };
-        creature.nodes.iter_mut().filter_map(|n| n.mesh.as_mut()).flat_map(|m| m.textures.iter_mut()).for_each(&mut rename);
-        creature.shared_textures.iter_mut().for_each(&mut rename);
-    }
     let bounds = |c: &ngn::Creature| -> Vec<Option<ts2::modding::Bounds>> {
         c.nodes.iter().map(|n| n.mesh.as_ref().and_then(|m| ts2::modding::Bounds::of(m.vertices.iter().map(|v| v.pos)))).collect()
     };
+    // Deviation (mod): the weapon's gun parts, alone, with their textures in the level's table.
+    let weapon = pa.weapon.as_ref().and_then(|w| {
+        if pa.animation != ts2::modding::AnimationMode::Retarget {
+            println!("play_as: a weapon needs animation = \"retarget\"; none drawn");
+            return None;
+        }
+        let mut gun = find_creature(ngn, game, &w.creature, w.model.as_deref(), "mod:w:")?;
+        let parts = bounds(&gun);
+        let held = w.nodes.iter().filter_map(|&n| parts.get(n).copied().flatten()).reduce(|a, b| ts2::modding::Bounds::of([a.lo, a.hi, b.lo, b.hi]).unwrap_or(a));
+        let Some(held) = held else {
+            println!("play_as: weapon {} has no mesh in nodes {:?}; none drawn", w.creature, w.nodes);
+            return None;
+        };
+        for (i, n) in gun.nodes.iter_mut().enumerate() {
+            if !w.nodes.contains(&i) {
+                n.mesh = None;
+            }
+        }
+        gun.patches.clear();
+        let muzzle_local = w.muzzle.unwrap_or_else(|| ts2::modding::default_muzzle(&held));
+        println!("play_as: weapon {} nodes {:?} in hand node {}, muzzle {:?}", w.creature, w.nodes, w.hand, muzzle_local);
+        let hand_centre = bounds(&creature).get(w.hand).copied().flatten().map_or([0.0; 3], |b| b.centre());
+        let view_arm = w.view.as_ref().map(|v| {
+            let mut arm = creature.clone();
+            for (i, n) in arm.nodes.iter_mut().enumerate() {
+                if !v.nodes.contains(&i) {
+                    n.mesh = None;
+                }
+            }
+            arm.patches.clear();
+            arm
+        });
+        Some(WeaponState { spec: w.clone(), creature: gun, muzzle_local, hand_centre, view_arm, muzzle: std::cell::Cell::new(None) })
+    });
     let buzz = ngn.creatures.iter().find(|c| c.id == 0)?;
     let anims: Vec<anim::Animation> = creature.animations.iter().filter_map(|a| anim::parse(a).ok()).collect();
     let (idle, hop) = (pa.idle.unwrap_or(0), pa.hop.unwrap_or(1));
-    if pa.animation == ts2::modding::AnimationMode::Hop && (idle >= anims.len() || hop >= anims.len()) {
-        println!("play_as: {} has {} animations; idle {idle} / hop {hop} out of range; playing as Buzz", pa.creature, anims.len());
+    let walk = pa.walk.unwrap_or(hop);
+    if pa.animation == ts2::modding::AnimationMode::Hop && (idle >= anims.len() || hop >= anims.len() || walk >= anims.len()) {
+        println!("play_as: {} has {} animations; idle {idle} / hop {hop} / walk {walk} out of range; playing as Buzz", pa.creature, anims.len());
         return None;
     }
     // Deviation (mod): touch damage reaches as far as Buzz's spin (400), scaled up with the
@@ -154,7 +209,7 @@ fn build_play_as(ngn: &mut ngn::Ngn, game: Option<&std::path::Path>) -> Option<P
     let touch_reach = if pa.touch_damage { (400.0 * (height_ratio(&bounds(buzz), &bounds(&creature)) * pa.scale).max(1.0)).round() as i32 } else { 0 };
     let retarget = ts2::modding::Retarget::new(&bounds(buzz), &bounds(&creature), &pa.map, &pa.rest, &pa.joints);
     println!("play_as: node map (creature node -> Buzz node): {:?}", retarget.map);
-    Some(PlayAsState { creature, retarget, scale: pa.scale, laser: pa.laser, mode: pa.animation, anims, idle, hop, hop_speed: pa.hop_height.max(0.0).sqrt(), touch_reach, camera_distance: (ts2::camera::DISTANCE as f32 * pa.camera_distance.max(0.1)).round() as i32, air: 0.0, clock: 0.0 })
+    Some(PlayAsState { creature, retarget, scale: pa.scale, laser: pa.laser, weapon, mode: pa.animation, anims, idle, hop, walk, auto_hop: pa.auto_hop, voice: pa.voice, hop_speed: pa.hop_height.max(0.0).sqrt(), touch_reach, camera_distance: (ts2::camera::DISTANCE as f32 * pa.camera_distance.max(0.1)).round() as i32, air: 0.0, clock: 0.0 })
 }
 /// Animation playback rate in frames per second. The original rate is not confirmed yet.
 const ANIM_FPS: f32 = 30.0;
@@ -953,6 +1008,8 @@ struct Interp {
     specials_prev: std::collections::HashMap<u16, [f32; 3]>,
     /// The camera at the previous and the latest tick.
     cam: Option<(Camera, Camera)>,
+    /// First person: the eye drawn this frame (level units), between the last two ticks.
+    fp_eye: Option<[f32; 3]>,
 }
 
 impl Interp {
@@ -1646,7 +1703,9 @@ impl Viewer {
                 .fold(0, |acc, (_, b)| acc | b);
             // 0x52F3AC is the camera's ideal orbit position (+0xC), so the reference is its
             // orbit yaw; the free camera uses its own position.
-            let to_buzz = match self.orig_cam.as_ref().filter(|_| self.use_orig_cam) {
+            // In first person the view's facing (Deviation (mod): only a mod walks there).
+            let to_buzz = match self.orig_cam.as_ref().filter(|_| self.use_orig_cam && player.first_person != 4) {
+                _ if player.first_person == 4 => player.facing,
                 Some(c) => c.yaw & 0xFFF,
                 None => {
                     let cam_g = Vec3::from(world_to_game(self.cam.pos));
@@ -1671,11 +1730,19 @@ impl Viewer {
             }
             let move_xz = if talking { [0.0; 2] } else { move_xz };
             let free = !talking && !self.jump_blocked;
-            let no_laser = self.play_as.as_ref().is_some_and(|p| !p.laser);
+            // Deviation (mod): a weapon brings firing and first-person mode back.
+            let no_laser = self.play_as.as_ref().is_some_and(|p| !p.laser && p.weapon.is_none());
+            let no_look = no_laser;
+            // Deviation (mod): `[first_person]`.
+            let fp_mod = MODS.get().and_then(|m| ts2::modding::active_first_person(m));
+            let fp_move = fp_mod.is_some_and(|f| f.walk);
+            player.fp_move = fp_move;
+            self.look.snap = fp_mod.is_some_and(|f| !f.smoothing);
+            self.look.no_breath = self.play_as.is_some() || fp_mod.is_some_and(|f| !f.breathing);
             // Deviation (mod): the bounce gait (`animation = "hop"`) is a Player flag; the
             // viewer only times the hop animation over the airtime.
             if let Some(pa) = self.play_as.as_mut() {
-                player.hop_gait = pa.mode == ts2::modding::AnimationMode::Hop;
+                player.hop_gait = pa.mode == ts2::modding::AnimationMode::Hop && pa.auto_hop;
                 player.hop_vy = (game::HOP_VY as f32 * pa.hop_speed).round() as i32;
                 player.touch_reach = pa.touch_reach;
                 pa.clock += dt;
@@ -1691,7 +1758,7 @@ impl Viewer {
                 // or first-person mode.
                 fire: !talking && std::mem::take(&mut self.fire_pressed) && !no_laser,
                 fire_held: !talking && self.fire_held && !no_laser,
-                look: !talking && player.first_person == 0 && self.look_pressed && !no_laser,
+                look: !talking && player.first_person == 0 && self.look_pressed && !no_look,
                 dpad: [(KeyCode::KeyW, game::pad::UP), (KeyCode::KeyS, game::pad::DOWN), (KeyCode::KeyA, game::pad::LEFT), (KeyCode::KeyD, game::pad::RIGHT)]
                     .iter()
                     .filter(|(k, _)| self.keys.contains(k))
@@ -1754,7 +1821,8 @@ impl Viewer {
             if let Some(cr) = self.creatures.as_mut() {
                 for t in 0..ticks {
                     let pad = ts2::look::Pad {
-                        dpad: input.dpad,
+                        // Deviation (mod): walking in first person, the keys move him; the mouse looks.
+                        dpad: if fp_move { 0 } else { input.dpad },
                         r1: self.keys.contains(&KeyCode::KeyX),
                         r1_pressed: r1_pressed && t == 0,
                         l1_pressed: leaving_l1 && t == 0,
@@ -1769,6 +1837,18 @@ impl Viewer {
                     };
                     if player.first_person != 0 {
                         self.look.tick(player, cr, &mut self.particles, &mut self.specials, &self.world, pad);
+                        // Deviation (mod): a play-as creature isn't Buzz: no helmet and arms;
+                        // `[first_person]` can drop either.
+                        let (helmet, arms) = match fp_mod {
+                            _ if self.play_as.is_some() => (false, false),
+                            Some(f) => (f.helmet, f.arms),
+                            None => (true, true),
+                        };
+                        for (k, id) in ts2::look::MODEL.into_iter().enumerate() {
+                            if !(if k == 0 { helmet } else { arms }) {
+                                self.specials.set_scale(id, [0; 3]);
+                            }
+                        }
                     }
                 }
             }
@@ -1811,7 +1891,9 @@ impl Viewer {
                 let to_game = |v: Vec3| Vec3::new(v.x, -v.y, -v.z);
                 let listener = Vec3::from(world_to_game(self.cam.pos));
                 let (right_g, fwd_g) = (to_game(right).normalize_or_zero(), to_game(Vec3::new(fwd.x, 0.0, fwd.z)).normalize_or_zero());
-                for s in sounds {
+                // Deviation (mod): a play-as mod with `voice = false` drops Buzz's voice lines.
+                let mute_voice = self.play_as.as_ref().is_some_and(|p| !p.voice);
+                for s in sounds.into_iter().filter(|s| !(mute_voice && s.voice)) {
                     audio.play(s.id, s.voice, OWNER_BUZZ, player.pos - listener, right_g, fwd_g);
                 }
                 for (s, at) in sounds_at {
@@ -1850,13 +1932,22 @@ impl Viewer {
                 for shot in shots {
                     // The arm's tip: ahead of his chest along the shot.
                     let a = shot.yaw as f32 / 4096.0 * std::f32::consts::TAU;
-                    let muzzle = [shot.origin[0] + (a.sin() * 90.0 * 32.0) as i32, shot.origin[1], shot.origin[2] + (a.cos() * 90.0 * 32.0) as i32];
+                    let mut muzzle = [shot.origin[0] + (a.sin() * 90.0 * 32.0) as i32, shot.origin[1], shot.origin[2] + (a.cos() * 90.0 * 32.0) as i32];
+                    // Deviation (mod): a weapon's shots leave its muzzle, as it was last drawn.
+                    let weapon = self.play_as.as_ref().and_then(|p| p.weapon.as_ref());
+                    if let Some(m) = weapon.and_then(|w| w.muzzle.get()) {
+                        muzzle = m.map(|v| (v * 32.0) as i32);
+                    }
                     let slots: Vec<Vec3> = cr.slots.iter().map(|c| Vec3::from(c.pos.map(|v| v as f32 / 32.0))).collect();
                     let visible = |i: usize| {
                         let d = slots[i] - cg;
                         d.dot(cf) > d.length() * 0.6
                     };
-                    for ev in self.lasers.fire(shot, muzzle, player, &self.world, cr, &visible) {
+                    let events = self.lasers.fire(shot, muzzle, player, &self.world, cr, &visible);
+                    if weapon.is_some_and(|w| w.spec.shot == ts2::modding::ShotStyle::Bullet) {
+                        self.lasers.bulletize();
+                    }
+                    for ev in events {
                         match ev {
                             ts2::laser::Event::Sound(id, at) => sounds.push((id, at)),
                             // 0x4A5D30's impact: a flash by kind, smoke off walls, five sparks.
@@ -2611,6 +2702,22 @@ impl Viewer {
             let blend = player.first_person == 0
                 && (self.use_orig_cam || scene_camera(self.script.as_deref()).is_some());
             self.interp.alpha = player.tick_fraction();
+            // First person drawn between the last two ticks too: the eye follows his body's
+            // drawn position (one step a tick judders while moving, against the level and the
+            // creatures, which are drawn between ticks), and Buzz's helmet and arms sit there.
+            self.interp.fp_eye = None;
+            if player.first_person != 0 && scene_camera(self.script.as_deref()).is_none() {
+                let b = self.interp.buzz(player.pos);
+                let e = [b.x, b.y - ts2::look::EYE as f32 / 32.0, b.z];
+                self.cam.pos = game_to_world(e);
+                for id in ts2::look::MODEL {
+                    if let Some(s) = self.specials.objects.get_mut(&(id as u16)) {
+                        s.pos = e;
+                    }
+                    self.interp.specials_prev.insert(id as u16, e);
+                }
+                self.interp.fp_eye = Some(e);
+            }
             if !blend {
                 self.interp.cam = None;
             } else {
@@ -2757,6 +2864,10 @@ impl Viewer {
                                 let a = &pa.anims[pa.hop];
                                 let total = if p.hop_low { HOP_AIR_LOW * pa.hop_speed } else { HOP_AIR_FULL };
                                 (pa.hop, (pa.air / total).min(1.0) * (a.frame_count.max(2) - 1) as f32)
+                            } else if !pa.auto_hop && p.vel[0].abs() + p.vel[2].abs() > 0x40 {
+                                // Deviation (mod): no auto-hop: it glides along in its walk animation.
+                                let a = &pa.anims[pa.walk];
+                                (pa.walk, (pa.clock * ANIM_FPS) % (a.frame_count.max(2) - 1) as f32)
                             } else {
                                 let a = &pa.anims[pa.idle];
                                 (pa.idle, (pa.clock * ANIM_FPS) % (a.frame_count.max(2) - 1) as f32)
@@ -2770,10 +2881,39 @@ impl Viewer {
                         Some(pa) => {
                             let buzz_pose = scene::layered_matrices(c.nodes.len(), layer(pose.base), layer(overlay));
                             let matrices = pa.retarget.matrices(&buzz_pose);
-                            scene::merge(
-                                &mut batches,
-                                scene::creature_batches_matrices(&self.ngn, &pa.creature, self.interp.buzz(p.pos).to_array(), yaw, pa.scale, &matrices),
-                            );
+                            let origin = self.interp.buzz(p.pos).to_array();
+                            scene::merge(&mut batches, scene::creature_batches_matrices(&self.ngn, &pa.creature, origin, yaw, pa.scale, &matrices));
+                            // Deviation (mod): the gun follows the hand's final matrix.
+                            if let Some(w) = &pa.weapon {
+                                let hand = matrices.get(w.spec.hand).and_then(|m| m.as_ref());
+                                let mut gun = vec![None; w.creature.nodes.len()];
+                                let mut held = w.spec.matrix(hand);
+                                // Deviation (mod): with a `grip`, the gun is held level with the
+                                // body at the hand, not turned by the wrist (Buzz's hand poses
+                                // tumble it); while firing it points straight ahead.
+                                if let Some(grip) = w.spec.grip {
+                                    let c = w.hand_centre;
+                                    let at = hand.map_or(c, |h| std::array::from_fn(|k| h[3][k] + c[0] * h[0][k] + c[1] * h[1][k] + c[2] * h[2][k]));
+                                    held = w.spec.held_matrix(grip, at, p.laser != 0);
+                                } else if p.laser != 0 {
+                                    // Deviation (mod): while firing (Buzz's laser arm timer), the
+                                    // gun stays in the hand but points straight ahead.
+                                    for (i, row) in held.iter_mut().enumerate().take(3) {
+                                        for (j, v) in row.iter_mut().enumerate().take(3) {
+                                            *v = if i == j { 1.0 } else { 0.0 };
+                                        }
+                                    }
+                                }
+                                for &n in &w.spec.nodes {
+                                    if let Some(slot) = gun.get_mut(n) {
+                                        *slot = Some(held);
+                                    }
+                                }
+                                scene::merge(&mut batches, scene::creature_batches_matrices(&self.ngn, &w.creature, origin, yaw, pa.scale, &gun));
+                                let m = w.muzzle_local;
+                                let muzzle: [f32; 3] = std::array::from_fn(|k| held[3][k] + m[0] * held[0][k] + m[1] * held[1][k] + m[2] * held[2][k]);
+                                w.muzzle.set(Some(scene::creature_point(origin, yaw, pa.scale, muzzle)));
+                            }
                         }
                         None => scene::merge(
                             &mut batches,
@@ -2790,6 +2930,29 @@ impl Viewer {
                 }
                 (preview, _) => placed.push((ci, p.pos.to_array(), yaw, preview.unwrap_or(0))),
             }
+        }
+        // Deviation (mod): first person with a weapon: the arm and the gun in view.
+        if let (Some(p), Some(pa)) = (self.player.as_ref().filter(|p| p.first_person == 4), self.play_as.as_ref())
+            && let Some(w) = &pa.weapon
+        {
+            let eye = self.interp.fp_eye.unwrap_or_else(|| ts2::look::FirstPerson::eye(p).map(|v| v as f32 / 32.0));
+            let rad = |a: i32| (((a & 0xFFF) + 0x800) & 0xFFF) as f32 / 4096.0 * std::f32::consts::TAU - std::f32::consts::PI;
+            let yaw = rad(self.look.cam_yaw) + self.player_yaw_offset;
+            let (arm, held) = w.spec.view_matrices(w.hand_centre, rad(self.look.cam_pitch));
+            if let Some(c) = &w.view_arm {
+                let ms = vec![Some(arm); c.nodes.len()];
+                scene::merge(&mut batches, scene::creature_batches_matrices(&self.ngn, c, eye, yaw, pa.scale, &ms));
+            }
+            let mut gun = vec![None; w.creature.nodes.len()];
+            for &n in &w.spec.nodes {
+                if let Some(slot) = gun.get_mut(n) {
+                    *slot = Some(held);
+                }
+            }
+            scene::merge(&mut batches, scene::creature_batches_matrices(&self.ngn, &w.creature, eye, yaw, pa.scale, &gun));
+            let m = w.muzzle_local;
+            let muzzle: [f32; 3] = std::array::from_fn(|k| held[3][k] + m[0] * held[0][k] + m[1] * held[1][k] + m[2] * held[2][k]);
+            w.muzzle.set(Some(scene::creature_point(eye, yaw, pa.scale, muzzle)));
         }
         for (ci, pos, yaw, ai) in placed {
             let c = &self.ngn.creatures[ci];
@@ -3365,6 +3528,10 @@ impl Viewer {
                 ShotStep::Release(k) => {
                     self.keys.remove(k);
                 }
+                ShotStep::Fire(down) => {
+                    self.fire_held = *down && self.player.is_some();
+                    self.fire_pressed |= self.fire_held;
+                }
                 ShotStep::Play => self.toggle_play(),
                 ShotStep::Teleport(at, facing) => {
                     if let Some(p) = self.player.as_mut() {
@@ -3763,7 +3930,7 @@ fn play_music(a: &mut AudioOut, game: &std::path::Path, index: usize) {
 
 /// `--shot <out.png> "<script>"`: render without a window. The script's words: a number runs
 /// that many 60 Hz frames, `+Key` / `-Key` press and release a key (winit names: Space,
-/// Enter, Escape, ArrowUp, KeyW, …), `play` puts Buzz at the start (F), and
+/// Enter, Escape, ArrowUp, KeyW, …), `+Fire` / `-Fire` the left mouse button, `play` puts Buzz at the start (F), and
 /// `cam:x,y,z,yaw,pitch` holds the view there (world units, radians).
 struct Shot {
     out: String,
@@ -3775,6 +3942,8 @@ enum ShotStep {
     Frames(u32),
     Press(KeyCode),
     Release(KeyCode),
+    /// `+Fire` / `-Fire`: the left mouse button (the laser) down or up.
+    Fire(bool),
     Play,
     /// `results:before,now,coins,abilities`: the front end's results screen with these numbers.
     Results(ts2::frontend::LevelResult),
@@ -3842,6 +4011,8 @@ impl Shot {
                 if let [x, y, z, yaw, pitch] = v[..] {
                     shot.cam = Some(Camera { pos: Vec3::new(x, y, z), yaw, pitch });
                 }
+            } else if w == "+Fire" || w == "-Fire" {
+                shot.script.push(ShotStep::Fire(w == "+Fire"));
             } else if let Some(k) = w.strip_prefix('+').and_then(key) {
                 shot.script.push(ShotStep::Press(k));
             } else if let Some(k) = w.strip_prefix('-').and_then(key) {

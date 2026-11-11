@@ -1,0 +1,16 @@
+id = "first-person"
+name = "First-Person Mod"
+version = "0.1.1"
+authors = ["lewiloon2k"]
+description = "Buzz in first person as a shooter: run, jump, climb and fire his laser from his own eyes."
+engine = "0.1"
+
+# First person (Q) works as a shooter: W/A/S/D run at full speed (strafing), Space jumps and double
+# jumps, and ledges, zip lines, poles, the mantle, the hook and the boots all work without leaving
+# it. The mouse aims with no smoothing. Buzz's arms and laser stay; no glass helmet, no breathing.
+[first_person]
+move = true
+smoothing = false
+breathing = false
+helmet = false
+arms = true

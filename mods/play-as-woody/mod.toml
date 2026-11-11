@@ -1,8 +1,8 @@
 id = "play-as-woody"
 name = "Play as Woody"
-version = "0.1.0"
+version = "0.5.1"
 authors = ["lewiloon2k"]
-description = "Run through any level as Woody, using Buzz's moves."
+description = "Run through any level as Woody, using Buzz's moves, with a revolver."
 engine = "0.1"
 
 [play_as]
@@ -11,13 +11,14 @@ model = "data/level05/level1.ngn"
 animation = "retarget"
 scale = 1.0
 laser = false
+voice = false          # no Buzz voice lines
 
 # [creature node, Buzz node]: the automatic map puts the torso on Buzz's pelvis and doubles
 # up the arms, so the torso and both arm chains are named here.
 map = [[0, 13], [5, 8], [2, 9], [3, 10], [10, 14], [7, 15], [8, 16]]
 
 # Each part hangs off its parent at a joint (Woody's own rest pose, model units), so his longer
-# arms can't come apart from his body when Buzz's moves swing them. Thighs follow Buzz's thighs.
+# arms can't come apart from his body when Buzz's moves swing them. 
 joints = [
     { node = 1, parent = 0, at = [-11.0, -390.0, 0.0] },   # neck
     { node = 5, parent = 0, at = [42.0, -355.0, 5.0] },    # shoulders
@@ -26,17 +27,52 @@ joints = [
     { node = 7, parent = 10, at = [-110.0, -358.0, 3.0] },
     { node = 3, parent = 2, at = [174.0, -300.0, -3.0] },  # wrists
     { node = 8, parent = 7, at = [-174.0, -300.0, -3.0] },
+    { node = 6, parent = 0, at = [28.0, -240.0, -4.0] },   # hips
+    { node = 11, parent = 0, at = [-28.0, -240.0, -4.0] },
     { node = 4, parent = 6, at = [37.0, -153.0, -5.0] },   # knees
     { node = 9, parent = 11, at = [-37.0, -153.0, -5.0] },
 ]
 
-# Woody's rest pose holds his arms out; Buzz's hang down. Swing each arm chain down about its shoulder (60 degrees leaves them a little out from his sides; 80 put his hands together in front).
+# Woody's rest pose holds his arms out; Buzz's hang down. Swing each arm chain down about its shoulder (45 degrees holds them out from his sides; 80 put his hands together in front).
 [[play_as.rest]]
 nodes = [5, 2, 3]
 pivot = [42.0, -355.0, 5.0]
-angles = [0.0, 0.0, 60.0]
+angles = [0.0, 0.0, 45.0]
 
 [[play_as.rest]]
 nodes = [10, 7, 8]
 pivot = [-42.0, -355.0, 5.0]
-angles = [0.0, 0.0, -60.0]
+angles = [0.0, 0.0, -45.0]
+
+# A revolver from the gunslinger (GUNSL, node 15) in his right hand. With it, left mouse / Square
+# fires again (Buzz's auto-aim, damage and charge) from the muzzle as a yellow tracer, and Q is
+# first-person mode with his arm and the gun in view (targeting, hooks and discs as Buzz's).
+[play_as.weapon]
+creature = "GUNSL"
+model = "data/level05/level1.ngn"
+nodes = [15]
+hand = 8          # his right hand (node 3 is his left)
+offset = [0.0, 0.0, 0.0]          # the grip sits at the centre of his hand
+angles = [30.0, 0.0, 0.0]         # held level with his body, barrel forward and tipped down (about his X, Y, Z)
+grip = [0.0, 15.0, 30.0]          # the revolver's handle, held in his palm
+aim_offset = [0.0, 0.0, 0.0]      # while shooting: shift from the hand (0 = gripped in his palm)
+muzzle = [0.0, -11.0, -65.0]   # the barrel's tip, gun model units
+shot = "bullet"
+
+# First person: his right forearm and hand (nodes 7, 8) at the bottom right of the view, the gun
+# gripped in the hand pointing where he looks. Eye space: X left, Y down, Z back (model units).
+[play_as.weapon.view]
+nodes = [7, 8]
+elbow = [-110.0, -358.0, 3.0]
+wrist = [-174.0, -300.0, -3.0]
+at = [-34.0, 46.0, -120.0]     # the wrist: right, down, ahead of the eye
+dir = [0.25, -0.15, -1.0]      # the forearm reaches forward, in and a little up
+roll = 0.0
+gun = [0.0, 0.0, 0.0]          # the gun moved from the hand's centre (0 = handle in his palm)
+
+# First person (Q) as a shooter: W/A/S/D run, Space jumps, ledges, zip lines, poles, the hook and
+# the boots work as out of it; the view follows the mouse at once; no breathing.
+[first_person]
+move = true
+smoothing = false
+breathing = false

@@ -169,7 +169,7 @@ A few things are deliberately different, mostly to fix what looked wrong when dr
 - Blended level faces that are fully opaque (level 2's tree leaves and bushes) are drawn alpha-tested with depth writes, so a bush's near side always shows over its far side.
 - Special objects (lifts, platforms) are drawn between game ticks like Buzz and the camera, so a lift doesn't judder on a fast display.
 - Saves go to `%APPDATA%/ts2-rust` (or `TS2_SAVE_DIR`) instead of beside the game, which is usually read-only. They use the original's `Toy2NN.sav` format, so saves copied between the two work.
-- Mods (opt-in, `--mod <dir>` or the launcher): `[play_as]` draws the player as another creature (Woody, with Buzz's moves retargeted onto his parts) and can turn off the laser; `animation = "hop"` plays Zurg's spring robot or the Tin Man as a bouncing player (low hop on each landing while a direction is held); the default game is unchanged. See `mods/README.md`.
+- Mods (opt-in, `--mod <dir>` or the launcher): `[play_as]` draws the player as another creature (Woody, with Buzz's moves retargeted onto his parts) can turn off the laser, and can give the player a gun (`[play_as.weapon]`: Woody with the gunslinger's revolver, firing yellow tracers from its muzzle); `animation = "hop"` plays Zurg's spring robot or the Tin Man as a bouncing player (low hop on each landing while a direction is held); the default game is unchanged. See `mods/README.md`.
 
 ## Running the tests
 

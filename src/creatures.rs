@@ -2059,8 +2059,11 @@ impl Creatures {
                 continue;
             }
             let angle = atan(b[0] - c.pos[0], b[2] - c.pos[2]);
-            // A stomp only lands from above.
-            let k = if kind != 0 && c.rec.state & 2 != 0 && !(kind == 5 && ly < 0) { kind as usize } else { 0 };
+            // A stomp only lands from above. Deviation (mod): with a play-as mod's touch damage,
+            // harmful creatures (enemies and bosses, flag 0x100) take the hit too, even those a
+            // spin can't (record state bit 1); friendly characters still don't.
+            let hittable = c.rec.state & 2 != 0 || (player.touch_reach > 0 && c.flags & 0x100 != 0);
+            let k = if kind != 0 && hittable && !(kind == 5 && ly < 0) { kind as usize } else { 0 };
             let mode = if c.flags & 0x100 != 0 && kind == 0 {
                 3
             } else if c.health == 0x66 || k != 0 {

@@ -1,8 +1,8 @@
 id = "play-as-tinman"
 name = "Play as the Tin Man"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["lewiloon2k"]
-description = "Bounce through any level as the level 1 boss, at full size, flattening enemies you touch."
+description = "Stomp through any level as the level 1 boss, at full size, flattening enemies and bosses you touch."
 engine = "0.1"
 
 [play_as]
@@ -11,7 +11,10 @@ model = "data/level01/level.ngn"
 animation = "hop"
 scale = 1.0            # the boss's own size (about 2.6 times Buzz's height); collision stays Buzz's
 laser = false
+voice = false          # no Buzz voice lines
 idle = 0
-hop = 2
+hop = 2                # in the air (Space: Buzz's jump and double jump)
+walk = 2               # gliding along the floor
+auto_hop = false       # no little hops while walking
 camera_distance = 2.5  # the follow camera further back, to see all of him
-touch_damage = true    # touching an enemy hits it as Buzz's spin does; harmful ones don't hurt him
+touch_damage = true    # touching an enemy or a boss hits it as Buzz's spin does; they don't hurt him

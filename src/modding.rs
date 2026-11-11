@@ -32,6 +32,34 @@ pub struct Manifest {
     /// Draw the player as another creature.
     #[serde(default)]
     pub play_as: Option<PlayAs>,
+    /// First-person mode changes (Q), `[first_person]`.
+    #[serde(default)]
+    pub first_person: Option<FirstPersonMod>,
+}
+
+/// Deviation (mod): `[first_person]`: first person (Q) as a shooter. Every key defaults to
+/// the shooter's choice; the original's behaviour is `move = false`, `smoothing = true`,
+/// `breathing = true`, `helmet = true`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstPersonMod {
+    /// W/A/S/D run (strafing, full speed), Space jumps, and ledges, zip lines, poles, the
+    /// mantle, the hook's pull and the boots all work without leaving first person; the mouse
+    /// looks. False: standing still, W/A/S/D turn the view.
+    #[serde(rename = "move", default = "yes")]
+    pub walk: bool,
+    /// The view eases after the mouse (the original's); false = it follows at once.
+    #[serde(default)]
+    pub smoothing: bool,
+    /// The helmet's breathing sounds and the arms' bob.
+    #[serde(default)]
+    pub breathing: bool,
+    /// Buzz's glass helmet around the view.
+    #[serde(default)]
+    pub helmet: bool,
+    /// Buzz's first-person arms (a play-as creature never shows them).
+    #[serde(default = "yes")]
+    pub arms: bool,
 }
 
 /// How the substitute creature is animated.
@@ -82,6 +110,16 @@ pub struct PlayAs {
     /// The follow camera's distance as a multiple of Buzz's (for a bigger character).
     #[serde(default = "one")]
     pub camera_distance: f32,
+    /// `hop` mode: false = no automatic hop while walking; it slides along the floor in its
+    /// `walk` animation and jumps (and double jumps) only with Space.
+    #[serde(default = "yes")]
+    pub auto_hop: bool,
+    /// `hop` mode: the animation while moving on the floor (default: the `hop` one).
+    #[serde(default)]
+    pub walk: Option<usize>,
+    /// False: Buzz's voice lines (jump shouts, grunts, hurt and death cries) are not played.
+    #[serde(default = "yes")]
+    pub voice: bool,
     /// `retarget` mode: overrides to the automatic node map, `[creature_node, buzz_node]`.
     #[serde(default)]
     pub map: Vec<[usize; 2]>,
@@ -92,6 +130,206 @@ pub struct PlayAs {
     /// joint never comes apart when the creature's limbs are longer than Buzz's.
     #[serde(default)]
     pub joints: Vec<Joint>,
+    /// `retarget` mode: a gun held in one of the creature's hands, `[play_as.weapon]`. With one,
+    /// firing works even when `laser = false` (first-person mode stays off).
+    #[serde(default)]
+    pub weapon: Option<Weapon>,
+}
+
+/// How a weapon's shot is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShotStyle {
+    /// A short, fast yellow tracer that flies from the muzzle to where the shot lands.
+    #[default]
+    Bullet,
+    /// Buzz's own laser beam, from the muzzle.
+    Beam,
+}
+
+/// The `[play_as.weapon]` table: parts of another creature drawn in one of the player
+/// creature's hands (the gunslinger's revolver in Woody's), and shots that leave its muzzle.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Weapon {
+    /// The creature the gun parts come from (case-insensitive).
+    pub creature: String,
+    /// Where to load it, relative to the game folder; default: the current level, then every
+    /// level's `.ngn`, first match wins.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The creature's nodes that make up the gun (only these are drawn).
+    pub nodes: Vec<usize>,
+    /// The play-as creature's node the gun is held in (Woody: 3 right hand, 8 left).
+    #[serde(default = "right_hand")]
+    pub hand: usize,
+    /// Where the gun's origin sits in the hand, in the play-as creature's own rest pose (model
+    /// units; before the arm is turned by `[[play_as.rest]]` and Buzz's motion).
+    #[serde(default)]
+    pub offset: [f32; 3],
+    /// Degrees about the gun's own X, Y, Z (in that order) before it is placed at `offset`.
+    #[serde(default)]
+    pub angles: [f32; 3],
+    /// The muzzle, in the gun's own model units; default: the middle of the end of the gun
+    /// at the low end of its longest axis.
+    #[serde(default)]
+    pub muzzle: Option<[f32; 3]>,
+    /// How the shot looks.
+    #[serde(default)]
+    pub shot: ShotStyle,
+    /// The point of the gun held in the palm (gun model units). When set, the gun is held
+    /// level with the body instead of turning with the wrist: this point sits at the hand's
+    /// centre plus `offset` (the creature's model axes), the gun turned by `angles` about the
+    /// creature's axes; while firing it points straight ahead, moved by `aim_offset`.
+    #[serde(default)]
+    pub grip: Option<[f32; 3]>,
+    #[serde(default)]
+    pub aim_offset: [f32; 3],
+    /// First person: the arm drawn in view holding the gun, `[play_as.weapon.view]`.
+    #[serde(default)]
+    pub view: Option<ViewArm>,
+}
+
+/// Deviation (mod): the arm seen in first person. Its nodes are drawn in their rest pose,
+/// turned so the forearm (`elbow` to `wrist`, the creature's rest pose) points along `dir` with
+/// the wrist at `at`; the gun's `grip` sits at the hand's centre, pointing straight ahead. Eye
+/// space: model units from the eye, X left, Y down, Z back (the creature's own axes).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewArm {
+    /// The creature's nodes drawn (Woody's right forearm and hand: 7, 8); default none.
+    #[serde(default)]
+    pub nodes: Vec<usize>,
+    pub elbow: [f32; 3],
+    pub wrist: [f32; 3],
+    /// Where the wrist sits in eye space.
+    pub at: [f32; 3],
+    /// Where the forearm points in eye space (default straight ahead).
+    #[serde(default = "ahead")]
+    pub dir: [f32; 3],
+    /// Degrees the arm turns about its own length.
+    #[serde(default)]
+    pub roll: f32,
+    /// Moves the gun from the hand's centre (eye space), to settle it in the palm.
+    #[serde(default)]
+    pub gun: [f32; 3],
+}
+
+fn ahead() -> [f32; 3] {
+    [0.0, 0.0, -1.0]
+}
+
+fn norm(v: [f32; 3]) -> [f32; 3] {
+    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-6);
+    v.map(|x| x / l)
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+/// Row-vector rotation by `angle` radians about the unit axis `k` (Rodrigues).
+fn rotation_about(k: [f32; 3], angle: f32) -> Matrix {
+    let (s, c) = angle.sin_cos();
+    let t = 1.0 - c;
+    let [x, y, z] = k;
+    // Column form R, stored transposed for row vectors.
+    let r = [
+        [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
+        [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
+        [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+    ];
+    let mut m = [[0.0; 4]; 4];
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] = r[j][i];
+        }
+    }
+    m[3][3] = 1.0;
+    m
+}
+
+/// Eye space looking `pitch` radians down: the view's tilt about its X axis.
+pub fn view_pitch(pitch: f32) -> Matrix {
+    let (s, c) = pitch.sin_cos();
+    [[1.0, 0.0, 0.0, 0.0], [0.0, c, s, 0.0], [0.0, -s, c, 0.0], [0.0, 0.0, 0.0, 1.0]]
+}
+
+impl ViewArm {
+    /// The arm nodes' matrix (rest pose to eye space, before `view_pitch`).
+    pub fn arm_matrix(&self) -> Matrix {
+        let a = norm(std::array::from_fn(|k| self.wrist[k] - self.elbow[k]));
+        let d = norm(self.dir);
+        let axis = cross(a, d);
+        let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        let dot = a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
+        let turn = if len < 1e-6 { rotation_deg([0.0; 3]) } else { rotation_about(norm(axis), len.atan2(dot)) };
+        let mut m = mul(&turn, &rotation_about(d, self.roll.to_radians()));
+        let w = apply(&m, self.wrist);
+        for k in 0..3 {
+            m[3][k] = self.at[k] - w[k];
+        }
+        m
+    }
+}
+
+impl Weapon {
+    /// First person: (arm nodes, gun) matrices into eye space looking `pitch` radians down,
+    /// the gun's grip at the hand's centre (`hand_centre`, rest pose) pointing straight ahead.
+    pub fn view_matrices(&self, hand_centre: [f32; 3], pitch: f32) -> (Matrix, Matrix) {
+        let p = view_pitch(pitch);
+        let arm = self.view.as_ref().map_or(rotation_deg([0.0; 3]), ViewArm::arm_matrix);
+        let at = match &self.view {
+            Some(v) => {
+                let c = apply(&arm, hand_centre);
+                std::array::from_fn(|k| c[k] + v.gun[k])
+            }
+            None => [-20.0, 25.0, -50.0],
+        };
+        let gun = self.held_matrix(self.grip.unwrap_or([0.0; 3]), at, true);
+        (mul(&arm, &p), mul(&gun, &p))
+    }
+}
+
+fn right_hand() -> usize {
+    3
+}
+
+impl Weapon {
+    /// Gun model space to the play-as creature's model space for the hand's final matrix
+    /// (`None` = at rest): turned by `angles`, moved to `offset`, then carried by the hand.
+    pub fn matrix(&self, hand: Option<&Matrix>) -> Matrix {
+        let mut placed = rotation_deg(self.angles);
+        placed[3] = [self.offset[0], self.offset[1], self.offset[2], 1.0];
+        hand.map_or(placed, |h| mul(&placed, h))
+    }
+
+    /// With `grip`: gun model space to the creature's model space for the hand centre `hand`
+    /// (already posed), held (`angles`) or firing (straight ahead, `aim_offset`).
+    pub fn held_matrix(&self, grip: [f32; 3], hand: [f32; 3], firing: bool) -> Matrix {
+        let mut m = if firing { rotation_deg([0.0; 3]) } else { rotation_deg(self.angles) };
+        let extra = if firing { self.aim_offset } else { [0.0; 3] };
+        let turned = apply(&m, grip);
+        for k in 0..3 {
+            m[3][k] = hand[k] + self.offset[k] + extra[k] - turned[k];
+        }
+        m
+    }
+
+    /// The muzzle (`muzzle_local`, gun model space) in the play-as creature's model space.
+    pub fn muzzle_point(&self, hand: Option<&Matrix>, muzzle_local: [f32; 3]) -> [f32; 3] {
+        apply(&self.matrix(hand), muzzle_local)
+    }
+}
+
+/// The default muzzle of a gun with these bounds: the middle of the end face at the low end of
+/// the longest axis.
+pub fn default_muzzle(b: &Bounds) -> [f32; 3] {
+    let size = b.size();
+    let axis = (0..3).max_by(|&i, &j| size[i].total_cmp(&size[j])).unwrap_or(2);
+    let mut p = b.centre();
+    p[axis] = b.lo[axis];
+    p
 }
 
 /// A joint of the creature: `node` hangs off `parent` at `at` (model units, in the creature's
@@ -153,6 +391,11 @@ pub fn mod_dirs(env: Option<&std::ffi::OsStr>, args: &[PathBuf]) -> Vec<PathBuf>
         .into_iter()
         .chain(args.iter().cloned())
         .collect()
+}
+
+/// The `[first_person]` in force: the last mod in load order that sets one.
+pub fn active_first_person(mods: &[Mod]) -> Option<&FirstPersonMod> {
+    mods.iter().rev().find_map(|m| m.manifest.first_person.as_ref())
 }
 
 /// The `[play_as]` in force: the last mod in load order that sets one.
@@ -423,6 +666,85 @@ angles = [0.0, 0.0, 80.0]
 "#;
 
     #[test]
+    fn a_gripped_gun_keeps_its_grip_in_the_hand() {
+        let text = "id = \"g\"\n[play_as]\ncreature = \"WOODY\"\n[play_as.weapon]\ncreature = \"GUNSL\"\nnodes = [15]\ngrip = [0.0, 15.0, 30.0]\nangles = [-30.0, 0.0, 0.0]\naim_offset = [-20.0, 0.0, 0.0]\n";
+        let w = parse_manifest(text).unwrap().play_as.unwrap().weapon.unwrap();
+        let grip = w.grip.unwrap();
+        let hand = [100.0, -300.0, 5.0];
+        for firing in [false, true] {
+            let m = w.held_matrix(grip, hand, firing);
+            let at = apply(&m, grip);
+            let want = if firing { [80.0, -300.0, 5.0] } else { hand };
+            assert!((0..3).all(|k| (at[k] - want[k]).abs() < 1e-3), "{firing}: {at:?}");
+        }
+        // Firing: straight ahead, the barrel (-Z) stays -Z.
+        let m = w.held_matrix(grip, hand, true);
+        let (a, b) = (apply(&m, [0.0, 0.0, 0.0]), apply(&m, [0.0, 0.0, -10.0]));
+        assert!((b[2] - a[2] + 10.0).abs() < 1e-4 && (b[1] - a[1]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_view_arm_puts_the_wrist_at_and_points_the_forearm_along_dir() {
+        let text = "id = \"g\"\n[play_as]\ncreature = \"WOODY\"\n[play_as.weapon]\ncreature = \"GUNSL\"\nnodes = [15]\ngrip = [0.0, 15.0, 30.0]\n[play_as.weapon.view]\nnodes = [7, 8]\nelbow = [-110.0, -358.0, 3.0]\nwrist = [-174.0, -300.0, -3.0]\nat = [-20.0, 25.0, -45.0]\ndir = [0.2, -0.1, -1.0]\n";
+        let pa = parse_manifest(text).unwrap().play_as.unwrap();
+        let w = pa.weapon.unwrap();
+        let v = w.view.clone().unwrap();
+        let m = v.arm_matrix();
+        let (e, wr) = (apply(&m, v.elbow), apply(&m, v.wrist));
+        assert!((0..3).all(|k| (wr[k] - v.at[k]).abs() < 1e-3), "{wr:?}");
+        let a = norm(std::array::from_fn(|k| wr[k] - e[k]));
+        let d = norm(v.dir);
+        assert!((0..3).all(|k| (a[k] - d[k]).abs() < 1e-4), "{a:?} vs {d:?}");
+        // Looking down, the gun's barrel (-Z) tips down (+Y).
+        let (_, gun) = w.view_matrices([-190.0, -290.0, -5.0], 0.3);
+        let (g0, g1) = (apply(&gun, [0.0; 3]), apply(&gun, [0.0, 0.0, -10.0]));
+        assert!(g1[1] - g0[1] > 2.0 && g1[2] < g0[2], "{g0:?} {g1:?}");
+    }
+
+    #[test]
+    fn weapon_table_parses_and_places_the_gun() {
+        let text = "id = \"g\"
+[play_as]
+creature = \"WOODY\"
+[play_as.weapon]
+creature = \"GUNSL\"
+nodes = [15]
+offset = [10.0, 20.0, 30.0]
+shot = \"beam\"
+";
+        let w = parse_manifest(text).unwrap().play_as.unwrap().weapon.unwrap();
+        assert_eq!((w.creature.as_str(), w.nodes.as_slice(), w.hand, w.shot, w.muzzle), ("GUNSL", &[15][..], 3, ShotStyle::Beam, None));
+        // No hand motion: the gun's origin sits at `offset`; the muzzle moves with it.
+        assert_eq!(w.matrix(None)[3], [10.0, 20.0, 30.0, 1.0]);
+        assert_eq!(w.muzzle_point(None, [0.0, -11.0, -65.0]), [10.0, 9.0, -35.0]);
+        // The hand's matrix carries the gun: a hand moved 100 along X takes it 100 along X.
+        let mut hand = IDENTITY;
+        hand[3][0] = 100.0;
+        assert_eq!(w.muzzle_point(Some(&hand), [0.0, 0.0, 0.0]), [110.0, 20.0, 30.0]);
+        // Angles turn the gun about its own origin first: 90 degrees about Y takes -Z to -X or +X.
+        let turned = Weapon { angles: [0.0, 90.0, 0.0], offset: [0.0; 3], ..w.clone() };
+        let m = turned.muzzle_point(None, [0.0, 0.0, -10.0]);
+        assert!((m[0].abs() - 10.0).abs() < 1e-4 && m[2].abs() < 1e-4);
+        let bounds = Bounds { lo: [-9.0, -19.0, -65.0], hi: [8.0, 36.0, 44.0] };
+        assert_eq!(default_muzzle(&bounds), [-0.5, 8.5, -65.0]);
+        let bad = "id = \"g\"
+[play_as]
+creature = \"WOODY\"
+[play_as.weapon]
+creature = \"GUNSL\"
+nodes = [15]
+bogus = 1
+";
+        assert!(parse_manifest(bad).is_err());
+        assert!(parse_manifest("id = \"g\"
+[play_as]
+creature = \"WOODY\"
+[play_as.weapon]
+creature = \"GUNSL\"
+").is_err(), "nodes is required");
+    }
+
+    #[test]
     fn manifest_with_and_without_play_as() {
         let m = parse_manifest(WOODY).unwrap();
         let p = m.play_as.unwrap();
@@ -432,7 +754,12 @@ angles = [0.0, 0.0, 80.0]
         assert_eq!(p.rest[0].nodes, [5, 2, 3]);
 
         let plain = parse_manifest("id = \"hd-buzz\"\nname = \"HD Buzz\"\nrequires = [\"base\"]\n").unwrap();
-        assert!(plain.play_as.is_none());
+        assert!(plain.play_as.is_none() && plain.first_person.is_none());
+        let fp = parse_manifest("id = \"fp\"\n[first_person]\n").unwrap().first_person.unwrap();
+        assert!(fp.walk && !fp.smoothing && !fp.breathing && !fp.helmet && fp.arms);
+        let fp = parse_manifest("id = \"fp\"\n[first_person]\nmove = false\nhelmet = true\n").unwrap().first_person.unwrap();
+        assert!(!fp.walk && fp.helmet);
+        assert!(parse_manifest("id = \"fp\"\n[first_person]\nwalk = true\n").is_err());
         assert_eq!(plain.requires, ["base"]);
     }
 

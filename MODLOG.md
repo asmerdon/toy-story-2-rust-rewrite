@@ -256,6 +256,14 @@ Dated history of the work, newest at the bottom. Current state is in HANDOFF.md;
 ## 2026-11-10: launcher loads the example mods
 - Example mods ship with the installer and are copied once into `%APPDATA%\OpenTS2\mods`; Mods tab shows the play-as character and warns about two play-as mods; "coming soon" note removed.
 
+## 2026-11-11: Woody's gun (0.3.0)
+- `[play_as.weapon]`: the gunslinger's revolver (GUNSL node 15, `data/level05/level1.ngn`) in Woody's right hand, following the hand's final matrix; firing returns with it (first-person stays off); shots leave the muzzle as a short yellow tracer (`laser::Bullet`) or Buzz's beam.
+- `ts2-viewer --shot` gets `+Fire` / `-Fire` steps.
+
 ## 2026-11-10: Tin Man 0.2.0, touch damage, modded level tester
 - `touch_damage` and `camera_distance` play-as keys; Tin Man mod at boss size.
 - Launcher updates example mods when a newer version ships; level tester plays with the enabled mods ("(modded)").
+
+## 2026-11-11: launcher arrows, Woody gun and legs, Tin Man glide
+- Launcher: drawn arrows, truncated mod lines, "Play Full Game Modded".
+- `voice`, `auto_hop`, `walk`, `[play_as.weapon]`; Woody's hips jointed and arms raised; Tin Man glides and touch-damages bosses.

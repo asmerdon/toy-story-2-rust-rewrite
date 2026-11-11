@@ -51,6 +51,8 @@ scale = 1.0                        # drawn size relative to the model; collision
 laser = false                      # no firing, no charge, no first-person helmet/arms
 ```
 
+(Built later: a `[play_as.weapon]` brings firing and first person back, with an arm in view, `[play_as.weapon.view]`, and `first_person_move` lets him walk while looking; see `mods/README.md`.)
+
 Tin Man:
 
 ```toml

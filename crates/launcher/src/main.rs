@@ -249,7 +249,7 @@ impl Launcher {
         }
         ui.add_space(6.0);
         let n = self.config.enabled_mods().count();
-        if ui.add_enabled(ready, big_button("Play Modded")).on_hover_text(format!("The game with {n} enabled mod(s); see Mods")).clicked() {
+        if ui.add_enabled(ready, big_button("Play Full Game Modded")).on_hover_text(format!("The game with {n} enabled mod(s); see Mods")).clicked() {
             self.start_modded();
         }
         ui.add_space(6.0);
@@ -379,7 +379,7 @@ impl Launcher {
 
     fn mods_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Mods");
-        ui.label("Each mod is a folder with a mod.toml, kept outside the game. Tick the ones you want, then Play Modded. Later mods override earlier ones.");
+        ui.label("Each mod is a folder with a mod.toml, kept outside the game. Tick the ones you want, then Play Full Game Modded (here or on Play) or use the Level Tester. Later mods override earlier ones.");
         ui.label("The engine loads play-as mods (one character at a time). Replacing the game's files is coming later.");
         ui.horizontal(|ui| {
             ui.label(format!("Folder: {}", paths::mods_dir().display()));
@@ -403,22 +403,24 @@ impl Launcher {
             let found = self.found_mods.iter().find(|m| m.id() == entry.id);
             ui.horizontal(|ui| {
                 changed |= ui.checkbox(&mut entry.enabled, "").changed();
-                if ui.add_enabled(i > 0, egui::Button::new("▲")).clicked() {
+                if arrow_button(ui, i > 0, true).on_hover_text("Load earlier").clicked() {
                     swap = Some(i - 1);
                 }
-                if ui.add_enabled(i + 1 < count, egui::Button::new("▼")).clicked() {
+                if arrow_button(ui, i + 1 < count, false).on_hover_text("Load later").clicked() {
                     swap = Some(i);
                 }
                 match found.map(|m| &m.manifest) {
                     Some(Ok(m)) => {
                         ui.label(egui::RichText::new(&m.name).strong());
-                        ui.label(format!("{} {}", m.id, m.version));
+                        // One line, cut with an ellipsis when the window is narrow; all of it on hover.
+                        let mut rest = format!("{} {}", m.id, m.version);
                         if let Some(p) = &m.play_as {
-                            ui.label(format!("plays as {}", p.creature));
+                            rest.push_str(&format!(" · plays as {}", p.creature));
                         }
                         if !m.description.is_empty() {
-                            ui.label(&m.description);
+                            rest.push_str(&format!(" · {}", m.description));
                         }
+                        ui.add(egui::Label::new(egui::RichText::new(&rest).weak()).truncate()).on_hover_text(&rest);
                     }
                     Some(Err(e)) => {
                         ui.colored_label(ui.visuals().error_fg_color, format!("{}: bad mod.toml ({e})", entry.id));
@@ -446,7 +448,7 @@ impl Launcher {
             self.save();
         }
         ui.add_space(12.0);
-        if ui.add_enabled(self.game.is_ok() && self.running.is_none(), big_button("Play Modded")).clicked() {
+        if ui.add_enabled(self.game.is_ok() && self.running.is_none(), big_button("Play Full Game Modded")).clicked() {
             self.start_modded();
         }
     }
@@ -530,6 +532,21 @@ impl eframe::App for Launcher {
 
 fn big_button(text: &str) -> egui::Button<'static> {
     egui::Button::new(egui::RichText::new(text).size(20.0)).min_size(egui::vec2(280.0, 48.0))
+}
+
+/// A small button with a drawn triangle (the default fonts have no ▲/▼ glyphs).
+fn arrow_button(ui: &mut egui::Ui, enabled: bool, up: bool) -> egui::Response {
+    let r = ui.add_enabled(enabled, egui::Button::new("").min_size(egui::vec2(22.0, 18.0)));
+    let c = r.rect.center();
+    let (w, h) = (5.0, 4.0);
+    let pts = if up {
+        vec![egui::pos2(c.x - w, c.y + h), egui::pos2(c.x + w, c.y + h), egui::pos2(c.x, c.y - h)]
+    } else {
+        vec![egui::pos2(c.x - w, c.y - h), egui::pos2(c.x + w, c.y - h), egui::pos2(c.x, c.y + h)]
+    };
+    let colour = if enabled { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
+    ui.painter().add(egui::Shape::convex_polygon(pts, colour, egui::Stroke::NONE));
+    r
 }
 
 /// The main action on a tab: big, green, white text.
